@@ -12,7 +12,8 @@
     "test:runner": "node scripts/verify-runner.cjs",
     "test:clone-smoke": "node scripts/smoke-clone.cjs",
     "test:public-assets": "node scripts/smoke-public-assets.cjs",
-    "dump:db": "node scripts/dump-db.cjs"
+    "dump:db": "node scripts/dump-db.cjs",
+    "restore:db": "node scripts/restore-db.cjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1148.0",

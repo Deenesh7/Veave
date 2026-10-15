@@ -42,7 +42,10 @@ coverage/
 tmp/
 temp/
 .cache/
-dump/
+dump/*
+!dump/veave_mongo_dump.zip
+!dump/summary.json
+!dump/README.md
 
 # Uploads
 uploads/
