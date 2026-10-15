@@ -1,0 +1,208 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --theme-font-heading: 'Inter', sans-serif;
+  --theme-font-body: 'Inter', sans-serif;
+  --theme-font-mono: 'JetBrains Mono', monospace;
+  --theme-radius-btn: 10px;
+  --theme-radius-card: 16px;
+  --theme-radius-container: 20px;
+}
+
+html {
+  scroll-behavior: smooth;
+  background-color: #ffffff;
+}
+
+body {
+  @apply text-zinc-900 antialiased canvas-grid-pattern;
+  font-family: var(--theme-font-body, 'Inter', sans-serif);
+  background-color: transparent;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--theme-font-heading, 'Inter', sans-serif);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-zinc-50;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-zinc-300 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-zinc-600;
+}
+
+::selection {
+  @apply bg-zinc-800 text-white;
+}
+
+@keyframes grid-scroll {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 64px 64px;
+  }
+}
+
+.grid-pattern {
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.05) 1px, transparent 1px);
+  background-size: 64px 64px;
+  animation: grid-scroll 24s linear infinite;
+}
+
+@keyframes grid-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+  25% {
+    transform: translate3d(-35px, 25px, 0) scale(1.09) rotate(0.35deg);
+  }
+  50% {
+    transform: translate3d(30px, -20px, 0) scale(1.05) rotate(-0.3deg);
+  }
+  75% {
+    transform: translate3d(-25px, -30px, 0) scale(1.08) rotate(0.25deg);
+  }
+  100% {
+    transform: translate3d(35px, 20px, 0) scale(1.06) rotate(-0.35deg);
+  }
+}
+
+.canvas-grid-pattern {
+  background-color: transparent;
+}
+
+.canvas-grid-pattern::before {
+  content: "";
+  position: fixed;
+  inset: -80px;
+  background-image: url('/grid-bg.png');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  filter: grayscale(1) brightness(3);
+  mix-blend-mode: difference;
+  opacity: 0.8;
+  z-index: -1;
+  pointer-events: none;
+  animation: grid-drift 14s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+.dark .canvas-grid-pattern {
+  background-color: #09090B;
+}
+
+.dark .canvas-grid-pattern::before {
+  filter: grayscale(1) opacity(0.2);
+}
+
+/* ==========================================================================
+   Custom SaaS UI Micro-Interactions & Animations
+   ========================================================================== */
+
+/* Soundwave Equalizer Animations */
+@keyframes wave-bounce-1 {
+  0%, 100% { height: 6px; }
+  50% { height: 24px; }
+}
+@keyframes wave-bounce-2 {
+  0%, 100% { height: 20px; }
+  50% { height: 8px; }
+}
+@keyframes wave-bounce-3 {
+  0%, 100% { height: 10px; }
+  50% { height: 28px; }
+}
+@keyframes wave-bounce-4 {
+  0%, 100% { height: 26px; }
+  50% { height: 12px; }
+}
+@keyframes wave-bounce-5 {
+  0%, 100% { height: 8px; }
+  50% { height: 22px; }
+}
+
+.animate-wave-1 { animation: wave-bounce-1 0.75s ease-in-out infinite; }
+.animate-wave-2 { animation: wave-bounce-2 0.65s ease-in-out infinite; }
+.animate-wave-3 { animation: wave-bounce-3 0.85s ease-in-out infinite; }
+.animate-wave-4 { animation: wave-bounce-4 0.7s ease-in-out infinite; }
+.animate-wave-5 { animation: wave-bounce-5 0.9s ease-in-out infinite; }
+
+/* Audio Shimmer / Scan */
+@keyframes audio-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+.animate-audio-shimmer {
+  animation: audio-shimmer 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Radar pulse for security */
+@keyframes radar-ring {
+  0% { transform: scale(0.65); opacity: 0.85; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+.animate-radar-1 {
+  animation: radar-ring 2.8s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+}
+.animate-radar-2 {
+  animation: radar-ring 2.8s cubic-bezier(0, 0.2, 0.8, 1) infinite 1.4s;
+}
+
+/* Button Growth for "Make it slightly bigger" */
+@keyframes growth-pulse {
+  0%, 20%, 80%, 100% {
+    transform: scale(1);
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  }
+  45%, 60% {
+    transform: scale(1.08);
+    box-shadow: 0 10px 25px -3px rgba(0, 0, 0, 0.2);
+  }
+}
+.animate-button-growth {
+  animation: growth-pulse 3.6s ease-in-out infinite;
+}
+
+/* Collaborative Cursors Drift */
+@keyframes cursor-float-alex {
+  0%, 100% { transform: translate(0, 0); }
+  30% { transform: translate(12px, -8px); }
+  70% { transform: translate(-6px, 10px); }
+}
+@keyframes cursor-float-sarah {
+  0%, 100% { transform: translate(0, 0); }
+  35% { transform: translate(-14px, 10px); }
+  75% { transform: translate(8px, -6px); }
+}
+.animate-cursor-alex {
+  animation: cursor-float-alex 5s ease-in-out infinite;
+}
+.animate-cursor-sarah {
+  animation: cursor-float-sarah 6s ease-in-out infinite;
+}
+
+/* Dashed Vector Flow */
+@keyframes flow-line {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+.animate-dash-flow {
+  animation: flow-line 1.2s linear infinite;
+}
