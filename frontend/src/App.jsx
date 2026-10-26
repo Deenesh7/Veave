@@ -12,7 +12,6 @@ import DesignSystemsPage from './pages/DesignSystemsPage';
 import DocumentationPage from './pages/DocumentationPage';
 import Settings from './pages/Settings';
 import BillingPage from './pages/BillingPage';
-import UsagePage from './pages/UsagePage';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Register from './pages/Register';
@@ -42,7 +41,6 @@ export default function App() {
         <Route path="/documentation" element={<DocumentationPage />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/billing" element={<BillingPage />} />
-        <Route path="/usage" element={<UsagePage />} />
         <Route path="/groups" element={<GroupsPage />} />
         <Route path="/groups/:groupId" element={<GroupDetailPage />} />
         <Route path="/invitations" element={<InvitationsPage />} />

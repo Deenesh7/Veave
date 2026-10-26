@@ -14,8 +14,8 @@ const SCHEDULE_DELAY_MS = 1500;
 // Changing the transformer must invalidate documents it already compiled (they may contain its old bugs).
 const COMPILER_VERSION = (() => {
   try {
-    const { frontendRoot } = require('./offlineCompile');
-    return createHash('sha1').update(require('node:fs').readFileSync(path.join(frontendRoot, 'src/utils/codeTransformer.js'))).digest('hex').slice(0, 16);
+    const { transformerPath } = require('./frontendAssets');
+    return createHash('sha1').update(require('node:fs').readFileSync(transformerPath)).digest('hex').slice(0, 16);
   } catch { return 'unknown'; }
 })();
 

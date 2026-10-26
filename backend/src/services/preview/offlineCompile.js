@@ -5,20 +5,20 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const Babel = require('@babel/standalone');
 
-const frontendRoot = path.resolve(__dirname, '../../../../frontend');
+const { frontendRoot, transformerPath, resolveFrom } = require('./frontendAssets');
 
 let transformerPromise;
 let cssCompiler;
 
 function loadTransformer() {
-  if (!transformerPromise) transformerPromise = import(pathToFileURL(path.join(frontendRoot, 'src/utils/codeTransformer.js')).href);
+  if (!transformerPromise) transformerPromise = import(pathToFileURL(transformerPath).href);
   return transformerPromise;
 }
 
 async function compileTailwind(content) {
   if (!cssCompiler) {
-    const postcss = require(path.join(frontendRoot, 'node_modules/postcss'));
-    const tailwindcss = require(path.join(frontendRoot, 'node_modules/tailwindcss'));
+    const postcss = require(resolveFrom('postcss'));
+    const tailwindcss = require(resolveFrom('tailwindcss'));
     cssCompiler = async (raw) => {
       const result = await postcss([tailwindcss({
         content: [{ raw, extension: 'html' }],
@@ -74,4 +74,4 @@ async function compileOffline(files, { headMarkup = '', assetBase = '', sourceMa
   return html;
 }
 
-module.exports = { compileOffline, tailwindScanInput, frontendRoot };
+module.exports = { compileOffline, tailwindScanInput, frontendRoot, transformerPath };

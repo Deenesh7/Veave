@@ -12,11 +12,10 @@ const { compareScreenshot } = require('../../../runner/visualComparison.cjs');
 let transformerPromise;
 let runtimeAssets;
 let previewCssCompiler;
-const frontendRoot = path.resolve(__dirname, '../../../../frontend');
+const { transformerPath, resolveFrom } = require('../preview/frontendAssets');
 
 function loadTransformer() {
   if (!transformerPromise) {
-    const transformerPath = path.join(frontendRoot, 'src/utils/codeTransformer.js');
     transformerPromise = import(pathToFileURL(transformerPath).href);
   }
   return transformerPromise;
@@ -24,10 +23,9 @@ function loadTransformer() {
 
 function loadRuntimeAssets() {
   if (!runtimeAssets) {
-    const frontendModules = path.join(frontendRoot, 'node_modules');
     runtimeAssets = {
-      react: fs.readFileSync(path.join(frontendModules, 'react/umd/react.development.js')),
-      reactDom: fs.readFileSync(path.join(frontendModules, 'react-dom/umd/react-dom.development.js')),
+      react: fs.readFileSync(resolveFrom('react/umd/react.development.js')),
+      reactDom: fs.readFileSync(resolveFrom('react-dom/umd/react-dom.development.js')),
       babel: fs.readFileSync(require.resolve('@babel/standalone/babel.min.js'))
     };
   }
@@ -222,6 +220,21 @@ async function verifyPreviewRuntime(files, { signal, routePath = '/', expectedHe
   try {
     html = seedPreviewRoute(await buildOfflinePreviewHTML(files, monitor), routePath);
   } catch (error) {
+    // A failure of the compiler itself (missing module, broken install) is not something the AI can fix by rewriting
+    // the project; report it as infrastructure so no repair attempts are wasted on it. Source errors (Babel syntax,
+    // bad imports) carry a file/location and stay repairable, so the AI receives them and retries.
+    const compilerBroken = !error.filePath && !error.loc && (
+      ['ERR_MODULE_NOT_FOUND', 'MODULE_NOT_FOUND', 'ERR_REQUIRE_ESM'].includes(error.code) ||
+      /Cannot find (module|package)/i.test(String(error.message))
+    );
+    if (compilerBroken) {
+      return {
+        ok: false,
+        diagnostics: [{ category: 'infrastructure', path: null, line: null, message: `Preview compiler unavailable: ${error.message}` }],
+        checks: [{ name: 'preview-transform', status: 'infrastructure_unavailable' }],
+        coverage: { exhaustive: false }
+      };
+    }
     return {
       ok: false,
       diagnostics: [{

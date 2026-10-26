@@ -6,7 +6,6 @@ import {
   Users, 
   LayoutTemplate, 
   Palette,
-  BarChart3,
   CreditCard,
   UsersRound,
   Mail,
@@ -39,7 +38,6 @@ export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }
     { label: 'Shared with Workspace', href: '/workspace', icon: Users, onClick: onCloseMobileMenu },
     { label: 'Templates', href: '/templates', icon: LayoutTemplate, onClick: onCloseMobileMenu },
     { label: 'Design Systems', href: '/design-systems', icon: Palette, onClick: onCloseMobileMenu },
-    { label: 'Usage', href: '/usage', icon: BarChart3, onClick: onCloseMobileMenu },
     { label: 'Billing', href: '/billing', icon: CreditCard, onClick: onCloseMobileMenu },
   ];
 
