@@ -10,9 +10,18 @@ const vendoredTransformer = path.resolve(__dirname, '../../vendor/codeTransforme
 // Prefer the frontend source when present (development, always current); otherwise the vendored copy.
 const transformerPath = fs.existsSync(frontendTransformer) ? frontendTransformer : vendoredTransformer;
 
+// Packages such as react restrict deep imports through their "exports" map, so a file like
+// react/umd/react.development.js cannot be passed to require.resolve. Locate the package root through
+// package.json (always exported) and join the rest of the path manually.
 function resolveFrom(request) {
   const paths = [path.resolve(__dirname, '../../..'), path.join(frontendRoot)];
-  return require.resolve(request, { paths });
+  const parts = request.split('/');
+  const nameLength = request.startsWith('@') ? 2 : 1;
+  const pkgName = parts.slice(0, nameLength).join('/');
+  const subPath = parts.slice(nameLength).join('/');
+  if (!subPath) return require.resolve(request, { paths });
+  const root = path.dirname(require.resolve(`${pkgName}/package.json`, { paths }));
+  return path.join(root, subPath);
 }
 
 module.exports = { frontendRoot, transformerPath, resolveFrom };
