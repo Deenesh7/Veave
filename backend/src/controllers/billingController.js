@@ -2,34 +2,10 @@ const crypto = require('crypto');
 const Razorpay = require('razorpay');
 const User = require('../models/User');
 const AIUsage = require('../models/AIUsage');
-const Project = require('../models/Project');
-const ProjectFile = require('../models/ProjectFile');
 const Payment = require('../models/Payment');
 
-// Plan configuration with limits
-const PLAN_LIMITS = {
-  'Free Tier': {
-    price: 0,
-    credits: 50,
-    monthlyTokens: 1_000_000,
-    storageBytes: 5 * 1024 * 1024 * 1024,   // 5 GB
-    maxProjects: 5,
-  },
-  'Plus Plan': {
-    price: 2999,
-    credits: 250,
-    monthlyTokens: 5_000_000,
-    storageBytes: 50 * 1024 * 1024 * 1024,  // 50 GB
-    maxProjects: 15,
-  },
-  'Pro Plan': {
-    price: 5999,
-    credits: 750,
-    monthlyTokens: 15_000_000,
-    storageBytes: 100 * 1024 * 1024 * 1024, // 100 GB
-    maxProjects: 100,
-  },
-};
+const { PLAN_LIMITS, limitsFor, resolvePlanName } = require('../services/billing/plans');
+const { getProjectUsage } = require('../services/billing/usageService');
 
 // Initialize Razorpay instance
 let razorpayInstance = null;
@@ -60,6 +36,7 @@ const getRazorpayInstance = () => {
  */
 exports.getOverview = async (req, res, next) => {
   try {
+    res.set('Cache-Control', 'no-store'); // usage is live; never serve a cached snapshot
     const userId = req.user._id;
     const user = await User.findById(userId);
 
@@ -67,8 +44,8 @@ exports.getOverview = async (req, res, next) => {
       return res.status(404).json({ success: false, error: { message: 'User not found' } });
     }
 
-    const planName = user.plan || 'Free Tier';
-    const limits = PLAN_LIMITS[planName] || PLAN_LIMITS['Free Tier'];
+    const planName = resolvePlanName(user.plan);
+    const limits = limitsFor(planName);
 
     // --- Billing period ---
     const now = new Date();
@@ -110,31 +87,8 @@ exports.getOverview = async (req, res, next) => {
       ? tokenAgg[0]
       : { totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, totalRequests: 0 };
 
-    // --- Storage usage ---
-    const userProjects = await Project.find({ userId }, '_id');
-    const projectIds = userProjects.map((p) => p._id);
-
-    let storageBytes = 0;
-    if (projectIds.length > 0) {
-      const storageAgg = await ProjectFile.aggregate([
-        { $match: { projectId: { $in: projectIds } } },
-        {
-          $project: {
-            size: {
-              $cond: {
-                if: { $isArray: '$content' },
-                then: { $sum: { $map: { input: '$content', as: 'c', in: { $strLenBytes: { $ifNull: ['$$c', ''] } } } } },
-                else: { $strLenBytes: { $ifNull: ['$content', ''] } },
-              },
-            },
-          },
-        },
-        { $group: { _id: null, totalBytes: { $sum: '$size' } } },
-      ]);
-      storageBytes = storageAgg.length > 0 ? storageAgg[0].totalBytes : 0;
-    }
-
-    const projectCount = projectIds.length;
+    // --- Storage + projects: measured from the user's real stored projects ---
+    const { projectCount, storageBytes } = await getProjectUsage(userId);
 
     res.status(200).json({
       success: true,
@@ -182,7 +136,7 @@ exports.getOverview = async (req, res, next) => {
           end: periodEnd,
         },
         renewsAt: user.subscription?.renewsAt || null,
-        razorpayKeyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_YourKeyIdHere',
+        razorpayKeyId: isRazorpayConfigured() ? process.env.RAZORPAY_KEY_ID : null,
       },
     });
   } catch (error) {
@@ -207,6 +161,13 @@ exports.changePlan = async (req, res, next) => {
     }
 
     const limits = PLAN_LIMITS[plan];
+    // Paid plans can only be activated by a verified payment (create-order -> verify-payment).
+    if (limits.price > 0) {
+      return res.status(402).json({
+        success: false,
+        error: { message: `${plan} requires payment. Use the checkout to upgrade.` },
+      });
+    }
     const renewsAt = new Date();
     renewsAt.setDate(renewsAt.getDate() + 30);
 
@@ -280,31 +241,33 @@ exports.createOrder = async (req, res, next) => {
     const amountInPaise = Math.round(limits.price * 100);
     const receipt = `rcpt_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
-    let orderId;
-    let isTestMode = false;
     const rzp = getRazorpayInstance();
+    if (!rzp) {
+      return res.status(503).json({
+        success: false,
+        error: { message: 'Payments are not configured on this server. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.' },
+      });
+    }
 
-    if (rzp) {
-      try {
-        const order = await rzp.orders.create({
-          amount: amountInPaise,
-          currency: 'INR',
-          receipt,
-          notes: {
-            userId: userId.toString(),
-            userEmail: user.email,
-            plan,
-          },
-        });
-        orderId = order.id;
-      } catch (err) {
-        console.warn('Razorpay live order creation failed, falling back to simulated order:', err.message);
-        orderId = `order_sim_${Date.now()}`;
-        isTestMode = true;
-      }
-    } else {
-      orderId = `order_sim_${Date.now()}`;
-      isTestMode = true;
+    let orderId;
+    try {
+      const order = await rzp.orders.create({
+        amount: amountInPaise,
+        currency: 'INR',
+        receipt,
+        notes: {
+          userId: userId.toString(),
+          userEmail: user.email,
+          plan,
+        },
+      });
+      orderId = order.id;
+    } catch (err) {
+      console.error('Razorpay order creation failed:', err.error?.description || err.message);
+      return res.status(502).json({
+        success: false,
+        error: { message: `Could not start the payment: ${err.error?.description || err.message}` },
+      });
     }
 
     // Save pending payment record
@@ -324,14 +287,13 @@ exports.createOrder = async (req, res, next) => {
         orderId,
         amount: amountInPaise,
         currency: 'INR',
-        keyId: process.env.RAZORPAY_KEY_ID || 'rzp_test_YourKeyIdHere',
+        keyId: process.env.RAZORPAY_KEY_ID,
         plan,
         planName: plan,
         user: {
           name: user.name,
           email: user.email,
         },
-        isTestMode,
       },
     });
   } catch (error) {
@@ -354,48 +316,65 @@ exports.verifyPayment = async (req, res, next) => {
         error: { message: 'Missing order_id or invalid plan' },
       });
     }
-
-    const limits = PLAN_LIMITS[plan];
-    const isSimulated = razorpay_order_id.startsWith('order_sim_');
-
-    // Signature verification for live Razorpay payments
-    if (!isSimulated && isRazorpayConfigured()) {
-      if (!razorpay_payment_id || !razorpay_signature) {
-        return res.status(400).json({
-          success: false,
-          error: { message: 'Missing payment_id or signature for live verification' },
-        });
-      }
-
-      const body = `${razorpay_order_id}|${razorpay_payment_id}`;
-      const expectedSignature = crypto
-        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-        .update(body)
-        .digest('hex');
-
-      if (expectedSignature !== razorpay_signature) {
-        return res.status(400).json({
-          success: false,
-          error: { message: 'Invalid payment signature. Verification failed.' },
-        });
-      }
+    if (!isRazorpayConfigured()) {
+      return res.status(503).json({ success: false, error: { message: 'Payments are not configured on this server.' } });
+    }
+    if (!razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'Missing payment_id or signature for verification' },
+      });
     }
 
-    // Generate unique invoice number
-    const invoiceNumber = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
-    const paymentId = razorpay_payment_id || `pay_sim_${Date.now()}`;
+    const limits = PLAN_LIMITS[plan];
 
-    // Update payment record in database
+    // The order must be one this user created for this exact plan and price.
+    const pending = await Payment.findOne({ razorpayOrderId: String(razorpay_order_id), userId });
+    if (!pending || pending.plan !== plan || pending.amount !== limits.price) {
+      return res.status(400).json({ success: false, error: { message: 'Unknown order for this account and plan.' } });
+    }
+    if (pending.status === 'paid') {
+      // Replaying a verified payment must not grant anything twice.
+      return res.status(200).json({
+        success: true,
+        data: {
+          user: await User.findById(userId),
+          payment: { invoiceNumber: pending.invoiceNumber, amount: pending.amount, currency: pending.currency, plan, status: 'paid', paymentId: pending.razorpayPaymentId, paidAt: pending.createdAt },
+          message: `Payment already verified. You are subscribed to ${plan}.`,
+        },
+      });
+    }
+
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+    const given = Buffer.from(String(razorpay_signature));
+    const expected = Buffer.from(expectedSignature);
+    if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
+      await Payment.updateOne({ _id: pending._id }, { status: 'failed' });
+      return res.status(400).json({
+        success: false,
+        error: { message: 'Invalid payment signature. Verification failed.' },
+      });
+    }
+
+    const invoiceNumber = `INV-${new Date().getFullYear()}-${pending._id.toString().slice(-6).toUpperCase()}`;
+    const paymentId = razorpay_payment_id;
+
     const payment = await Payment.findOneAndUpdate(
-      { razorpayOrderId: razorpay_order_id },
+      { _id: pending._id, status: { $ne: 'paid' } },
       {
         status: 'paid',
         razorpayPaymentId: paymentId,
-        razorpaySignature: razorpay_signature || 'simulated_signature',
+        razorpaySignature: razorpay_signature,
         invoiceNumber,
       },
-      { new: true, upsert: true }
+      { new: true }
     );
+    if (!payment) {
+      return res.status(409).json({ success: false, error: { message: 'This payment was already processed.' } });
+    }
 
     // Activate the subscription on the user document
     const renewsAt = new Date();

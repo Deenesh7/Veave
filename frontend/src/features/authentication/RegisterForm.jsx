@@ -27,16 +27,16 @@ export function RegisterForm() {
         console.error('OAuth registration failed:', err);
       });
     } else if (oauthError) {
-      useAuthStore.setState({ error: decodeURIComponent(oauthError) });
+      useAuthStore.setState({ error: oauthError });
     }
   }, [searchParams, navigate]);
 
   const handleGoogleOAuth = () => {
-    window.location.href = 'http://localhost:5000/api/auth/google';
+    window.location.href = '/api/auth/google';
   };
 
   const handleAppleOAuth = () => {
-    window.location.href = 'http://localhost:5000/api/auth/apple';
+    window.location.href = '/api/auth/apple';
   };
 
   const handleSubmit = async (e) => {

@@ -95,6 +95,9 @@ async function hasVisibleContent(page) {
   });
 }
 
+// Anchors pointing at these are files (documents, images, media, fonts), never application routes.
+const FILE_LINK = /\.(?:pdf|docx?|xlsx?|pptx?|zip|rar|7z|png|jpe?g|gif|webp|avif|svg|ico|bmp|mp4|webm|mov|mp3|wav|csv|txt|json|xml|woff2?|ttf|otf)$/i;
+
 async function validateBrowser(url, options = {}) {
   const diagnostics = [];
   const checks = [];
@@ -208,6 +211,20 @@ async function validateBrowser(url, options = {}) {
             state.activity = Date.now();
             try {
               if (!internal(request.url())) {
+                // Offline sandbox: purely decorative external media (images, fonts, CSS for fonts) is answered with an
+                // empty stand-in instead of failing the build; scripts, XHR/fetch and documents stay blocked.
+                const type = request.resourceType();
+                if (['image', 'font', 'media'].includes(type) || (type === 'stylesheet' && /fonts\.googleapis\.com|fonts\.bunny\.net/i.test(request.url()))) {
+                  state.stubbedMedia = (state.stubbedMedia || 0) + 1;
+                  if (type === 'image') {
+                    await route.fulfill({ status: 200, contentType: 'image/gif', body: Buffer.from('R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==', 'base64') });
+                  } else if (type === 'stylesheet') {
+                    await route.fulfill({ status: 200, contentType: 'text/css', body: '' });
+                  } else {
+                    await route.fulfill({ status: 200, contentType: type === 'font' ? 'font/woff2' : 'video/mp4', body: Buffer.alloc(0) });
+                  }
+                  return;
+                }
                 add('external-blocked', `Blocked external ${request.method()} ${request.url()}. Provide a local mock; external dependencies are not validated.`, request.url());
                 await route.abort('blockedbyclient');
                 return;
@@ -363,11 +380,28 @@ async function validateBrowser(url, options = {}) {
             href: link.href, download: link.hasAttribute('download'), text: link.textContent.trim().slice(0, 100)
           })));
           const routes = [];
+          const fileLinks = [];
           for (const anchor of anchors) {
             if (anchor.href.length > 4096) { skip(`${viewportName}: oversized anchor URL not followed.`); continue; }
             if (anchor.download || !internal(anchor.href) || !/^https?:/.test(anchor.href)) {
               skip(`${viewportName}: anchor ${anchor.href} (external, download or non-HTTP).`);
+            } else if (FILE_LINK.test(new URL(anchor.href).pathname)) {
+              // A link to a document or image is a file, not a page: opening it in the page under test hangs or closes
+              // the page and used to burn the whole validation deadline. It is checked with a request instead.
+              if (!fileLinks.includes(anchor.href)) fileLinks.push(anchor.href);
             } else if (!routes.includes(anchor.href) && anchor.href !== url) routes.push(anchor.href);
+          }
+          for (const target of fileLinks.slice(0, 40)) {
+            if (expired) break;
+            try {
+              const response = await page.request.get(target, { timeout: 10000, maxRedirects: 3, failOnStatusCode: false });
+              const ok = response.status() < 400 && Number(response.headers()['content-length'] ?? 1) !== 0;
+              check('file-link', ok ? 'passed' : 'failed', { viewport: viewportName, path: target, status: response.status() });
+              if (!ok) add('broken-link', `Link target ${target} returned HTTP ${response.status()}${response.status() < 400 ? ' with an empty body' : ''}.`, target);
+            } catch (error) {
+              check('file-link', 'failed', { viewport: viewportName, path: target });
+              add('broken-link', `Link target ${target} could not be loaded: ${error.message}`.slice(0, 500), target);
+            }
           }
           if (await page.locator('a[href]').count() > 200) skip(`${viewportName}: anchors beyond discovery limit 200.`);
           for (const target of routes.slice(0, maxRoutes)) {
@@ -436,10 +470,25 @@ async function validateBrowser(url, options = {}) {
                   info.type === 'url' ? `${base.origin}/` : info.type === 'tel' ? '5550100' : 'smoke test');
                 if (info.type === 'search') { action = 'search'; await candidate.press('Enter'); }
               } else {
-                await candidate.click();
+                try {
+                  await candidate.click({ timeout: 3000 });
+                } catch (clickError) {
+                  // An open modal/drawer from an earlier interaction covers the control. That is normal UI behaviour,
+                  // not a bug: close overlays (Escape), retry once, then restart from a clean page and move on.
+                  if (!/intercepts pointer events|not stable|not visible/i.test(String(clickError.message))) throw clickError;
+                  await page.keyboard.press('Escape').catch(() => {});
+                  try {
+                    await candidate.click({ timeout: 1500 });
+                  } catch {
+                    skip(`${viewportName}: control ${JSON.stringify(info.text || info.tag)} is covered by an open overlay; skipped.`);
+                    await visit(url, 'interaction recovery');
+                    continue;
+                  }
+                }
               }
               await settle();
               await content(`after ${action}`);
+              if (action === 'click') await page.keyboard.press('Escape').catch(() => {}); // close any dialog this click opened
               const status = errorCount === start ? 'passed' : 'failed';
               coverage.interactions.push({ viewport: viewportName, action, control: info, status });
               check('interaction', status, { viewport: viewportName, action, control: info });

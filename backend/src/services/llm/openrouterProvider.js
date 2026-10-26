@@ -59,7 +59,7 @@ class OpenRouterProvider extends BaseLLMProvider {
       };
     } catch (err) {
       logger.error(`OpenRouter provider error: ${err.message}`);
-      throw new AIError('OpenRouter request failed');
+      throw new AIError('AI request failed');
     }
   }
 }

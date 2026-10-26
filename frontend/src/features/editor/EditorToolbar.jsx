@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useSmartBack } from '../../hooks/useSmartBack';
 import { 
   ArrowLeft, 
   Eye, 
@@ -26,7 +26,7 @@ import { projectService } from '../../services/projectService';
 import { cn } from '../../utils/helpers';
 
 export function EditorToolbar() {
-  const navigate = useNavigate();
+  const goBack = useSmartBack('/dashboard');
   const [historyOpen, setHistoryOpen] = useState(false);
   const currentProject = useProjectStore((s) => s.currentProject);
   const { viewMode, setViewMode, previewSize, setPreviewSize, history, historyIndex, undo, redo } = useEditorStore();
@@ -54,7 +54,7 @@ export function EditorToolbar() {
     <div className="h-11 bg-zinc-50 border-b border-zinc-200 px-2 flex items-center gap-1 shrink-0">
       <div className="flex items-center gap-2">
         <Tooltip content="Back to Dashboard">
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => navigate('/dashboard')} icon={ArrowLeft} />
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={goBack} icon={ArrowLeft} />
         </Tooltip>
         <Separator orientation="vertical" className="h-5 mx-1" />
         <div className="text-sm font-medium text-zinc-700 truncate max-w-[200px]">

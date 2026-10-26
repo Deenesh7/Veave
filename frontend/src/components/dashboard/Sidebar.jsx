@@ -7,7 +7,10 @@ import {
   LayoutTemplate, 
   Palette,
   BarChart3,
-  CreditCard
+  CreditCard,
+  UsersRound,
+  Mail,
+  FolderOpen
 } from 'lucide-react';
 import CreateButton from './CreateButton';
 import SearchBar from './SearchBar';
@@ -15,16 +18,22 @@ import DocumentationLink from './DocumentationLink';
 import { BounceSidebar } from '../rare-ui';
 import { useAuthStore } from '../../store/authStore';
 import { useProjectStore } from '../../store/projectStore';
+import { useCollabStore } from '../../store/collabStore';
 
 export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }) {
   const { user } = useAuthStore();
   const projects = useProjectStore((s) => s.projects);
+  const pendingInvitations = useCollabStore((s) => s.invitations.length);
 
   const projectCount = projects?.length > 0 ? String(projects.length) : undefined;
 
   const navItems = [
     { label: 'Home', href: '/', icon: Home, onClick: onCloseMobileMenu },
     { label: 'Shared with Me', href: '/shared', icon: Share2, onClick: onCloseMobileMenu },
+    { label: 'COLLABORATION', heading: true },
+    { label: 'Groups', href: '/groups', icon: UsersRound, onClick: onCloseMobileMenu },
+    { label: 'Group Projects', href: '/collab/projects', icon: FolderOpen, onClick: onCloseMobileMenu },
+    { label: 'Invitations', href: '/invitations', icon: Mail, badge: pendingInvitations > 0 ? String(pendingInvitations) : undefined, onClick: onCloseMobileMenu },
     { label: 'WORKSPACE', heading: true },
     { label: 'Files', href: '/files', icon: Folder, badge: projectCount, onClick: onCloseMobileMenu },
     { label: 'Shared with Workspace', href: '/workspace', icon: Users, onClick: onCloseMobileMenu },

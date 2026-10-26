@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useSmartBack } from '../hooks/useSmartBack';
 import { Sparkles, ArrowLeft } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Textarea } from '../components/ui/Textarea';
@@ -10,6 +11,7 @@ export default function NewProject() {
   const [prompt, setPrompt] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const navigate = useNavigate();
+  const goBack = useSmartBack('/dashboard');
   const { createProject } = useProjectStore();
 
   const handleGenerate = async () => {
@@ -36,7 +38,7 @@ export default function NewProject() {
         size="sm" 
         icon={ArrowLeft} 
         className="mb-8 text-zinc-400 hover:text-zinc-900 -ml-3"
-        onClick={() => navigate('/dashboard')}
+        onClick={goBack}
       >
         Back to Dashboard
       </Button>

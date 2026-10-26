@@ -1,5 +1,5 @@
 /**
- * Dynamically loads the Razorpay checkout script
+ * Dynamically loads the payment checkout script
  * @returns {Promise<boolean>}
  */
 export const loadRazorpayScript = () => {
@@ -19,7 +19,7 @@ export const loadRazorpayScript = () => {
     script.async = true;
     script.onload = () => resolve(true);
     script.onerror = () => {
-      console.warn('Failed to load Razorpay SDK');
+      console.warn('Failed to load the payment SDK');
       resolve(false);
     };
     document.body.appendChild(script);

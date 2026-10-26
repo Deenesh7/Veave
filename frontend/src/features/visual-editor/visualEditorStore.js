@@ -49,7 +49,8 @@ export const useVisualEditorStore = create((set, get) => ({
   })),
   setHoveredElement: (element) => set({ hoveredElement: element }),
 
-  setActiveMode: (mode) => set({ activeMode: mode }),
+  // Only a real mode can be active: anything else (for example a click event) would silently turn inspection off.
+  setActiveMode: (mode) => set((s) => ({ activeMode: ['editor', 'preview', 'screens', 'code'].includes(mode) ? mode : s.activeMode })),
   setActiveCodeFile: (file) => set({ activeCodeFile: file }),
   setViewport: (vp) => set({ viewport: vp }),
   setResponsiveMode: (rm) => set({ responsiveMode: rm }),

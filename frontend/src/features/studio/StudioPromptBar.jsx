@@ -11,6 +11,8 @@ import {
 import aiCreationService from '../../services/aiCreationService';
 import { WhisperAudioRecorder } from '../../utils/whisperAudioRecorder';
 import ActionMenu from '../../components/dashboard/ActionMenu';
+import { useVisualEditorStore } from '../visual-editor/visualEditorStore';
+import { useProjectStore } from '../../store/projectStore';
 import AddComponentModal from '../../components/dashboard/AddComponentModal';
 import ConnectGitHubModal from '../../components/dashboard/ConnectGitHubModal';
 import ConnectorsModal from '../../components/dashboard/ConnectorsModal';
@@ -22,6 +24,7 @@ export function StudioPromptBar({
   onStop
 }) {
   const [promptText, setPromptText] = useState('');
+  // Cloned projects can pull anything the clone missed from the real website; the server's AI decides when, from the request itself.
   const [model, setModel] = useState('Gemini Flash 3.8');
   const [isListening, setIsListening] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -39,8 +42,11 @@ export function StudioPromptBar({
 
   const handleUploadFile = (fileData) => {
     setUploadedFiles((prev) => [...prev, fileData]);
+    const selection = useVisualEditorStore.getState().selectedElement;
     const uploadInstruction = fileData.isImage || fileData.type?.startsWith('image/')
-      ? `Replace the most relevant existing image with uploaded image ${fileData.name}, preserving the current layout and behavior.`
+      ? (selection
+        ? `Use the uploaded image ${fileData.name} in the selected ${selection.tag || 'element'}${selection.text ? ` ("${String(selection.text).slice(0, 40)}")` : ''}: replace its current image or add it there, preserving the current layout and behavior.`
+        : `Replace the most relevant existing image with uploaded image ${fileData.name}, preserving the current layout and behavior.`)
       : `Incorporate uploaded file ${fileData.name}`;
     setPromptText((p) => p ? `${p} [Uploaded: ${fileData.name}]` : uploadInstruction);
     try {
@@ -181,7 +187,11 @@ export function StudioPromptBar({
       const attachments = uploadedFiles.map(({ name, size, type, dataUrl, content, isImage }) => ({
         name, size, type, dataUrl, content, isImage
       }));
-      const res = onSubmit(textToSend, model, attachments);
+      const res = onSubmit(textToSend, model, attachments, {
+        // Context: which page the user is looking at (every project, not only clones). The server edits that page unless the
+        // request names another one, and decides server-side whether to use the real site.
+        viewingRoute: useProjectStore.getState().previewRoute || '/'
+      });
       if (res && typeof res.catch === 'function') {
         res.catch((err) => console.warn('Submit prompt error:', err));
       }

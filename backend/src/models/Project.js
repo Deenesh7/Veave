@@ -29,8 +29,59 @@ const projectSchema = new mongoose.Schema({
       radius: { type: String, default: '0.5rem' }
     }
   },
-  status: { type: String, enum: ['active', 'archived'], default: 'active' }
+  status: { type: String, enum: ['active', 'archived'], default: 'active' },
+  // Monotonic change counter used for optimistic concurrency on shared projects (bumped by every write below).
+  revision: { type: Number, default: 0 },
+  lastEditedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { timestamps: true });
+
+projectSchema.post('init', function rememberLoadedRevision() {
+  if (this.isSelected('revision')) this.$locals.loadedRevision = this.revision || 0;
+});
+
+// Every document save bumps the revision. On a project that is shared, the save is also conditional on the revision
+// the document was loaded at, so a stale copy (e.g. an AI run that started before a teammate saved) fails instead of
+// silently overwriting the teammate's work.
+projectSchema.pre('save', async function bumpRevisionOnSave() {
+  if (this.isNew || !this.isModified() || this.isModified('revision')) return;
+  const loaded = this.$locals.loadedRevision;
+  if (loaded !== undefined && await require('./ProjectSharing').exists({ projectId: this._id })) {
+    this.$where = loaded === 0 ? { $or: [{ revision: 0 }, { revision: { $exists: false } }] } : { revision: loaded };
+  }
+  this.revision = (loaded ?? this.revision ?? 0) + 1;
+});
+
+projectSchema.post('save', function trackSavedRevision(doc) {
+  doc.$locals.loadedRevision = doc.revision || 0;
+});
+
+projectSchema.post('save', function translateStaleSave(error, doc, next) {
+  if (error && error.name === 'DocumentNotFoundError') {
+    const { ConflictError } = require('../utils/errors');
+    return next(new ConflictError('This project was changed by someone else while you were working. Reload to get the latest version, then try again.', 'PROJECT_CONFLICT'));
+  }
+  return next(error);
+});
+
+projectSchema.pre('findOneAndUpdate', function bumpRevisionOnUpdate() {
+  const update = this.getUpdate() || {};
+  if (update.$inc && 'revision' in update.$inc) return;
+  const next = {};
+  const plain = {};
+  for (const [key, value] of Object.entries(update)) {
+    if (key.startsWith('$')) next[key] = value; else plain[key] = value;
+  }
+  if (Object.keys(plain).length) next.$set = { ...(next.$set || {}), ...plain };
+  next.$inc = { ...(next.$inc || {}), revision: 1 };
+  this.setUpdate(next);
+});
+
+// Plan limits are enforced where projects are actually created, so no creation path (API, AI job, import) can skip them.
+projectSchema.pre('save', async function enforcePlanLimits() {
+  if (!this.isNew) return;
+  if (!this.userId) throw new (require('../utils/errors').AuthError)('Log in to create a project.');
+  await require('../services/billing/usageService').assertCanCreate(this.userId, { newProject: true });
+});
 
 projectSchema.pre('save', async function persistFilesInObjectStorage() {
   if (this.isModified('files') && Array.isArray(this.files)) this.files = await dehydrateFiles(this.files);
@@ -55,6 +106,14 @@ projectSchema.pre('findOneAndUpdate', async function persistUpdatedFilesInObject
  * We register the hooks lazily to avoid a require cycle
  * (ProjectFile.js does not depend on Project.js).
  * ------------------------------------------------------------------ */
+
+// Compile the preview once, right after the source is saved, so opening the editor never compiles in the browser.
+projectSchema.post('save', function precompilePreviewAfterSave(doc) {
+  require('../services/preview/previewService').schedulePrecompile(doc._id);
+});
+projectSchema.post('findOneAndUpdate', function precompilePreviewAfterUpdate(doc) {
+  if (doc) require('../services/preview/previewService').schedulePrecompile(doc._id);
+});
 
 projectSchema.post('save', async function syncFilesAfterSave(doc) {
   try {
@@ -148,6 +207,8 @@ projectSchema.post('findOneAndDelete', async function cascadeDelete(doc) {
     const ProjectVersion  = require('./ProjectVersion');
     const Conversation    = require('./Conversation');
     await Promise.all([
+      require('./PrecompiledPreview').deleteMany({ projectId: doc._id }),
+      require('./ProjectSharing').deleteMany({ projectId: doc._id }),
       ProjectFile.deleteMany({ projectId: doc._id }),
       ProjectVersion.deleteMany({ projectId: doc._id }),
       Conversation.deleteMany({ projectId: doc._id })
@@ -164,6 +225,7 @@ projectSchema.post('deleteOne', { document: true, query: false }, async function
     const ProjectVersion  = require('./ProjectVersion');
     const Conversation    = require('./Conversation');
     await Promise.all([
+      require('./PrecompiledPreview').deleteMany({ projectId: this._id }),
       ProjectFile.deleteMany({ projectId: this._id }),
       ProjectVersion.deleteMany({ projectId: this._id }),
       Conversation.deleteMany({ projectId: this._id })

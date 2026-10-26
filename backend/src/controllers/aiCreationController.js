@@ -14,7 +14,11 @@ const { SCREENSHOT_TO_UI_FEATURE_PROMPT, UI_GENERATION_SYSTEM_PROMPT } = require
 const mongoose = require('mongoose');
 const sessionManager = require('../services/ai/sessionManager');
 const jobManager = require('../services/ai/jobManager');
+const fallbackSite = require('../services/ai/fallbackSite');
 const { AppError, AIError } = require('../utils/errors');
+const projectAccess = require('../services/collaboration/projectAccess');
+const GenerationJob = require('../models/GenerationJob');
+const Conversation = require('../models/Conversation');
 const logger = require('../utils/logger');
 const { hydrateFiles } = require('../services/storage/s3BlobStorage');
 
@@ -92,6 +96,9 @@ function cleanSourceCode(content) {
 async function syncProjectFilesTable(projectId, userId, files = []) {
   if (!projectId || !Array.isArray(files) || files.length === 0) return;
   try {
+    // Files belong to the project's owner, not to whichever collaborator happened to trigger this write.
+    const projectOwner = await Project.findById(projectId).select('userId').lean();
+    if (projectOwner) userId = projectOwner.userId || null;
     const paths = files.map(f => f.path);
     await ProjectFile.deleteMany({ projectId, path: { $nin: paths } });
     const ops = files.map(f => ({
@@ -751,9 +758,6 @@ exports.generateDesign = async (req, res, next) => {
 
     const userId = req.user ? req.user.id : null;
 
-    if (!['generate', 'modify', 'screenshot', 'clone'].includes(type)) {
-      return res.status(400).json({ success: false, error: 'Unsupported generation job type' });
-    }
     const systemTokens = await resolveSystemTokens(prompt, designSystem, { customTokens, paletteId, userId });
 
     let files = [];
@@ -849,8 +853,14 @@ Return ONLY clean React code with "export default function App()".`;
       projectName,
       tokens: systemTokens
     });
-    const validated = await jobManager.validateCandidate(files, { model, tokens: systemTokens, signal: req.signal });
+    // If the AI code cannot be verified or repaired, a verified deterministic site is returned instead of an error.
+    const validated = await fallbackSite.validateWithFallback(
+      (candidate) => jobManager.validateCandidate(candidate, { model, tokens: systemTokens, signal: req.signal }),
+      files, { prompt, tokens: systemTokens, projectName }
+    );
     files = validated.files;
+    const degraded = validated.degraded || null;
+    if (degraded) tokenUsage = null;
 
     const project = await Project.create({
       userId,
@@ -908,12 +918,8 @@ Return ONLY clean React code with "export default function App()".`;
     }
 
     let userCredits = null;
-    if (userId) {
-      const updatedUser = await User.findByIdAndUpdate(
-        userId,
-        { $inc: { credits: -1, 'subscription.creditsRemaining': -1 } },
-        { new: true }
-      );
+    if (userId && !degraded) {
+      const updatedUser = await require('../services/billing/usageService').chargeCredits(userId, tokenUsage?.totalTokens);
       if (updatedUser) userCredits = updatedUser.credits;
     }
 
@@ -921,8 +927,11 @@ Return ONLY clean React code with "export default function App()".`;
 
     res.status(201).json({
       success: true,
-      message: 'Design generated successfully',
+      message: degraded
+        ? 'The AI result could not be verified, so a working starter site was created instead'
+        : 'Design generated successfully',
       data: {
+        degraded: degraded ? { kind: degraded.kind, reason: degraded.reason } : null,
         project,
         code: rootApp,
         files,
@@ -942,6 +951,41 @@ Return ONLY clean React code with "export default function App()".`;
   }
 };
 
+// --- Collaboration guards ---------------------------------------------------------------------------------------
+// Jobs and conversations are addressed by id, so every endpoint resolves the project behind the id and checks the
+// caller's access to THAT project before touching anything.
+async function assertJobAccess(jobId, user, minLevel = 'viewer') {
+  if (!jobId) return null;
+  const job = await GenerationJob.findOne({ jobId }).select('userId projectId').lean();
+  if (!job) return null; // callers keep their existing "not found" behaviour
+  const uid = user ? String(user.id || user._id) : null;
+  if (job.userId && uid && String(job.userId) === uid) return job;
+  if (job.projectId) {
+    await projectAccess.requireProjectAccess(job.projectId, user, minLevel);
+    return job;
+  }
+  if (job.userId && String(job.userId) !== uid) throw new AppError('Job not found', 404);
+  return job;
+}
+
+// Resolves the project behind a conversation id (or a project id) without loading the whole conversation.
+async function projectIdForSession(id) {
+  const conversation = await Conversation.findOne({ conversationId: id }).select('projectId').lean();
+  if (conversation?.projectId) return conversation.projectId;
+  return mongoose.Types.ObjectId.isValid(id) ? id : null;
+}
+
+// Undo/redo/rollback rewrite the project's files, so they need edit rights on the project the session belongs to.
+async function assertSessionAccess(id, user, minLevel = 'editor') {
+  const session = await sessionManager.getSession(id);
+  const projectId = session?.projectId || (mongoose.Types.ObjectId.isValid(id) ? id : null);
+  if (!projectId) return false; // unknown session: the caller's own "not found" handling applies
+  await projectAccess.requireProjectAccess(projectId, user, minLevel);
+  return true;
+}
+
+const sendAccessError = (res, err) => res.status(err.statusCode || 500).json({ success: false, error: err.message });
+
 // 1b. Modify Design endpoint (Natural language modification of existing UI)
 exports.modifyDesign = async (req, res, next) => {
   try {
@@ -957,10 +1001,12 @@ exports.modifyDesign = async (req, res, next) => {
     const commandGuidance = commandInfo ? `\n[COMMAND DIRECTIVE - ${commandInfo.name.toUpperCase()}]: ${commandInfo.directive}\n` : '';
 
     const userId = req.user ? req.user.id : null;
-    const project = await Project.findById(projectId);
+    await projectAccess.requireProjectAccess(projectId, req.user, 'editor');
+    let project = await Project.findById(projectId);
     if (!project) {
       return res.status(404).json({ success: false, error: 'Project not found' });
     }
+    const expectedUpdatedAt = project.updatedAt;
     project.files = await hydrateFiles(project.files);
 
     const tokens = dynamicGenerator.generateDesignSystem(prompt, designSystem || 'Modern');
@@ -1052,10 +1098,15 @@ Keep existing design consistency, use Tailwind CSS and lucide-react. Return ONLY
     const validated = await jobManager.validateCandidate(updatedFiles, { model, tokens, signal: req.signal });
     updatedFiles = validated.files;
 
-    project.files = updatedFiles;
-    project.validation = validated.report;
-    project.updatedAt = new Date();
-    await project.save();
+    // Conditional write: if the project was edited while the modification was generated and validated, the newer
+    // edit wins and nothing stale is saved.
+    const saved = await Project.findOneAndUpdate(
+      { _id: project._id, updatedAt: expectedUpdatedAt },
+      { $set: { files: updatedFiles, validation: validated.report } },
+      { new: true }
+    );
+    if (!saved) throw new AppError('The project changed while this modification was being validated. Your newer edits were preserved; submit the modification again.', 409);
+    project = saved;
     
     // Explicitly persist updated files to relational project_files table
     await syncProjectFilesTable(project._id, userId, updatedFiles);
@@ -1071,7 +1122,7 @@ Keep existing design consistency, use Tailwind CSS and lucide-react. Return ONLY
         prompt,
         changeSummary: `Modified: ${prompt.slice(0, 30)}`,
         files: updatedFiles,
-        activeCode: newCode,
+        activeCode: updatedFiles.find(f => f.path === appFile.path)?.content || '',
         designTokens: tokens,
         dependencies: project.dependencies,
         validation: validated.report
@@ -1278,7 +1329,7 @@ exports.recreateScreenshot = async (req, res, next) => {
         const cleanCode = cleanSourceCode(rawContent);
         if (cleanCode) {
           code = cleanCode;
-          methodUsed = 'OpenRouter Vision';
+          methodUsed = 'AI Vision';
           tokenUsage = {
             promptTokens: completion.data?.usage?.prompt_tokens || 0,
             completionTokens: completion.data?.usage?.completion_tokens || 0,
@@ -1312,10 +1363,17 @@ exports.recreateScreenshot = async (req, res, next) => {
       detectedComponents.push('Navigation Bar', 'Visual Layout Container', 'Action Bar');
     }
 
-    const validated = await jobManager.validateCandidate(scaffoldReactProject(
-      [{ path: 'src/App.jsx', content: code, language: 'javascript' }],
-      { projectName: `Screenshot UI (${detectedComponents[0] || 'Layout'})`, tokens: systemTokens }
-    ), { model, tokens: systemTokens, signal: req.signal, visualReference: image });
+    const screenshotName = `Screenshot UI (${detectedComponents[0] || 'Layout'})`;
+    const validated = await fallbackSite.validateWithFallback(
+      (candidate, extra = {}) => jobManager.validateCandidate(candidate, { model, tokens: systemTokens, signal: req.signal, visualReference: image, ...extra }),
+      scaffoldReactProject(
+        [{ path: 'src/App.jsx', content: code, language: 'javascript' }],
+        { projectName: screenshotName, tokens: systemTokens }
+      ),
+      // The template cannot match the screenshot, so it is verified for build/runtime only (and flagged degraded).
+      { prompt: prompt || 'Website', tokens: systemTokens, projectName: screenshotName,
+        fallbackValidate: (candidate) => jobManager.validateCandidate(candidate, { model, tokens: systemTokens, signal: req.signal }) }
+    );
     const scaffoldedFiles = validated.files;
     code = scaffoldedFiles.find(f => f.path === 'src/App.jsx')?.content || '';
 
@@ -1356,8 +1414,11 @@ exports.recreateScreenshot = async (req, res, next) => {
 
     res.status(201).json({
       success: true,
-      message: 'Screenshot analyzed and UI recreated successfully',
+      message: validated.degraded
+        ? 'The screenshot result could not be verified, so a working starter site was created instead'
+        : 'Screenshot analyzed and UI recreated successfully',
       data: {
+        degraded: validated.degraded ? { kind: validated.degraded.kind, reason: validated.degraded.reason } : null,
         project,
         code,
         detectedComponents,
@@ -1755,6 +1816,28 @@ exports.startJob = async (req, res, next) => {
       return res.status(400).json({ success: false, error: 'A public website URL is required for cloning' });
     }
 
+    // Modifying an existing project (or continuing one of its conversations) needs edit rights on that project.
+    const targetProjectId = projectId || null;
+    if (targetProjectId) await projectAccess.requireProjectAccess(targetProjectId, req.user, 'editor');
+    else if (conversationId) {
+      const conversationProject = await projectIdForSession(conversationId);
+      if (conversationProject) await projectAccess.requireProjectAccess(conversationProject, req.user, 'editor');
+    }
+
+    // Refuse early (before any AI work) when the plan's project or storage limit is already reached.
+    if (userId) {
+      try {
+        const usageService = require('../services/billing/usageService');
+        await usageService.assertCanCreate(userId, { newProject: type !== 'modify' && !projectId });
+        await usageService.assertCanUseAI(userId);
+      } catch (limitError) {
+        if (limitError.code === 'PLAN_LIMIT_REACHED') {
+          return res.status(403).json({ success: false, code: limitError.code, error: limitError.message });
+        }
+        throw limitError;
+      }
+    }
+
     const job = await jobManager.createJob({
       type,
       payload: req.body,
@@ -1787,6 +1870,7 @@ exports.getJobStatus = async (req, res, next) => {
   try {
     res.set('Cache-Control', 'no-store');
     const { jobId } = req.params;
+    await assertJobAccess(jobId, req.user, 'viewer');
     const job = await jobManager.getJob(jobId);
     if (!job) {
       return res.status(404).json({ success: false, error: 'Job not found' });
@@ -1808,6 +1892,7 @@ exports.getJobStatus = async (req, res, next) => {
         result: job.result,
         error: job.error,
         validation: job.validation,
+        visualValidation: job.analysis?.visualValidation || null,
         usage: job.usage,
         approval: job.approval,
         completedAt: job.completedAt,
@@ -1828,6 +1913,7 @@ exports.getActiveJob = async (req, res, next) => {
     res.set('Cache-Control', 'no-store');
     const userId = req.user ? req.user.id : null;
     const clientJobId = req.query.jobId || null;
+    if (clientJobId) await assertJobAccess(clientJobId, req.user, 'viewer');
     const job = await jobManager.getActiveJob(userId, clientJobId);
 
     return res.status(200).json({
@@ -1847,6 +1933,7 @@ exports.getActiveJob = async (req, res, next) => {
         result: job.result,
         error: job.error,
         validation: job.validation,
+        visualValidation: job.analysis?.visualValidation || null,
         usage: job.usage,
         approval: job.approval,
         completedAt: job.completedAt,
@@ -1868,6 +1955,7 @@ exports.decidePlan = async (req, res, next) => {
     if (!['approve', 'cancel'].includes(decision)) {
       return res.status(400).json({ success: false, error: 'decision must be "approve" or "cancel"' });
     }
+    await assertJobAccess(req.params.jobId, req.user, 'editor');
     const outcome = await jobManager.decidePlan(req.params.jobId, decision, req.user ? req.user.id : null);
     if (outcome === 'forbidden') return res.status(403).json({ success: false, error: 'Not allowed' });
     if (outcome === 'not_found') return res.status(404).json({ success: false, error: 'No plan is waiting for approval' });
@@ -1880,6 +1968,7 @@ exports.decidePlan = async (req, res, next) => {
 exports.cancelJob = async (req, res, next) => {
   try {
     const { jobId } = req.params;
+    await assertJobAccess(jobId, req.user, 'editor');
     const job = await jobManager.cancelJob(jobId);
     if (!job) return res.status(409).json({ success: false, error: 'The job has finished or is saving its verified revision and can no longer be cancelled.' });
     return res.status(200).json({
@@ -1899,8 +1988,11 @@ exports.getConversation = async (req, res, next) => {
   try {
     const { id } = req.params;
     let conversation = await sessionManager.getSession(id);
+    // Reading a session needs (at least) view access to the project it belongs to.
+    if (conversation?.projectId) await projectAccess.requireProjectAccess(conversation.projectId, req.user, 'viewer');
     if (!conversation) {
       if (mongoose.Types.ObjectId.isValid(id)) {
+        await projectAccess.requireProjectAccess(id, req.user, 'viewer');
         const project = await Project.findById(id);
         if (project) {
           project.files = await hydrateFiles(project.files);
@@ -1919,6 +2011,7 @@ exports.getConversation = async (req, res, next) => {
       conversation: sessionManager.formatSessionResponse(conversation)
     });
   } catch (err) {
+    if (err instanceof AppError && err.statusCode < 500) return sendAccessError(res, err);
     logger.warn(`[aiCreationController] getConversation error: ${err.message}`);
     return res.status(500).json({ success: false, error: err.message || 'Failed to load conversation' });
   }
@@ -1931,9 +2024,11 @@ exports.rollbackGeneration = async (req, res, next) => {
   try {
     const { id, generationId } = req.params;
     const userId = req.user ? req.user.id : null;
+    await assertSessionAccess(id, req.user, 'editor');
     const result = await sessionManager.restoreToCheckpoint(id, generationId, userId);
     return res.status(200).json(result);
   } catch (err) {
+    if (err instanceof AppError && err.statusCode < 500) return sendAccessError(res, err);
     logger.warn(`[aiCreationController] rollbackGeneration error: ${err.message}`);
     const isNotFound = err.message && (err.message.includes('not found') || err.message.includes('expired'));
     const isBadRequest = err.message && (err.message.includes('No previous') || err.message.includes('No forward') || err.message.includes('checkpoint'));
@@ -1954,9 +2049,11 @@ exports.undoLastGeneration = async (req, res, next) => {
   try {
     const { id } = req.params;
     const userId = req.user ? req.user.id : null;
+    await assertSessionAccess(id, req.user, 'editor');
     const result = await sessionManager.undo(id, userId);
     return res.status(200).json(result);
   } catch (err) {
+    if (err instanceof AppError && err.statusCode < 500) return sendAccessError(res, err);
     logger.warn(`[aiCreationController] undoLastGeneration error: ${err.message}`);
     const isNotFound = err.message && (err.message.includes('not found') || err.message.includes('expired'));
     const isBadRequest = err.message && (err.message.includes('No previous') || err.message.includes('No forward'));
@@ -1977,9 +2074,11 @@ exports.redoGeneration = async (req, res, next) => {
   try {
     const { id } = req.params;
     const userId = req.user ? req.user.id : null;
+    await assertSessionAccess(id, req.user, 'editor');
     const result = await sessionManager.redo(id, userId);
     return res.status(200).json(result);
   } catch (err) {
+    if (err instanceof AppError && err.statusCode < 500) return sendAccessError(res, err);
     logger.warn(`[aiCreationController] redoGeneration error: ${err.message}`);
     const isNotFound = err.message && (err.message.includes('not found') || err.message.includes('expired'));
     const isBadRequest = err.message && (err.message.includes('No previous') || err.message.includes('No forward'));

@@ -73,9 +73,11 @@ export default function BillingPage() {
     paymentSuccess,
     error,
     fetchOverview,
+    refreshOverview,
+    lastUpdated,
     fetchInvoices,
     changePlan,
-    checkoutWithRazorpay,
+    startCheckout,
     clearPaymentSuccess,
     clearError,
   } = useBillingStore();
@@ -83,12 +85,33 @@ export default function BillingPage() {
   const [activeActionPlan, setActiveActionPlan] = useState(null);
 
   useEffect(() => {
+    // Billing is private: without a token every request would 401, so send the user to log in instead.
+    if (!localStorage.getItem('veave_token')) {
+      window.location.replace(`/login?redirect=${encodeURIComponent('/billing')}`);
+      return;
+    }
     if (!user && fetchProfile) {
       fetchProfile();
     }
     fetchOverview();
     fetchInvoices();
   }, []);
+
+  // Usage is live: re-read it every few seconds while this page is visible, and immediately when the tab
+  // regains focus, so Projects / Storage / Credits / Tokens grow as work happens (no stale snapshot).
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible') refreshOverview();
+    };
+    const interval = setInterval(refresh, 8000);
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [refreshOverview]);
 
   const handlePlanAction = async (plan) => {
     if (isChangingPlan || isProcessingPayment) return;
@@ -103,8 +126,8 @@ export default function BillingPage() {
       if (plan.name === 'Free Tier') {
         await changePlan('Free Tier');
       } else {
-        // Paid plans flow through Razorpay payment checkout
-        await checkoutWithRazorpay(plan.name);
+        // Paid plans go through the secure payment checkout
+        await startCheckout(plan.name);
       }
     } catch {
       // Error handled by store
@@ -219,8 +242,8 @@ export default function BillingPage() {
     }
 
     return {
-      label: `Pay with Razorpay (${plan.amount})`,
-      style: 'razorpay',
+      label: `Upgrade for ${plan.amount}`,
+      style: 'pay',
       disabled: isWorking || isChangingPlan || isProcessingPayment,
       onClick: () => handlePlanAction(plan),
     };
@@ -250,9 +273,11 @@ export default function BillingPage() {
           <Sparkles className="w-3.5 h-3.5" />
           Workspace Plan & Billing
         </div>
-        <h1 className="text-3xl font-extrabold text-[#111827] tracking-tight">Upgrade &quot;Personal Workspace&quot;</h1>
+        <h1 className="text-3xl font-extrabold text-[#111827] tracking-tight">
+          Upgrade {user?.name ? `${user.name}'s Workspace` : 'your workspace'}
+        </h1>
         <p className="text-sm text-zinc-500 max-w-lg mx-auto leading-relaxed">
-          Select a plan below to scale your credits, storage, and monthly token quota. Secured checkout powered by Razorpay.
+          Select a plan below to scale your credits, storage, and monthly token quota. Secure checkout.
         </p>
       </div>
 
@@ -306,9 +331,13 @@ export default function BillingPage() {
               )}
             </div>
             <div className="flex items-center gap-3">
+              <span className="flex items-center gap-1.5 text-[11px] text-zinc-500 font-medium" title={lastUpdated ? `Updated ${new Date(lastUpdated).toLocaleTimeString()}` : ''}>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Live usage
+              </span>
               <span className="flex items-center gap-1 text-[11px] text-zinc-500 font-medium">
                 <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                Razorpay Verified
+                Secure Checkout
               </span>
               <div className="px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-[11px] font-bold uppercase tracking-wide">
                 {overview.plan?.status || 'Active'}
@@ -415,7 +444,7 @@ export default function BillingPage() {
                     ? 'bg-white border border-zinc-200 text-[#111827] hover:bg-zinc-50 cursor-pointer'
                     : btn.style === 'gray'
                     ? 'bg-[#8F9499] text-white cursor-default opacity-90'
-                    : btn.style === 'razorpay'
+                    : btn.style === 'pay'
                     ? 'bg-[#0F172A] hover:bg-black text-white cursor-pointer shadow-sm'
                     : 'bg-[#252525] hover:bg-black text-white cursor-pointer shadow-xs'
                 } ${btn.disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
@@ -428,7 +457,7 @@ export default function BillingPage() {
         })}
       </div>
 
-      {/* Razorpay Trust & Security Note */}
+      {/* Trust & Security Note */}
       <div className="flex flex-wrap items-center justify-center gap-6 py-4 px-6 rounded-xl bg-zinc-50 border border-zinc-200 text-xs text-zinc-500">
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-600" />
@@ -437,10 +466,6 @@ export default function BillingPage() {
         <div className="flex items-center gap-2">
           <CreditCard className="w-4 h-4 text-zinc-700" />
           <span>Supports UPI, Debit/Credit Cards, Net Banking & Wallets</span>
-        </div>
-        <div className="flex items-center gap-1.5 font-semibold text-zinc-700">
-          <span>Powered by</span>
-          <span className="font-black text-[#0C2340]">Razorpay</span>
         </div>
       </div>
 
@@ -460,7 +485,7 @@ export default function BillingPage() {
           <div className="py-12 text-center">
             <Receipt className="w-9 h-9 text-zinc-300 mx-auto mb-2" />
             <p className="text-sm text-zinc-500 font-medium">No past invoices yet</p>
-            <p className="text-xs text-zinc-400 mt-0.5">When you upgrade via Razorpay, your receipts will appear here</p>
+            <p className="text-xs text-zinc-400 mt-0.5">When you upgrade, your receipts will appear here</p>
           </div>
         ) : (
           <div className="overflow-x-auto">

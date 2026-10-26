@@ -1,6 +1,7 @@
 const path = require('path').posix;
 const babelParser = require('@babel/parser');
 const postcss = require('postcss');
+const { findStrayIdentifiersInAst } = require('./strayIdentifiers');
 
 const SOURCE_EXTENSIONS = ['.jsx', '.js', '.tsx', '.ts', '.mjs', '.cjs'];
 const ASSET_EXTENSIONS = ['.css', '.json', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.ico'];
@@ -73,7 +74,7 @@ function validateFilePaths(files) {
   const configuredSourceBytes = Number.parseInt(process.env.MAX_PROJECT_SOURCE_BYTES, 10);
   const configuredBinaryBytes = Number.parseInt(process.env.MAX_PROJECT_BINARY_BYTES, 10);
   const maximumSourceBytes = configuredSourceBytes === 0 ? Infinity : Math.max(1024 * 1024, configuredSourceBytes || 6 * 1024 * 1024);
-  const maximumBinaryBytes = configuredBinaryBytes === 0 ? Infinity : Math.max(1024 * 1024, configuredBinaryBytes || 5 * 1024 * 1024);
+  const maximumBinaryBytes = configuredBinaryBytes === 0 ? Infinity : Math.max(1024 * 1024, configuredBinaryBytes || 44 * 1024 * 1024); // a cloned site's images (up to the 36 MB clone budget) + documents must fit; the build artifact limit (48 MB) is the real ceiling
   if (sourceBytes > maximumSourceBytes) {
     const largest = sourceSizes.sort((a, b) => b.bytes - a.bytes).slice(0, 5)
       .map((item) => `${item.path} (${Math.ceil(item.bytes / 1024)} KiB)`).join(', ');
@@ -225,6 +226,20 @@ function validateGeneratedFiles(sourceFiles) {
 
     const ast = parseSource(file, diagnostics);
     if (!ast) continue;
+
+    // Words leaked into code positions (e.g. `сия`) parse fine but throw "is not defined" when the module runs,
+    // which crashes every route of the preview.
+    if (/[^\x00-\x7f]/.test(file.content)) {
+      for (const stray of findStrayIdentifiersInAst(ast)) {
+        diagnostics.push({
+          category: 'reference',
+          path: file.path,
+          line: stray.line,
+          column: stray.column,
+          message: `"${stray.name}" is not defined: stray text in a code position. Remove it, or move the words into JSX text or a string.`
+        });
+      }
+    }
 
     const exports = new Set();
     const stars = [];

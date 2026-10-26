@@ -420,6 +420,11 @@ function parseAIResponse(responseInput, defaultTarget = null) {
       if (!argsRaw) continue;
       try {
         const parsedArgs = typeof argsRaw === 'string' ? JSON.parse(argsRaw) : argsRaw;
+        // Some models name the list differently or send it as a JSON string.
+        if (parsedArgs && !Array.isArray(parsedArgs.files)) {
+          const alternate = parsedArgs.files ?? parsedArgs.operations ?? parsedArgs.changes ?? parsedArgs.file_operations;
+          try { const list = typeof alternate === 'string' ? JSON.parse(alternate) : alternate; if (Array.isArray(list)) parsedArgs.files = list; } catch { /* handled below */ }
+        }
         if (parsedArgs && Array.isArray(parsedArgs.files)) {
           action = parsedArgs.action || action;
           reason = parsedArgs.reason || reason;
@@ -723,6 +728,19 @@ function applyOperationsSafely(existingFiles = [], rawOperations = []) {
       const cleanSearch = sanitizePatchBlock(op.search);
       const cleanReplace = sanitizePatchBlock(op.replace);
 
+      // A page rebuilt from a captured website keeps its HTML as one escaped string; the editor reads it as plain markup, so the
+      // patch is applied to that markup (whitespace-insensitive) and stored back in the same format.
+      const viaCapturedHtml = require('../clone/capturedHtmlView').applyPatch(existing.content, cleanSearch, cleanReplace);
+      if (viaCapturedHtml?.matches > 1) {
+        throw new FileApplicationError(`Patch failed: search block matched ${viaCapturedHtml.matches} locations in "${safePath}". Patch search blocks must be uniquely identifiable (expectedMatches: 1). Add more surrounding context.`);
+      }
+      if (viaCapturedHtml?.content) {
+        validateSourceSyntax(safePath, viaCapturedHtml.content);
+        existing.content = viaCapturedHtml.content;
+        modifiedPaths.add(safePath);
+        continue;
+      }
+
       const normContent = existing.content.replace(/\r\n/g, '\n');
       const normSearch = cleanSearch.replace(/\r\n/g, '\n');
       const normReplace = cleanReplace.replace(/\r\n/g, '\n');
@@ -922,10 +940,105 @@ function validateMinimalDiff(beforeFiles = [], afterFiles = [], targetFiles = []
   return { valid: true, changedPaths };
 }
 
+
+/**
+ * Browser runtime errors come from the minified production bundle (e.g. /assets/index-abc.js:204:44391),
+ * so they carry no source path. Explain the likely cause and point at the suspect source lines.
+ */
+function buildRuntimeErrorHints(diagList, files) {
+  const runtime = diagList.filter((d) => /pageerror|console|runtime|browser|blank/i.test(`${d.category} ${d.type || ''}`) ||
+    /\/assets\/index-[^\s]*\.js/.test(`${d.path || ''} ${d.message || ''}`));
+  if (!runtime.length) return '';
+  const text = runtime.map((d) => d.message || '').join('\n');
+  const hints = [];
+  const patterns = [];
+  if (/not iterable|is not a function|undefined is not|Cannot read propert|Cannot destructure/i.test(text)) {
+    hints.push('The crash happens while rendering, in code that iterates, destructures or spreads a value whose runtime shape differs from what the code assumes.');
+  }
+  if (/not iterable/i.test(text)) {
+    hints.push('"object is not iterable": something is array-destructured (`const [a, b] = x`, `.map(([a, b]) => ...)`, `[...x]`, `for (const [k, v] of x)`) or spread/looped as an array, but x is a plain object (or undefined). Fix by making the data and its consumer agree: convert with Object.entries(x) / Object.values(x), change the data to an array, or change the destructuring to match; never hide it with try/catch or by deleting the feature.');
+    patterns.push(/\.map\(\s*\(?\s*\[/, /\[\s*\.\.\.[\w$.]+/, /for\s*\(\s*(?:const|let)\s*\[/, /\b(?:const|let)\s*\[[^\]]+\]\s*=\s*(?!use|React\.use)/, /new\s+(?:Map|Set)\(/);
+  }
+  if (/Cannot read propert|undefined|null/i.test(text)) patterns.push(/\.map\(/, /\?\./);
+  if (/blank|No visible root/i.test(text) && !patterns.length) patterns.push(/\.map\(/);
+  const sources = (files || []).filter((f) => f && f.encoding !== 'base64' && /^src\/.*\.(?:jsx?|tsx?)$/i.test(f.path) && typeof f.content === 'string');
+  const found = [];
+  for (const f of sources) {
+    f.content.split('\n').forEach((line, i) => {
+      if (found.length < 25 && patterns.some((re) => re.test(line))) found.push(`${f.path}:${i + 1}: ${line.trim().slice(0, 160)}`);
+    });
+  }
+  const exportsData = (files || []).filter((f) => /^src\/(?:data|constants|content)\//i.test(f.path) && typeof f.content === 'string')
+    .map((f) => `${f.path}: ${[...f.content.matchAll(/export\s+(?:const|default)\s+(\w+)?\s*=?\s*([\[{])/g)].map((m) => `${m[1] || 'default'} is ${m[2] === '[' ? 'an ARRAY' : 'an OBJECT'}`).join(', ') || 'no simple exports found'}`);
+  return `\nRUNTIME ERROR ANALYSIS (stack frames point into the minified bundle, not source):\n${hints.join('\n')}\n` +
+    (found.length ? `Suspect source lines:\n${found.join('\n')}\n` : '') +
+    (exportsData.length ? `Data export shapes:\n${exportsData.join('\n')}\n` : '') +
+    'Find the component whose destructuring/iteration does not match the shape of the data it receives, and PATCH it (or the data file) so both agree.\n';
+}
+
 /**
  * Build unified repair prompt using the SAME structured/delimiter protocol.
  */
-function buildRepairPrompt({ files, diagnostics, history = [], targetPath = null, mode = 'structured' }) {
+
+// --- Repair context -----------------------------------------------------------------------------------------------
+// A repair needs the failing file, the files it directly depends on or is used by (one hop), and the dependency
+// manifest, not the whole project and not an unbounded failure history.
+const LOCAL_IMPORT_RE = /(?:from\s*|import\s*\(\s*|import\s+|require\(\s*)['"](\.{1,2}\/[^'"]+)['"]/g;
+const RESOLVE_SUFFIXES = ['', '.jsx', '.js', '.tsx', '.ts', '.json', '.css', '/index.jsx', '/index.js', '/index.tsx', '/index.ts'];
+
+function resolveLocalImport(fromPath, specifier, pathSet) {
+  const parts = fromPath.split('/').slice(0, -1);
+  for (const part of specifier.split('/')) {
+    if (part === '.' || part === '') continue;
+    if (part === '..') parts.pop(); else parts.push(part);
+  }
+  const base = parts.join('/');
+  return RESOLVE_SUFFIXES.map((suffix) => base + suffix).find((candidate) => pathSet.has(candidate)) || null;
+}
+
+function relatedRepairPaths(files, errorPaths, { maxImports = 6, maxImporters = 3 } = {}) {
+  const pathSet = new Set(files.map((file) => file.path));
+  const textOf = (file) => (file && file.encoding !== 'base64' && typeof file.content === 'string' ? file.content : '');
+  const imports = new Set();
+  const importers = new Set();
+  for (const errorPath of errorPaths) {
+    const source = files.find((file) => file.path === errorPath);
+    for (const match of textOf(source).matchAll(LOCAL_IMPORT_RE)) {
+      const resolved = resolveLocalImport(errorPath, match[1], pathSet);
+      if (resolved && !errorPaths.has(resolved)) imports.add(resolved);
+    }
+  }
+  for (const file of files) {
+    if (errorPaths.has(file.path) || !/\.(?:jsx?|tsx?)$/.test(file.path)) continue;
+    for (const match of textOf(file).matchAll(LOCAL_IMPORT_RE)) {
+      const resolved = resolveLocalImport(file.path, match[1], pathSet);
+      if (resolved && errorPaths.has(resolved)) { importers.add(file.path); break; }
+    }
+  }
+  return [...[...imports].slice(0, maxImports), ...[...importers].slice(0, maxImporters)];
+}
+
+function dependencySummary(files) {
+  const manifest = files.find((file) => file.path === 'package.json');
+  try {
+    const pkg = JSON.parse(manifest?.content || '{}');
+    return JSON.stringify({ scripts: pkg.scripts, dependencies: pkg.dependencies, devDependencies: pkg.devDependencies });
+  } catch { return 'package.json could not be parsed'; }
+}
+
+// Bounded, relevant failure memory so the model does not repeat a rejected approach.
+function compactRepairHistory(history = [], { maxEntries = 6, maxDiagnostics = 5 } = {}) {
+  return (Array.isArray(history) ? history : []).slice(-maxEntries).map((entry) => ({
+    attempt: entry.attempt,
+    failureKind: entry.failureKind || null,
+    rejectedRepair: Boolean(entry.rejectedRepair),
+    changedFiles: (entry.changedFiles || []).slice(0, 10),
+    diagnostics: (entry.diagnostics || []).slice(0, maxDiagnostics)
+      .map((item) => ({ category: item.category, path: item.path, line: item.line, message: String(item.message || '').slice(0, 300) }))
+  }));
+}
+
+function buildRepairPrompt({ files, diagnostics, history = [], targetPath = null, mode = 'structured', sourceContext = null, fullFilePaths = [], patchFailure = null }) {
   const diagList = Array.isArray(diagnostics) ? diagnostics : [];
   const errors = diagList.length > 0
     ? diagList.map(d => `[${d.category || 'error'}] ${d.path ? d.path + ': ' : ''}${d.message}`).join('\n')
@@ -936,11 +1049,37 @@ function buildRepairPrompt({ files, diagnostics, history = [], targetPath = null
 
   let relevantFiles = files.filter(f => f && f.path && f.path !== 'package-lock.json');
   if (errorPaths.size > 0) {
-    const targeted = relevantFiles.filter(f => errorPaths.has(f.path));
+    const wanted = new Set([...errorPaths, ...relatedRepairPaths(relevantFiles, errorPaths)]);
+    const targeted = relevantFiles.filter(f => wanted.has(f.path));
     if (targeted.length > 0) relevantFiles = targeted;
   }
 
+  // Keep the prompt within model limits: no binary/base64 files, bounded file sizes, bounded total.
+  const MAX_FILE_CHARS = 60000;
+  const FULL_FILE_CHARS = 200000; // a file that must be rewritten completely is shown completely
+  const MAX_TOTAL_CHARS = 400000;
+  const isText = (f) => f.encoding !== 'base64' && typeof f.content === 'string' && /\.(?:jsx?|tsx?|css|scss|json|html|md|mjs|cjs)$/i.test(f.path);
+  const omitted = [];
+  let used = 0;
+  relevantFiles = relevantFiles
+    .filter((f) => { if (!isText(f)) { omitted.push(f.path); return false; } return true; })
+    .sort((a, b) => (errorPaths.has(b.path) - errorPaths.has(a.path)) || (a.content.length - b.content.length))
+    .filter((f) => {
+      if (used + Math.min(f.content.length, MAX_FILE_CHARS) > MAX_TOTAL_CHARS) { omitted.push(f.path); return false; }
+      used += Math.min(f.content.length, MAX_FILE_CHARS);
+      return true;
+    })
+    .map((f) => {
+      if (f.content.length <= MAX_FILE_CHARS || (fullFilePaths.includes(f.path) && f.content.length <= FULL_FILE_CHARS)) return f;
+      // Collapse huge inline data URIs first, then truncate whatever is still too long.
+      let content = f.content.replace(/data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{200,}/gi, 'data:__OMITTED_INLINE_DATA__');
+      if (content.length > MAX_FILE_CHARS) content = content.slice(0, MAX_FILE_CHARS) + '\n/* ...truncated... */';
+      return { ...f, content };
+    });
+  const omittedNote = omitted.length ? `\n\nFiles omitted from this prompt (binary or too large; do not patch them): ${omitted.slice(0, 50).join(', ')}` : '';
+
   let errorContext = '';
+  const runtimeHints = buildRuntimeErrorHints(diagList, files);
   const firstError = diagList.find(d => d.line && d.path);
   if (firstError) {
     const targetFile = files.find(f => f.path === firstError.path);
@@ -960,16 +1099,25 @@ CRITICAL: Never remove working components or weaken validation/tests to hide err
 ${DELIMITER_INSTRUCTIONS}
 Always prefer outputting either structured tool arguments or <FILE path="...">...</FILE> or <PATCH path="...">...</PATCH> delimiters.`;
 
+  const completenessNote = diagList.some((d) => d.category === 'duplicate')
+    ? '\nDUPLICATE REQUIREMENTS: the project contains duplicates (colliding file paths, a route registered twice, a copied component). Keep exactly ONE of each: move any unique content into the survivor, delete the other with <FILE path="..." operation="delete" />, and update every import and route that pointed to it. Do not change anything else.\n'
+    : diagList.some((d) => d.category === 'completeness')
+    ? '\nCOMPLETENESS REQUIREMENTS: the code runs, but the site is missing required parts. Do not rewrite or remove anything that exists. ADD the missing files and wiring (new components and pages as <FILE operation="create"> blocks; edits to existing files such as src/App.jsx as exact PATCH blocks). Write real, specific content for every new section and page, never placeholders. Follow the existing visual style.\n'
+    : '';
   const userMessage = `PROJECT REPAIR REQUEST:
 Errors to fix:
 ${errors}
-${errorContext}
+${completenessNote}${errorContext}
+${runtimeHints}
+Installed dependencies (do not import or require anything that is not listed; do not add dependencies unless the error is a missing one):
+${dependencySummary(files)}
+
 Previous failed repair attempts (DO NOT repeat these mistakes):
-${JSON.stringify(history)}
+${JSON.stringify(compactRepairHistory(history))}
 
-Project files:
-${relevantFiles.map(f => `--- ${f.path} ---\n${f.content}`).join('\n\n')}
-
+${sourceContext ? `SOURCE WEBSITE EVIDENCE (what the original page really contains; the project must match it):\n${sourceContext}\n\n` : ''}Project files:
+${relevantFiles.map(f => `--- ${f.path} ---\n${f.content}`).join('\n\n')}${omittedNote}
+${patchFailure ? `\nYOUR PREVIOUS PATCH COULD NOT BE APPLIED: ${patchFailure}\nDo NOT use PATCH for ${fullFilePaths.join(', ') || 'that file'}. Return the COMPLETE corrected file as <FILE path="..." operation="modify">...</FILE> (the whole file, every line, nothing omitted).\n` : ''}
 INSTRUCTIONS:
 1. Fix the reported errors cleanly.
 2. Existing files MUST use surgical <PATCH path="..."> with exact <SEARCH> and <REPLACE> matching 1 location. Never return a complete existing file. Use <FILE> only to create a genuinely new file.
@@ -989,6 +1137,9 @@ INSTRUCTIONS:
 }
 
 module.exports = {
+  relatedRepairPaths,
+  compactRepairHistory,
+  dependencySummary,
   FILE_OPERATIONS_TOOL,
   DELIMITER_INSTRUCTIONS,
   normalizeFile,

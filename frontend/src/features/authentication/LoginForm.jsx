@@ -23,16 +23,18 @@ export function LoginForm() {
         console.error('OAuth login failed:', err);
       });
     } else if (oauthError) {
-      useAuthStore.setState({ error: decodeURIComponent(oauthError) });
+      useAuthStore.setState({ error: oauthError }); // searchParams.get() already decodes it
+    } else if (searchParams.get('expired')) {
+      useAuthStore.setState({ error: 'Please log in to continue. Your session has ended or you need an account for this action.' });
     }
   }, [searchParams, navigate]);
 
   const handleGoogleOAuth = () => {
-    window.location.href = 'http://localhost:5000/api/auth/google';
+    window.location.href = '/api/auth/google';
   };
 
   const handleAppleOAuth = () => {
-    window.location.href = 'http://localhost:5000/api/auth/apple';
+    window.location.href = '/api/auth/apple';
   };
 
   const handleSubmit = async (e) => {

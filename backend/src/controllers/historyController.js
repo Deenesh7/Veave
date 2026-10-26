@@ -2,15 +2,14 @@ const ProjectVersion = require('../models/ProjectVersion');
 const Project = require('../models/Project');
 const projectService = require('../services/project/projectService');
 const { NotFoundError } = require('../utils/errors');
+const projectAccess = require('../services/collaboration/projectAccess');
 const logger = require('../utils/logger');
 const { dehydrateFiles, hydrateFiles } = require('../services/storage/s3BlobStorage');
 
 exports.getVersions = async (req, res, next) => {
   try {
-    const userId = req.user ? req.user.id : null;
-    const query = userId
-      ? { projectId: req.params.id, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-      : { projectId: req.params.id };
+    await projectAccess.requireProjectAccess(req.params.id, req.user, 'viewer');
+    const query = { projectId: req.params.id };
 
     let versions = await ProjectVersion.find(query)
       .sort({ version: -1 })
@@ -56,10 +55,8 @@ exports.getVersions = async (req, res, next) => {
 
 exports.getVersionById = async (req, res, next) => {
   try {
-    const userId = req.user ? req.user.id : null;
-    const query = userId
-      ? { _id: req.params.versionId, projectId: req.params.id, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-      : { _id: req.params.versionId, projectId: req.params.id };
+    await projectAccess.requireProjectAccess(req.params.id, req.user, 'viewer');
+    const query = { _id: req.params.versionId, projectId: req.params.id };
 
     const version = await ProjectVersion.findOne(query);
     if (!version) throw new NotFoundError('Version');
@@ -74,11 +71,12 @@ exports.getVersionById = async (req, res, next) => {
 exports.createVersion = async (req, res, next) => {
   try {
     const userId = req.user ? req.user.id : null;
-    const query = userId
-      ? { _id: req.params.id, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-      : { _id: req.params.id };
-    const project = await Project.findOne(query);
+    await projectAccess.requireProjectAccess(req.params.id, req.user, 'editor');
+    const project = await Project.findById(req.params.id);
     if (!project) throw new NotFoundError('Project');
+    if (Array.isArray(req.body.files) && req.body.files.length > 0) {
+      await projectService.assertBaseRevision(req.params.id, req.body.baseRevision ?? req.headers['x-base-revision']);
+    }
 
     const versionCount = await ProjectVersion.countDocuments({ projectId: project._id });
 
@@ -110,24 +108,20 @@ exports.createVersion = async (req, res, next) => {
 
 exports.restoreVersion = async (req, res, next) => {
   try {
-    const userId = req.user ? req.user.id : null;
-    const versionQuery = userId
-      ? { _id: req.params.versionId, projectId: req.params.id, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-      : { _id: req.params.versionId, projectId: req.params.id };
+    await projectAccess.requireProjectAccess(req.params.id, req.user, 'editor');
+    const versionQuery = { _id: req.params.versionId, projectId: req.params.id };
     const version = await ProjectVersion.findOne(versionQuery);
     
     if (!version) throw new NotFoundError('Version');
     
-    const projectQuery = userId
-      ? { _id: req.params.id, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-      : { _id: req.params.id };
     const project = await Project.findOneAndUpdate(
-      projectQuery,
-      { $set: { files: version.files, dependencies: version.dependencies } },
+      { _id: req.params.id },
+      { $set: { files: version.files, dependencies: version.dependencies, ...(req.user ? { lastEditedBy: req.user.id } : {}) } },
       { new: true }
     );
     
     if (!project) throw new NotFoundError('Project');
+    require('../services/search/projectIndexHooks').invalidate(project._id);
 
     // Sync relational ProjectFile collection so all queries and exports reflect restored version
     await projectService._syncFiles(project);
@@ -142,10 +136,8 @@ exports.restoreVersion = async (req, res, next) => {
 
 exports.deleteVersion = async (req, res, next) => {
   try {
-    const userId = req.user ? req.user.id : null;
-    const query = userId
-      ? { _id: req.params.versionId, projectId: req.params.id, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-      : { _id: req.params.versionId, projectId: req.params.id };
+    await projectAccess.requireProjectAccess(req.params.id, req.user, 'editor');
+    const query = { _id: req.params.versionId, projectId: req.params.id };
 
     const deleted = await ProjectVersion.findOneAndDelete(query);
     if (!deleted) throw new NotFoundError('Version');

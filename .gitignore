@@ -46,3 +46,10 @@ dump/
 
 # Uploads
 uploads/
+
+# Published sites
+.published/
+
+# Real production secrets (the .example file is the committed template)
+.env.production
+backend/.env.production

@@ -60,11 +60,6 @@ export default function CloneWebsiteModal({ isOpen, onClose }) {
           <p className="text-[11px] text-zinc-500">Public pages only. Private networks, local addresses, credentials, and authenticated sites are blocked.</p>
         </div>
 
-        <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5">
-          <p className="text-xs font-bold text-zinc-800">Generation model</p>
-          <p className="text-[11px] text-zinc-500">GPT-6 Luna, configured by the backend cloning pipeline.</p>
-        </div>
-
         <div className="space-y-2">
           <label htmlFor="clone-instructions" className="text-xs font-bold text-zinc-800">Additional requirements <span className="font-normal text-zinc-400">(optional)</span></label>
           <textarea

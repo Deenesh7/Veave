@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useSmartBack } from '../../hooks/useSmartBack';
 import { useProjectStore } from '../../store/projectStore';
 import { useEditorStore } from '../../store/editorStore';
 import { projectService } from '../../services/projectService';
@@ -25,6 +26,7 @@ export function CodeWorkspace({
   onFilesChange = null
 }) {
   const navigate = useNavigate();
+  const goBack = useSmartBack('/dashboard');
   const routeParams = useParams();
   const { currentProject, updateProjectFiles, updateProject } = useProjectStore();
   const { setActiveFile: syncGlobalActiveFile } = useEditorStore();
@@ -483,7 +485,7 @@ export function CodeWorkspace({
           projectName={effectiveProjectName}
           isDirty={isDirty}
           isSaving={isSaving}
-          onBack={onBack || (() => navigate('/dashboard'))}
+          onBack={onBack || goBack}
           onSwitchMode={onSwitchMode}
           onToggleAi={() => setIsAiOpen(!isAiOpen)}
           isAiOpen={isAiOpen}

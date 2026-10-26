@@ -2,7 +2,12 @@ const logger = require('../utils/logger');
 const { AppError } = require('../utils/errors');
 
 const errorHandler = (err, req, res, next) => {
-  logger.error(err.stack);
+  // Expected client errors (e.g. 401 when logged out) only need a one-line note; keep stacks for real faults.
+  if (err instanceof AppError && err.statusCode < 500) {
+    logger.warn(`${err.name}: ${err.message} (${req.method} ${req.originalUrl})`);
+  } else {
+    logger.error(err.stack);
+  }
 
   let statusCode = 500;
   let message = 'Internal Server Error';
@@ -26,6 +31,8 @@ const errorHandler = (err, req, res, next) => {
     error: {
       message,
       statusCode,
+      ...(err instanceof AppError && typeof err.code === 'string' ? { code: err.code } : {}),
+      ...(err instanceof AppError && err.details ? { details: err.details } : {}),
       ...(err.report ? { validation: err.report } : {})
     }
   });

@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { prepareImageForUpload } from '../../utils/imageUpload';
 import { 
   Plus, 
   FileText, 
@@ -186,18 +187,17 @@ export default function ActionMenu({
       const isImage = file.type.startsWith('image/');
 
       if (isImage) {
-        reader.onload = (event) => {
-          onUploadFile?.({
+        prepareImageForUpload(file)
+          .then(({ dataUrl, size, type }) => onUploadFile?.({
             id: `file_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
             name: file.name,
-            size: file.size,
-            type: file.type,
-            dataUrl: event.target.result,
+            size,
+            type,
+            dataUrl,
             isImage: true,
             file
-          });
-        };
-        reader.readAsDataURL(file);
+          }))
+          .catch((error) => window.alert(error.message || 'This image could not be attached.'));
       } else if (isText) {
         reader.onload = (event) => {
           onUploadFile?.({

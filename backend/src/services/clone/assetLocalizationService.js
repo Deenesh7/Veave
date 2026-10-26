@@ -164,17 +164,19 @@ function materializeLocalizedAssets(files = [], assets = [], placementQueue = []
   const sourceFiles = files.map((file) => file.encoding === 'base64'
     ? file
     : { ...file, content: replaceAssetReferences(file.content, assets) });
+  // The manifest says which file is which and where it is used. Lists are capped: it used to repeat every URL, alias and
+  // association of every asset, which for a large site was several megabytes of JSON.
   const mappings = assets.map((asset) => ({
-    referenceUrls: asset.sourceUrls,
-    referencePaths: asset.sourcePaths || sourcePathReferences(asset.sourceUrls),
-    referenceAliases: assetReferenceAliases(asset),
+    referenceUrls: (asset.sourceUrls || []).slice(0, 5),
+    referencePaths: (asset.sourcePaths || sourcePathReferences(asset.sourceUrls)).slice(0, 5),
+    referenceAliases: assetReferenceAliases(asset).slice(0, 8),
     localFile: asset.localPath,
     publicPath: asset.publicPath,
     mimeType: asset.mimeType,
     width: asset.width || null,
     height: asset.height || null,
-    pages: asset.pages || [],
-    associations: asset.associations || [],
+    pages: (asset.pages || []).slice(0, 20),
+    associations: (asset.associations || []).slice(0, 3).map(({ page, section, selector, source }) => ({ page, section: section?.heading || section?.tag || null, selector, source })),
     usedBy: sourceFiles.filter((file) => file.encoding !== 'base64' && String(file.content).includes(asset.publicPath)).map((file) => file.path)
   }));
   const binaryFiles = assets.map((asset) => ({
@@ -192,7 +194,7 @@ function materializeLocalizedAssets(files = [], assets = [], placementQueue = []
         const usedBy = sourceFiles
           .filter((file) => item.publicPath && file.encoding !== 'base64' && String(file.content).includes(item.publicPath))
           .map((file) => file.path);
-        return { ...item, status: item.status === 'unavailable' ? 'unavailable' : (usedBy.length ? 'applied' : 'pending'), usedBy };
+        return { id: item.id, order: item.order, page: item.page, publicPath: item.publicPath || null, alt: item.alt || '', status: item.status === 'unavailable' ? 'unavailable' : (usedBy.length ? 'applied' : 'pending'), usedBy };
       })
     }, null, 2),
     language: 'json'
@@ -253,6 +255,11 @@ function repairMissingLocalImageReferences(files = [], assets = [], pagePath = '
     content = content.replace(/(\b(?:src|poster)\s*=\s*\{\s*["'])(\/assets\/[^"']+)(["']\s*\})/gi, (_, before, localPath, after) => `${before}${validPathFor(localPath)}${after}`);
     content = content.replace(/(\b(?:src|image|imageUrl|thumbnail|backgroundImage)\s*:\s*["'])(\/assets\/[^"']+)(["'])/gi, (_, before, localPath, after) => `${before}${validPathFor(localPath)}${after}`);
     content = content.replace(/(url\(\s*["']?)(\/assets\/[^"')\s]+)(["']?\s*\))/gi, (_, before, localPath, after) => `${before}${validPathFor(localPath)}${after}`);
+    // A link to a document that was not downloaded (budget, size, invented name) must not point at a missing file.
+    const linkTarget = (localPath) => (availablePaths.has(localPath) ? localPath : '#');
+    content = content.replace(/(\bhref\s*=\s*["'])(\/assets\/[^"'#?]+)([^"']*["'])/gi, (_, before, localPath, after) => `${before}${linkTarget(localPath)}${availablePaths.has(localPath) ? after : after.replace(/^[^"']*/, '')}`);
+    content = content.replace(/(\bhref\s*=\s*\{\s*["'])(\/assets\/[^"'#?]+)([^"']*["']\s*\})/gi, (_, before, localPath, after) => `${before}${linkTarget(localPath)}${availablePaths.has(localPath) ? after : after.replace(/^[^"']*/, '')}`);
+    content = content.replace(/(\b(?:href|url|link|file|pdf|document)\s*:\s*["'])(\/assets\/[^"'#?]+)([^"']*["'])/gi, (_, before, localPath, after) => `${before}${linkTarget(localPath)}${availablePaths.has(localPath) ? after : after.replace(/^[^"']*/, '')}`);
     return { ...file, content };
   });
 }
@@ -271,7 +278,9 @@ function validateLocalizedAssetReferences(files = []) {
   const remote = [];
   for (const file of files) {
     if (file.encoding === 'base64' || file.path === 'src/assets/asset-map.json') continue;
-    const content = String(file.content || '');
+    // Components that embed captured HTML keep it in a JSON-escaped string literal (src=\"https://...\"). Unescape first so
+    // those references are checked like any other and a trailing backslash is not mistaken for part of a path.
+    const content = String(file.content || '').replace(/\\(["'\/])/g, '$1');
     for (const match of content.matchAll(/\/assets\/[^\s"'`)},;]+/g)) {
       const publicPath = match[0].split(/[?#]/)[0];
       if (!available.has(publicPath)) missing.push({ file: file.path, reference: publicPath });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useSmartBack } from '../../hooks/useSmartBack';
 import { usePreview } from '../../hooks/usePreview';
 import { useVisualEditorStore } from './visualEditorStore';
 import { EditorToolbar } from './EditorToolbar';
@@ -23,18 +23,20 @@ function getFilesFingerprint(files) {
 }
 
 export function VisualEditor({ project, onBack }) {
-  const navigate = useNavigate();
+  const goBack = useSmartBack('/dashboard');
   const iframeRef = useRef(null);
-  const { previewHtml, buildPreview } = usePreview();
   const { currentProject, setCurrentProject, updateProject } = useProjectStore();
+  // Use the server-precompiled preview when it matches the saved source (fast open); it carries the same selection
+  // script as a browser compile. Never the built bundle, which cannot be inspected. Unsaved edits compile locally.
+  const { previewHtml, buildPreview } = usePreview({ projectId: (project || currentProject)?._id || null, skipBuiltPreview: true });
 
   const handleBack = useCallback(() => {
     if (onBack) {
       onBack();
     } else {
-      navigate('/dashboard');
+      goBack();
     }
-  }, [onBack, navigate]);
+  }, [onBack, goBack]);
 
   const activeProject = project || currentProject;
   const files = activeProject?.files || [];
@@ -518,15 +520,14 @@ export function VisualEditor({ project, onBack }) {
         const oldV = edit.oldVal || edit.prevVal;
         const newV = edit.newVal;
         if (oldV && newV && oldV !== newV) {
-          let replaced = false;
-          updatedFiles = updatedFiles.map((f) => {
-            const isTargetFile = !edit.sourceFile || f.path === edit.sourceFile;
-            if (!replaced && isTargetFile && f.content && f.content.includes(oldV)) {
-              replaced = true;
-              return { ...f, content: f.content.replace(oldV, newV) };
-            }
-            return f;
-          });
+          // The selected element's source file is a guess (components outside a short list resolve to src/App.jsx), so
+          // try the declared file first and then any source file that really contains the old value.
+          const isSource = (f) => f.content && f.encoding !== 'base64' && f.content.includes(oldV);
+          const declared = updatedFiles.find((f) => edit.sourceFile && f.path === edit.sourceFile && isSource(f));
+          const target = declared || updatedFiles.find((f) => /^src\//.test(f.path) && isSource(f)) || updatedFiles.find(isSource);
+          if (target) {
+            updatedFiles = updatedFiles.map((f) => (f.path === target.path ? { ...f, content: f.content.replace(oldV, newV) } : f));
+          }
         }
       });
 

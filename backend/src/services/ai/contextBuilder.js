@@ -51,26 +51,45 @@ You are modifying an existing project in an active conversation.
   /**
    * Extracts and formats existing project files and components for model context
    */
-  formatExistingProjectCode(project) {
+  formatExistingProjectCode(project, { allowPartial = false, maxChars = 300000 } = {}) {
     if (!project || !Array.isArray(project.files) || project.files.length === 0) {
       return { rootCode: '', componentCode: '', summary: 'No existing code (initial generation).' };
     }
 
-    const rootApp = project.files.find(f => f.path === 'src/App.jsx' || f.path.endsWith('App.jsx'))?.content || '';
+    // Images, fonts and other binary assets are base64 blobs, never model context; they are listed by name only.
+    const isSource = (f) => f && typeof f.content === 'string' && f.content && f.encoding !== 'base64'
+      && f.path !== 'package-lock.json' && f.path !== 'src/assets/asset-map.json';
+    const rootFile = project.files.find(f => f.path === 'src/App.jsx' || f.path.endsWith('App.jsx'));
+    const rootApp = isSource(rootFile) ? rootFile.content : '';
     const componentFiles = project.files.filter(f => f.path !== 'package-lock.json' && f.path !== 'src/App.jsx');
+    const sourceComponents = componentFiles.filter(isSource);
 
-    let componentCode = '';
-    for (const comp of componentFiles) {
-      if (comp.content) {
-        componentCode += `\n// File: ${comp.path}\n${comp.content}\n`;
+    let included = sourceComponents;
+    let omitted = [];
+    const total = rootApp.length + sourceComponents.reduce((sum, f) => sum + f.content.length, 0);
+    if (total > maxChars) {
+      if (!allowPartial) throw new Error('Project exceeds the generation context limit. Source was not truncated or rewritten.');
+      // Incremental edits patch only the files they target, so the context keeps the most useful files within budget
+      // (small, structural files first) and lists the rest by name. Nothing in the project itself is shortened.
+      const rank = (f) => (/(?:^|\/)(?:router|routes|navigation|siteData|data)\b|\.json$/i.test(f.path) ? 0 : /(?:Header|Navbar|Footer|Layout)/i.test(f.path) ? 1 : 2);
+      const ordered = [...sourceComponents].sort((a, b) => rank(a) - rank(b) || a.content.length - b.content.length);
+      let used = rootApp.length;
+      included = [];
+      for (const f of ordered) {
+        if (used + f.content.length > maxChars) { omitted.push(f.path); continue; }
+        included.push(f);
+        used += f.content.length;
       }
     }
-    if (rootApp.length + componentCode.length > 300000) throw new Error('Project exceeds the generation context limit. Source was not truncated or rewritten.');
+
+    let componentCode = '';
+    for (const comp of included) componentCode += `\n// File: ${comp.path}\n${comp.content}\n`;
+    if (omitted.length) componentCode += `\n// FILES NOT SHOWN (too large for the context; unchanged unless the request needs them): ${omitted.join(', ')}\n`;
 
     return {
       rootCode: rootApp,
       componentCode,
-      summary: `Existing project contains ${project.files.length} files (Root: src/App.jsx, Components: ${componentFiles.map(c => c.path).join(', ') || 'None'})`
+      summary: `Existing project contains ${project.files.length} files (Root: src/App.jsx, Components: ${componentFiles.filter((c) => c.encoding !== 'base64').map(c => c.path).join(', ') || 'None'})`
     };
   }
 
@@ -115,10 +134,11 @@ You are modifying an existing project in an active conversation.
     conversation,
     userPrompt,
     designTokens = {},
-    commandDirective = ''
+    commandDirective = '',
+    allowPartialContext = false
   }) {
     const isModification = !!(project && project.files && project.files.length > 0);
-    const existingCode = this.formatExistingProjectCode(project);
+    const existingCode = this.formatExistingProjectCode(project, { allowPartial: allowPartialContext });
     const generationHistoryText = this.formatGenerationHistory(conversation);
     const recentTurns = this.formatRecentConversationTurns(conversation, 4);
 

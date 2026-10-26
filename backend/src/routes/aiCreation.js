@@ -13,22 +13,28 @@ const upload = multer({
 // Allow optionalAuth so guest/unauthenticated users can test creation
 router.use(auth.optionalAuth);
 
+// Anything that creates a project needs an account: ownerless projects bypass plan limits and cannot be published.
+const requireAccount = (req, res, next) => {
+  if (req.user) return next();
+  return res.status(401).json({ success: false, error: 'Log in to create a project.', code: 'LOGIN_REQUIRED' });
+};
+
 // OpenAI Whisper Voice Message Transcription
 router.post('/whisper', upload.single('audio'), aiCreationController.transcribeVoice);
 router.post('/transcribe', upload.single('audio'), aiCreationController.transcribeVoice);
 
 router.post('/enhance-prompt', aiCreationController.enhancePrompt);
-router.post('/generate', aiCreationController.generateDesign);
-router.post('/stream-generate', aiCreationController.streamGenerateDesign);
+router.post('/generate', requireAccount, aiCreationController.generateDesign);
+router.post('/stream-generate', requireAccount, aiCreationController.streamGenerateDesign);
 router.post('/modify', aiCreationController.modifyDesign);
-router.post('/screenshot', aiCreationController.recreateScreenshot);
-router.post('/recreate-screenshot', aiCreationController.recreateScreenshot);
-router.post('/github-import', aiCreationController.importGitHub);
-router.post('/figma-import', aiCreationController.importFigma);
-router.post('/slide-deck', aiCreationController.generateSlideDeck);
+router.post('/screenshot', requireAccount, aiCreationController.recreateScreenshot);
+router.post('/recreate-screenshot', requireAccount, aiCreationController.recreateScreenshot);
+router.post('/github-import', requireAccount, aiCreationController.importGitHub);
+router.post('/figma-import', requireAccount, aiCreationController.importFigma);
+router.post('/slide-deck', requireAccount, aiCreationController.generateSlideDeck);
 
 // Persistent Background Generation Job Endpoints
-router.post('/jobs/start', aiLimiter, aiCreationController.startJob);
+router.post('/jobs/start', aiLimiter, requireAccount, aiCreationController.startJob);
 router.get('/jobs/active', aiCreationController.getActiveJob);
 router.get('/jobs/:jobId', aiCreationController.getJobStatus);
 router.post('/jobs/:jobId/decision', aiCreationController.decidePlan);

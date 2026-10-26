@@ -18,9 +18,16 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Editor from './pages/Editor';
 import NotFound from './pages/NotFound';
+import GroupsPage from './pages/GroupsPage';
+import GroupDetailPage from './pages/GroupDetailPage';
+import InvitationsPage from './pages/InvitationsPage';
+import SharedProjectsPage from './pages/SharedProjectsPage';
+import UpgradePlanModal from './components/common/UpgradePlanModal';
 
 export default function App() {
   return (
+    <>
+    <UpgradePlanModal />
     <Routes>
       {/* Main Veave SaaS Dashboard & Navigation Routes */}
       <Route element={<AppLayout />}>
@@ -36,6 +43,10 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/billing" element={<BillingPage />} />
         <Route path="/usage" element={<UsagePage />} />
+        <Route path="/groups" element={<GroupsPage />} />
+        <Route path="/groups/:groupId" element={<GroupDetailPage />} />
+        <Route path="/invitations" element={<InvitationsPage />} />
+        <Route path="/collab/projects" element={<SharedProjectsPage />} />
       </Route>
 
       {/* Marketing Landing Page */}
@@ -55,5 +66,6 @@ export default function App() {
       {/* 404 Fallback */}
       <Route path="*" element={<NotFound />} />
     </Routes>
+    </>
   );
 }

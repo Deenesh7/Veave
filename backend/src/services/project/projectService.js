@@ -2,7 +2,8 @@ const Project = require('../../models/Project');
 const ProjectFile = require('../../models/ProjectFile');
 const Conversation = require('../../models/Conversation');
 const ProjectVersion = require('../../models/ProjectVersion');
-const { NotFoundError } = require('../../utils/errors');
+const { NotFoundError, ValidationError, ConflictError, AppError } = require('../../utils/errors');
+const projectAccess = require('../collaboration/projectAccess');
 const logger = require('../../utils/logger');
 const { dehydrateFiles, hydrateFiles } = require('../storage/s3BlobStorage');
 
@@ -19,7 +20,73 @@ const { dehydrateFiles, hydrateFiles } = require('../storage/s3BlobStorage');
  * Every write operation keeps both in sync via _syncFiles().
  */
 
+const base64ByteLength = (content = '') => {
+  const padding = content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((content.length * 3) / 4) - padding);
+};
+
+// Fields a client may never set through the generic update endpoint (ownership, concurrency and audit data).
+const PROTECTED_FIELDS = ['_id', 'userId', 'revision', 'lastEditedBy', 'createdAt', 'updatedAt', '__v'];
+
+const revisionFilter = (revision) => (revision === 0
+  ? { $or: [{ revision: 0 }, { revision: { $exists: false } }] }
+  : { revision });
+
+const parseRevision = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+};
+
+function revisionConflict(currentRevision) {
+  return new ConflictError(
+    'This project was changed by someone else since you opened it. Reload to get the latest version before saving.',
+    'PROJECT_CONFLICT',
+    { currentRevision }
+  );
+}
+
 class ProjectService {
+  /**
+   * Lightweight view of a project for the editor: text files are returned in full, binary assets (images, fonts)
+   * are listed with their size but no bytes. They are served on demand by the preview asset route, which keeps the
+   * payload small (a 70 MB project becomes ~1 MB) and the editor opening quickly.
+   */
+  async toEditorView(project) {
+    const plain = project.toObject ? project.toObject() : { ...project };
+    const raw = plain.files || [];
+    const text = await hydrateFiles(raw.filter((file) => file.encoding !== 'base64'));
+    let next = 0;
+    plain.files = raw.map((file) => (file.encoding === 'base64'
+      ? { path: file.path, language: file.language, encoding: 'base64', size: file.blob?.size ?? base64ByteLength(file.content || ''), contentOmitted: true }
+      : text[next++]));
+    try {
+      const doc = await require('../preview/previewService').ensurePrecompiled(plain._id);
+      plain.previewAssetToken = doc?.token || null;
+    } catch (error) {
+      logger.warn(`Preview token unavailable for ${plain._id}: ${error.message}`);
+      plain.previewAssetToken = null;
+    }
+    return plain;
+  }
+
+  /**
+   * A file sent back WITHOUT a `content` property means "unchanged": keep the stored version. Clients that load the
+   * lightweight view (or the project list, which also omits contents) save the whole file list, and must never
+   * overwrite stored files with nothing.
+   */
+  async mergeUnchangedFiles(query, incoming) {
+    if (!incoming.some((file) => file && typeof file.content !== 'string')) return incoming;
+    const stored = await Project.findOne(query).select('files').lean();
+    const byPath = new Map((stored?.files || []).map((file) => [file.path, file]));
+    return incoming.map((file) => {
+      if (file && typeof file.content === 'string') return file;
+      const existing = file && byPath.get(file.path);
+      if (!existing) throw new ValidationError(`File "${file?.path}" was sent without content and does not exist yet.`);
+      return existing;
+    });
+  }
+
   async create(userId, data) {
     const storedFiles = await dehydrateFiles(data.files || []);
     const project = new Project({
@@ -37,9 +104,11 @@ class ProjectService {
   }
 
   async getAll(userId) {
+    // A logged-in user's list is exactly their own projects (the same set billing counts); a guest only sees
+    // ownerless ones. It used to mix in everyone's ownerless projects, so the list and the usage numbers disagreed.
     const query = userId
-      ? { $or: [{ userId }, { userId: null }, { userId: { $exists: false } }], status: 'active' }
-      : { status: 'active' };
+      ? { userId, status: 'active' }
+      : { $or: [{ userId: null }, { userId: { $exists: false } }], status: 'active' };
     // Dashboard listings only need file metadata for the count. Returning every
     // source body makes large generated projects stall unrelated API requests.
     return await Project.find(query)
@@ -48,32 +117,57 @@ class ProjectService {
       .lean();
   }
 
-  async getById(id, userId) {
-    const query = userId
-      ? { _id: id, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-      : { _id: id };
-    const project = await Project.findOne(query);
+  async getById(id, userId, { lite = false, withAccess = false, minLevel = 'viewer' } = {}) {
+    const ctx = await projectAccess.requireProjectAccess(id, userId, minLevel);
+    const project = await Project.findById(id);
     if (!project) throw new NotFoundError('Project');
+    const accessInfo = { level: ctx.level, canEdit: ctx.canEdit, canManage: ctx.canManage, isOwner: ctx.isOwner };
+    if (lite) {
+      const view = await this.toEditorView(project);
+      return withAccess ? { ...view, access: accessInfo } : view;
+    }
     project.files = await hydrateFiles(project.files);
-    return project;
+    if (!withAccess) return project;
+    return { ...project.toObject(), access: accessInfo };
   }
 
-  async update(id, userId, data) {
+  async update(id, userId, data, { lite = false, baseRevision = null } = {}) {
+    const ctx = await projectAccess.requireProjectAccess(id, userId, 'editor');
     // Extract versionLabel before persisting (it's not a Project field)
     const versionLabel = data.versionLabel;
     const persistData = { ...data };
     delete persistData.versionLabel;
-    if (Array.isArray(persistData.files)) persistData.files = await dehydrateFiles(persistData.files);
+    delete persistData.baseRevision;
+    delete persistData.origin;
+    for (const field of PROTECTED_FIELDS) delete persistData[field];
+    // Archiving / restoring changes the project's lifecycle: that needs project admin rights.
+    if (persistData.status !== undefined && !ctx.canManage) delete persistData.status;
 
-    const query = userId
-      ? { _id: id, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-      : { _id: id };
+    const query = { _id: id };
+    const expected = parseRevision(baseRevision ?? data.baseRevision);
+    // Collaborative projects must say which revision the edit is based on, so two people never silently overwrite each other.
+    if (await projectAccess.isShared(id)) {
+      if (expected === null) {
+        throw new AppError('Reload this shared project before saving: the save did not say which version it was based on.', 428);
+      }
+      Object.assign(query, revisionFilter(expected));
+    }
+    if (Array.isArray(persistData.files)) {
+      persistData.files = await this.mergeUnchangedFiles({ _id: id }, persistData.files);
+      persistData.files = await dehydrateFiles(persistData.files);
+    }
+    if (userId) persistData.lastEditedBy = userId;
     const project = await Project.findOneAndUpdate(
       query,
       { $set: persistData },
       { new: true }
     );
-    if (!project) throw new NotFoundError('Project');
+    if (!project) {
+      const current = await Project.findById(id).select('revision').lean();
+      if (!current) throw new NotFoundError('Project');
+      throw revisionConflict(current.revision || 0);
+    }
+    if (Array.isArray(data.files)) require('../search/projectIndexHooks').invalidate(project._id); // manual save: cached symbols are stale
 
     // If the update touched files, re-sync the relational store
     if (Array.isArray(data.files)) {
@@ -84,7 +178,7 @@ class ProjectService {
         const versionCount = await ProjectVersion.countDocuments({ projectId: project._id });
         const newVersion = new ProjectVersion({
           projectId: project._id,
-          userId: project.userId || null,
+          userId: userId || project.userId || null,
           version: versionCount + 1,
           label: versionLabel || `Auto-save v${versionCount + 1}`,
           files: project.files,
@@ -96,17 +190,29 @@ class ProjectService {
         logger.error(`Version snapshot failed for ${project._id}: ${versionErr.message}`);
       }
     }
+    const access = { level: ctx.level, canEdit: ctx.canEdit, canManage: ctx.canManage, isOwner: ctx.isOwner };
+    if (lite) return { ...(await this.toEditorView(project)), access };
     project.files = await hydrateFiles(project.files);
-    return project;
+    return { ...project.toObject(), access };
+  }
+
+  /** Shared projects only accept a write that names the revision it was based on, and that revision must still be current. */
+  async assertBaseRevision(id, baseRevision) {
+    if (!(await projectAccess.isShared(id))) return;
+    const expected = parseRevision(baseRevision);
+    if (expected === null) throw new AppError('Reload this shared project before saving: the save did not say which version it was based on.', 428);
+    const current = await Project.findById(id).select('revision').lean();
+    if (!current) throw new NotFoundError('Project');
+    if ((current.revision || 0) !== expected) throw revisionConflict(current.revision || 0);
   }
 
   async createManualVersion(id, userId, label) {
-    const project = await this.getById(id, userId);
+    const project = await this.getById(id, userId, { minLevel: 'editor' });
     const storedFiles = await dehydrateFiles(project.files);
     const versionCount = await ProjectVersion.countDocuments({ projectId: project._id });
     const newVersion = new ProjectVersion({
       projectId: project._id,
-      userId: project.userId || null,
+      userId: userId || project.userId || null,
       version: versionCount + 1,
       label: label || `Manual Snapshot v${versionCount + 1}`,
       files: storedFiles,
@@ -117,18 +223,19 @@ class ProjectService {
   }
 
   async delete(id, userId) {
-    const query = userId
-      ? { _id: id, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-      : { _id: id };
-    const project = await Project.findOneAndDelete(query);
+    // Deleting a project (and its conversations, versions and sharing) is reserved for its owner.
+    await projectAccess.requireProjectAccess(id, userId, 'owner');
+    const project = await Project.findOneAndDelete({ _id: id });
     if (!project) throw new NotFoundError('Project');
 
     // Cascade
     await Promise.all([
       Conversation.deleteMany({ projectId: id }),
       ProjectVersion.deleteMany({ projectId: id }),
-      ProjectFile.deleteMany({ projectId: id })
+      ProjectFile.deleteMany({ projectId: id }),
+      require('../../models/ProjectSharing').deleteMany({ projectId: id })
     ]);
+    require('../search/projectIndexHooks').dispose(id); // project closed: stop its language servers
     return project;
   }
 
@@ -180,35 +287,44 @@ class ProjectService {
     };
   }
 
-  async updateFile(id, userId, path, content) {
-    const project = await this.getById(id, userId);
-    const fileIndex = project.files.findIndex(f => f.path === path);
-
-    if (fileIndex > -1) {
-      project.files[fileIndex].content = content;
-    } else {
-      project.files.push({ path, content, language: this._detectLanguage(path) });
+  async updateFile(id, userId, path, content, { baseRevision = null } = {}) {
+    await projectAccess.requireProjectAccess(id, userId, 'editor');
+    if (typeof path !== 'string' || !path.trim() || typeof content !== 'string') throw new ValidationError('A file path and string content are required.');
+    const project = await Project.findById(id);
+    if (!project) throw new NotFoundError('Project');
+    const expected = parseRevision(baseRevision);
+    if (await projectAccess.isShared(id)) {
+      if (expected === null) throw new AppError('Reload this shared project before saving: the save did not say which version it was based on.', 428);
+      if (expected !== (project.revision || 0)) throw revisionConflict(project.revision || 0);
     }
+    const language = this._detectLanguage(path);
+    const files = project.files.map((f) => (typeof f.toObject === 'function' ? f.toObject() : f));
+    const fileIndex = files.findIndex((f) => f.path === path);
+    if (fileIndex > -1) files[fileIndex] = { ...files[fileIndex], content, blob: null, encoding: 'utf8' };
+    else files.push({ path, content, language });
 
-    project.files = await dehydrateFiles(project.files);
-    await project.save();
+    const stored = await dehydrateFiles(files);
+    // Compare-and-set on the revision we read: a concurrent writer makes this fail instead of being overwritten.
+    const saved = await Project.findOneAndUpdate(
+      { _id: id, ...revisionFilter(project.revision || 0) },
+      { $set: { files: stored, ...(userId ? { lastEditedBy: userId } : {}) } },
+      { new: true }
+    );
+    if (!saved) {
+      const current = await Project.findById(id).select('revision').lean();
+      throw revisionConflict(current?.revision || 0);
+    }
 
     // Keep the relational store in sync
     await ProjectFile.findOneAndUpdate(
-      { projectId: project._id, path },
-      {
-        $set: {
-          content,
-          blob: null,
-          language: this._detectLanguage(path),
-          userId: project.userId || null
-        }
-      },
+      { projectId: saved._id, path },
+      { $set: { content, blob: null, language, userId: saved.userId || null } },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
 
-    project.files = await hydrateFiles(project.files);
-    return project;
+    require('../search/projectIndexHooks').invalidate(saved._id); // manual save: cached symbols are stale
+    saved.files = await hydrateFiles(saved.files);
+    return saved;
   }
 
   /* ---------------------------- internals ---------------------------- */
@@ -306,3 +422,5 @@ class ProjectService {
 }
 
 module.exports = new ProjectService();
+module.exports.revisionFilter = revisionFilter;
+module.exports.revisionConflict = revisionConflict;

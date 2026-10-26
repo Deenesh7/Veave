@@ -74,21 +74,30 @@ async function uploadFile(file) {
   };
 }
 
+async function mapPool(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await worker(items[index], index);
+    }
+  }));
+  return results;
+}
+
+const BLOB_CONCURRENCY = Math.max(1, Number.parseInt(process.env.S3_BLOB_CONCURRENCY, 10) || 16);
+
 async function dehydrateFiles(files = []) {
-  const output = [];
-  for (let index = 0; index < files.length; index += 8) {
-    const batch = await Promise.all(files.slice(index, index + 8).map(async (file) => {
-      const raw = file?.toObject ? file.toObject() : file;
-      if (!raw?.content && raw?.blob?.provider === 's3') return { ...raw };
-      if (raw?.blob?.provider === 's3' && raw.blob.sha256 === createHash('sha256').update(bufferForFile(raw)).digest('hex')) {
-        return { ...raw, content: '' };
-      }
-      const blob = await uploadFile(raw);
-      return { ...raw, content: '', blob };
-    }));
-    output.push(...batch);
-  }
-  return output;
+  return mapPool(files, BLOB_CONCURRENCY, async (file) => {
+    const raw = file?.toObject ? file.toObject() : file;
+    if (!raw?.content && raw?.blob?.provider === 's3') return { ...raw };
+    if (raw?.blob?.provider === 's3' && raw.blob.sha256 === createHash('sha256').update(bufferForFile(raw)).digest('hex')) {
+      return { ...raw, content: '' };
+    }
+    const blob = await uploadFile(raw);
+    return { ...raw, content: '', blob };
+  });
 }
 
 async function hydrateFile(file) {
@@ -101,11 +110,7 @@ async function hydrateFile(file) {
 }
 
 async function hydrateFiles(files = []) {
-  const output = [];
-  for (let index = 0; index < files.length; index += 8) {
-    output.push(...await Promise.all(files.slice(index, index + 8).map((file) => hydrateFile(file.toObject ? file.toObject() : file))));
-  }
-  return output;
+  return mapPool(files, BLOB_CONCURRENCY, (file) => hydrateFile(file.toObject ? file.toObject() : file));
 }
 
 function setClientForTests(value) {

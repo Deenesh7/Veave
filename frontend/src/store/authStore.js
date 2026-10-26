@@ -95,3 +95,9 @@ export const useAuthStore = create((set, get) => ({
   clearError: () => set({ error: null }),
   setUser: (user) => set({ user }),
 }));
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('veave:unauthorized', () => {
+    if (useAuthStore.getState().isAuthenticated) useAuthStore.setState({ token: null, isAuthenticated: false });
+  });
+}

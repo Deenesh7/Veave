@@ -100,7 +100,7 @@ export default function PersistentGenerationIndicator() {
                 <Coins className="h-3 w-3" /> Cost
               </div>
               <p className="mt-0.5 font-mono text-sm font-semibold text-zinc-900">{cost}</p>
-              <p className="text-[9px] text-zinc-400">{completed ? 'OpenRouter reported' : Number(usage.totalTokens || 0) ? 'Updates after each response' : 'Waiting for first response'}</p>
+              <p className="text-[9px] text-zinc-400">{completed ? 'Reported by provider' : Number(usage.totalTokens || 0) ? 'Updates after each response' : 'Waiting for first response'}</p>
             </div>
           </div>
         </div>

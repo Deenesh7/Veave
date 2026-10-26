@@ -1,0 +1,70 @@
+# Production reverse proxy for veave.net (Caddy 2).
+#
+#   app.veave.net      -> the Veave app (static frontend + /api to the backend)
+#   <slug>.veave.net   -> published sites, served by the backend by Host header
+#   veave.net / www    -> redirected to the app (replace with a marketing site if you have one)
+#
+# Wildcard certificates need the DNS challenge, so Caddy must be built with your DNS provider's module, e.g.:
+#   xcaddy build --with github.com/caddy-dns/cloudflare
+# and CLOUDFLARE_API_TOKEN must be set in Caddy's environment (a token with Zone:DNS:Edit for veave.net).
+
+{
+	email admin@veave.net
+	# Certificates for customers' own domains are issued on first request, but only for domains that the backend
+	# reports as verified and published (see /api/hosting/domain-ask).
+	on_demand_tls {
+		ask http://127.0.0.1:5001/api/hosting/domain-ask
+	}
+}
+
+app.veave.net {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:5001
+	}
+
+	# Validated previews are served by the backend on their own hostnames; /db (database explorer) is NOT exposed.
+	handle {
+		root * /var/www/veave/frontend/dist
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+*.veave.net {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	encode zstd gzip
+
+	# Published sites are static files only: never forward API or admin paths from a site hostname.
+	@internal path /api/* /db /db/*
+	respond @internal 404
+
+	# Keeps the original Host header, which the backend uses to pick the site.
+	reverse_proxy 127.0.0.1:5001
+}
+
+veave.net, www.veave.net {
+	redir https://app.veave.net{uri} permanent
+}
+
+# Customers' custom domains (any hostname not matched above). Needs the HTTPS port open for all hostnames.
+https:// {
+	tls {
+		on_demand
+	}
+	encode zstd gzip
+	@internal path /api/* /db /db/*
+	respond @internal 404
+	reverse_proxy 127.0.0.1:5001
+}
+
+# Plain HTTP for customers' own domains: send visitors to HTTPS. (Certificate challenges for these names are answered by
+# Caddy itself before routes run, and a certificate is only requested for hostnames the backend approves via /domain-ask.)
+http:// {
+	@internal path /api/* /db /db/*
+	respond @internal 404
+	redir https://{host}{uri} permanent
+}

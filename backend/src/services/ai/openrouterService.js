@@ -1,4 +1,5 @@
 ﻿const axios = require('axios');
+const https = require('node:https');
 const logger = require('../../utils/logger');
 const {
   AIError,
@@ -13,6 +14,29 @@ const { FILE_OPERATIONS_TOOL } = require('./aiProtocol');
 
 // OpenRouter rejects requests whose total text input exceeds 8 MB. Stay safely under it.
 const MAX_INPUT_BYTES = Number.parseInt(process.env.OPENROUTER_MAX_INPUT_BYTES, 10) || 7_000_000;
+
+// Connection-level failures (no HTTP response) are safe to retry: the request never completed.
+// EPIPE/ECONNRESET usually mean a stale keep-alive socket or the server closed a large upload early,
+// so retries use a fresh, non-pooled connection.
+const NETWORK_RETRY_PATTERN = /EPIPE|ECONNRESET|socket hang up|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH/i;
+const freshAgent = new https.Agent({ keepAlive: false });
+
+async function postWithNetworkRetry(url, payload, config, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await axios.post(url, payload, attempt === 1 ? config : { ...config, httpsAgent: freshAgent });
+    } catch (error) {
+      lastError = error;
+      const text = `${error?.code || ''} ${error?.message || ''}`;
+      const retryable = !error.response && !/timeout/i.test(text) && error?.code !== 'ECONNABORTED' && NETWORK_RETRY_PATTERN.test(text);
+      if (!retryable || attempt === attempts) throw error;
+      logger.warn?.(`OpenRouter connection error (${error.code || error.message}); retrying ${attempt}/${attempts - 1}`);
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    }
+  }
+  throw lastError;
+}
 
 function collectTextBlocks(messages) {
   const blocks = [];
@@ -150,7 +174,7 @@ class OpenRouterService {
       if (options.plugins) reqPayload.plugins = options.plugins;
       if (options.reasoning) reqPayload.reasoning = options.reasoning;
 
-      const response = await axios.post(`${this.baseURL}/chat/completions`, reqPayload, {
+      const response = await postWithNetworkRetry(`${this.baseURL}/chat/completions`, reqPayload, {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'HTTP-Referer': process.env.CLIENT_URL || 'http://localhost:5173',
@@ -161,6 +185,10 @@ class OpenRouterService {
       });
 
       const choice = response.data.choices?.[0]?.message;
+      if (!choice?.content && !choice?.tool_calls?.length) {
+        const first = response.data.choices?.[0] || {};
+        logger.warn(`OpenRouter returned no content: model=${response.data.model || targetModel} provider=${response.data.provider || 'n/a'} finish=${first.finish_reason || 'n/a'} native_finish=${first.native_finish_reason || 'n/a'} error=${JSON.stringify(first.error || response.data.error || null)} refusal=${JSON.stringify(choice?.refusal || null)} reasoningChars=${String(choice?.reasoning || '').length} usage=${JSON.stringify(response.data.usage || null)}`);
+      }
       return {
         content: choice?.content || choice?.reasoning || '',
         reasoning: choice?.reasoning || null,

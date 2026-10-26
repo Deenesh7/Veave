@@ -1,15 +1,14 @@
 import React, { useState } from 'react';
-import { Image, Github, Figma, Presentation, Globe2 } from 'lucide-react';
+import { Image, Github, Figma, Globe2 } from 'lucide-react';
 import QuickActionButton from './QuickActionButton';
 import ScreenshotImportModal from './ScreenshotImportModal';
 import GitHubImportModal from './GitHubImportModal';
 import FigmaImportModal from './FigmaImportModal';
-import SlideDeckModal from './SlideDeckModal';
 import CloneWebsiteModal from './CloneWebsiteModal';
 import { useProjectStore } from '../../store/projectStore';
 
 export default function QuickActions({ onSelectAction }) {
-  const [activeModal, setActiveModal] = useState(null); // 'screenshot' | 'github' | 'figma' | 'slides' | null
+  const [activeModal, setActiveModal] = useState(null); // 'screenshot' | 'github' | 'figma' | 'clone' | null
   const { fetchProjects } = useProjectStore();
 
   const handleGenerated = (project) => {
@@ -74,17 +73,6 @@ export default function QuickActions({ onSelectAction }) {
           active={activeModal === 'figma'}
         />
 
-        <QuickActionButton
-          icon={Presentation}
-          label="Create a slide deck"
-          onClick={() =>
-            handleActionClick(
-              'slides',
-              'Create a high-impact 5-slide product presentation deck with dark backgrounds and metric callouts.'
-            )
-          }
-          active={activeModal === 'slides'}
-        />
       </div>
 
       {/* Modals */}
@@ -111,11 +99,6 @@ export default function QuickActions({ onSelectAction }) {
         onGenerated={handleGenerated}
       />
 
-      <SlideDeckModal
-        isOpen={activeModal === 'slides'}
-        onClose={() => setActiveModal(null)}
-        onGenerated={handleGenerated}
-      />
     </>
   );
 }

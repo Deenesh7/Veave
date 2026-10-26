@@ -1,24 +1,52 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { UserPlus, Sparkles, Menu, X } from 'lucide-react';
 import WorkspaceSelector from './WorkspaceSelector';
-import { useAuthStore } from '../../store/authStore';
 import { ProfileMenu } from '../profile/ProfileMenu';
+import NotificationBell from '../../features/collaboration/NotificationBell';
+import { useCollabStore } from '../../store/collabStore';
+import { collaborationService, apiErrorMessage } from '../../services/collaborationService';
 
 export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
-  const { user } = useAuthStore();
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [invited, setInvited] = useState(false);
+  const [inviteGroupId, setInviteGroupId] = useState('');
+  const [inviteError, setInviteError] = useState(null);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const navigate = useNavigate();
+  const { groups, fetchGroups } = useCollabStore();
+  const adminGroups = groups.filter((g) => g.myStatus === 'active' && ['owner', 'admin'].includes(g.myRole));
 
-  const handleInvite = (e) => {
+  useEffect(() => {
+    if (!inviteModalOpen) return;
+    setInviteError(null);
+    fetchGroups();
+  }, [inviteModalOpen, fetchGroups]);
+
+  useEffect(() => {
+    if (!adminGroups.some((g) => g.id === inviteGroupId)) setInviteGroupId(adminGroups[0]?.id || '');
+  }, [adminGroups.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sends a real group invitation (the invitee must accept it before they join).
+  const handleInvite = async (e) => {
     e.preventDefault();
-    if (!inviteEmail) return;
-    setInvited(true);
-    setTimeout(() => {
-      setInvited(false);
-      setInviteEmail('');
-      setInviteModalOpen(false);
-    }, 1500);
+    if (!inviteEmail || !inviteGroupId) return;
+    setInviteBusy(true);
+    setInviteError(null);
+    try {
+      await collaborationService.inviteToGroup(inviteGroupId, { email: inviteEmail });
+      setInvited(true);
+      setTimeout(() => {
+        setInvited(false);
+        setInviteEmail('');
+        setInviteModalOpen(false);
+      }, 1500);
+    } catch (err) {
+      setInviteError(apiErrorMessage(err, 'Could not send the invitation.'));
+    } finally {
+      setInviteBusy(false);
+    }
   };
 
   return (
@@ -63,6 +91,8 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
             <span>Invite Team</span>
           </button>
 
+          <NotificationBell />
+
           {/* Circular User Avatar with Profile Dropdown */}
           <ProfileMenu />
         </div>
@@ -75,7 +105,7 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
             <div className="flex items-center justify-between pb-3 border-b border-zinc-100">
               <div className="flex items-center gap-2">
                 <UserPlus className="w-4 h-4 text-[#52525B]" />
-                <h3 className="text-sm font-bold text-[#111827]">Invite teammates to {user?.name ? `${user.name}'s Workspace` : 'Veave Workspace'}</h3>
+                <h3 className="text-sm font-bold text-[#111827]">Invite teammates to a group</h3>
               </div>
               <button 
                 onClick={() => setInviteModalOpen(false)}
@@ -86,9 +116,33 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
             </div>
 
             <form onSubmit={handleInvite} className="mt-4 space-y-4">
+              {adminGroups.length === 0 ? (
+                <div className="text-xs text-[#64748B] leading-relaxed space-y-3">
+                  <p>Invitations are sent through a group. Create a group first, then invite teammates to it.</p>
+                  <button
+                    type="button"
+                    onClick={() => { setInviteModalOpen(false); navigate('/groups'); }}
+                    className="px-4 py-1.5 rounded-lg bg-zinc-900 hover:bg-black text-white text-xs font-semibold"
+                  >
+                    Go to Groups
+                  </button>
+                </div>
+              ) : (
+              <>
               <p className="text-xs text-[#64748B] leading-relaxed">
-                Collaborate in real time on prototypes, design systems, and code exports with your team.
+                We email them the invitation, and they join the group only after they accept. Then share projects with the group to work together.
               </p>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#111827] mb-1.5">Group</label>
+                <select
+                  value={inviteGroupId}
+                  onChange={(e) => setInviteGroupId(e.target.value)}
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-[#E2E5E8] bg-white focus:outline-none focus:border-[#52525B]"
+                >
+                  {adminGroups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                </select>
+              </div>
 
               <div>
                 <label className="block text-xs font-semibold text-[#111827] mb-1.5">
@@ -104,6 +158,8 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
                 />
               </div>
 
+              {inviteError && <p role="alert" className="text-xs text-red-600">{inviteError}</p>}
+
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
@@ -114,11 +170,14 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded-lg bg-zinc-900 hover:bg-black text-white text-xs font-semibold shadow-xs transition-colors"
+                  disabled={inviteBusy}
+                  className="px-4 py-1.5 rounded-lg bg-zinc-900 hover:bg-black text-white text-xs font-semibold shadow-xs transition-colors disabled:opacity-60"
                 >
-                  {invited ? 'Invite Sent!' : 'Send Invite'}
+                  {invited ? 'Invite Sent!' : inviteBusy ? 'Sending...' : 'Send Invite'}
                 </button>
               </div>
+              </>
+              )}
             </form>
           </div>
         </div>

@@ -2,6 +2,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
 const { Worker, isMainThread, parentPort, workerData } = require('node:worker_threads');
+const { createHash } = require('node:crypto');
 const { chromium } = require('playwright');
 const Babel = require('@babel/standalone');
 const sharp = require('sharp');
@@ -34,42 +35,26 @@ function loadRuntimeAssets() {
 }
 
 async function buildOfflinePreviewHTMLInProcess(files, headMarkup = '') {
-  const { buildPreviewHTML } = await loadTransformer();
-  let html = buildPreviewHTML(files);
-  if (!previewCssCompiler) {
-    const postcss = require(path.join(frontendRoot, 'node_modules/postcss'));
-    const tailwindcss = require(path.join(frontendRoot, 'node_modules/tailwindcss'));
-    previewCssCompiler = async (source) => {
-      const result = await postcss([tailwindcss({
-        content: [{ raw: source, extension: 'html' }],
-        corePlugins: { preflight: true }
-      })]).process('@tailwind base; @tailwind components; @tailwind utilities;', { from: undefined });
-      return result.css;
-    };
-  }
-  const css = await previewCssCompiler(html);
-  html = html.replace(/\s*<script src="https:\/\/cdn\.tailwindcss\.com"><\/script>/i, `<style>${css}</style>`);
-  html = html.replace(/\s*<script src="https:\/\/unpkg\.com\/@babel\/standalone@[^"']+"><\/script>/i, '');
-  html = html.replace(/<script\s+type="text\/babel"([^>]*)>([\s\S]*?)<\/script>/gi, (_, attributes, source) => {
-    const filename = attributes.match(/data-filename="([^"]+)"/i)?.[1] || 'preview-bootstrap.jsx';
-    try {
-      const compiled = Babel.transform(source, {
-        filename,
-        presets: ['react', 'typescript'],
-        sourceType: 'script',
-        sourceMaps: 'inline'
-      }).code;
-      return `<script data-source-file="${filename}">${compiled}<\/script>`;
-    } catch (error) {
-      error.filePath = filename;
-      throw error;
-    }
-  });
-  if (headMarkup) html = html.replace(/<head>/i, `<head>${headMarkup}`);
-  return html;
+  // Shared compiler (see services/preview/offlineCompile.js): Tailwind scans source only, not embedded assets.
+  return require('../preview/offlineCompile').compileOffline(files, { headMarkup, sourceMaps: 'inline' });
 }
 
-function buildOfflinePreviewHTML(files, headMarkup = '') {
+const previewHtmlCache = new Map();
+const inFlightPreviewBuilds = new Map();
+const MAX_PREVIEW_CACHE_ENTRIES = 12;
+
+function computePreviewCacheKey(files = [], headMarkup = '') {
+  const hash = createHash('sha256');
+  hash.update(String(headMarkup || ''));
+  for (const file of files) {
+    if (!file) continue;
+    hash.update(`\0${file.path || ''}\0${file.encoding || 'utf8'}\0`);
+    hash.update(String(file.content || ''));
+  }
+  return hash.digest('hex');
+}
+
+function buildOfflinePreviewHTMLUncached(files, headMarkup = '') {
   return new Promise((resolve, reject) => {
     const worker = new Worker(__filename, {
       workerData: { task: 'build-offline-preview', files, headMarkup }
@@ -93,6 +78,104 @@ function buildOfflinePreviewHTML(files, headMarkup = '') {
       if (!settled && code !== 0) reject(new Error(`Offline preview compiler exited with code ${code}.`));
     });
   });
+}
+
+function buildOfflinePreviewHTML(files, headMarkup = '') {
+  const cacheKey = computePreviewCacheKey(files, headMarkup);
+  if (previewHtmlCache.has(cacheKey)) {
+    const cached = previewHtmlCache.get(cacheKey);
+    previewHtmlCache.delete(cacheKey);
+    previewHtmlCache.set(cacheKey, cached);
+    return Promise.resolve(cached);
+  }
+  if (inFlightPreviewBuilds.has(cacheKey)) return inFlightPreviewBuilds.get(cacheKey);
+  const build = buildOfflinePreviewHTMLUncached(files, headMarkup)
+    .then((html) => {
+      previewHtmlCache.set(cacheKey, html);
+      while (previewHtmlCache.size > MAX_PREVIEW_CACHE_ENTRIES) previewHtmlCache.delete(previewHtmlCache.keys().next().value);
+      return html;
+    })
+    .finally(() => inFlightPreviewBuilds.delete(cacheKey));
+  inFlightPreviewBuilds.set(cacheKey, build);
+  return build;
+}
+
+// One browser process is shared by every check and closed shortly after the last one finishes.
+let sharedBrowser = null;
+let sharedBrowserOpening = null;
+let idleBrowserTimer = null;
+let activeBrowserContexts = 0;
+const MAX_CONCURRENT_CONTEXTS = Math.max(1, Number.parseInt(process.env.PREVIEW_BROWSER_CONTEXTS, 10) || 4);
+const contextWaitQueue = [];
+
+async function getSharedBrowser() {
+  if (idleBrowserTimer) {
+    clearTimeout(idleBrowserTimer);
+    idleBrowserTimer = null;
+  }
+  if (sharedBrowser && sharedBrowser.isConnected()) return sharedBrowser;
+  if (sharedBrowserOpening) return sharedBrowserOpening;
+  sharedBrowserOpening = launchChromium({ browserType: chromium })
+    .then((browser) => {
+      sharedBrowser = browser;
+      sharedBrowserOpening = null;
+      browser.on('disconnected', () => {
+        if (sharedBrowser === browser) sharedBrowser = null;
+      });
+      return browser;
+    })
+    .catch((err) => {
+      sharedBrowserOpening = null;
+      throw err;
+    });
+  return sharedBrowserOpening;
+}
+
+function scheduleIdleBrowserClose() {
+  if (activeBrowserContexts > 0 || idleBrowserTimer) return;
+  idleBrowserTimer = setTimeout(() => {
+    idleBrowserTimer = null;
+    if (activeBrowserContexts === 0 && sharedBrowser) {
+      const browserToClose = sharedBrowser;
+      sharedBrowser = null;
+      browserToClose.close().catch(() => {});
+    }
+  }, 600);
+  if (typeof idleBrowserTimer.unref === 'function') idleBrowserTimer.unref();
+}
+
+async function acquireSharedBrowser() {
+  const browser = await getSharedBrowser();
+  activeBrowserContexts += 1;
+  return browser;
+}
+
+function releaseSharedBrowser(browser) {
+  if (!browser) return;
+  activeBrowserContexts = Math.max(0, activeBrowserContexts - 1);
+  scheduleIdleBrowserClose();
+}
+
+async function withSharedBrowserContext(contextOptions, fn) {
+  if (activeBrowserContexts >= MAX_CONCURRENT_CONTEXTS) {
+    await new Promise((resolve) => contextWaitQueue.push(resolve));
+  }
+  activeBrowserContexts += 1;
+  let context;
+  try {
+    const browser = await getSharedBrowser();
+    context = await browser.newContext(contextOptions);
+    return await fn(context);
+  } finally {
+    await context?.close().catch(() => {});
+    activeBrowserContexts -= 1;
+    if (contextWaitQueue.length > 0) {
+      const next = contextWaitQueue.shift();
+      next();
+    } else {
+      scheduleIdleBrowserClose();
+    }
+  }
 }
 
 async function routeLocalPreviewDependencies(context, previewHtml = '') {
@@ -153,7 +236,7 @@ async function verifyPreviewRuntime(files, { signal, routePath = '/', expectedHe
   }
   let browser;
   try {
-    browser = await launchChromium({ browserType: chromium });
+    browser = await acquireSharedBrowser();
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' });
     await routeLocalPreviewDependencies(context, html);
     const page = await context.newPage();
@@ -309,7 +392,7 @@ async function verifyPreviewRuntime(files, { signal, routePath = '/', expectedHe
       coverage: { exhaustive: false }
     };
   } finally {
-    await browser?.close().catch(() => {});
+    releaseSharedBrowser(browser);
   }
 }
 
@@ -318,6 +401,53 @@ async function verifyPreviewRuntime(files, { signal, routePath = '/', expectedHe
 const BLANK_SPACE_MONITOR = `<script>window.__veaveRuntimeEvents=[];window.addEventListener('message',function(e){if(e.data&&(e.data.type==='preview-error'||e.data.type==='preview-rendered'))window.__veaveRuntimeEvents.push(e.data)});<\/script>`;
 
 // Measures one route in an already-open browser context (the preview HTML is built once by the caller).
+/**
+ * Renders the project's preview (same offline build as the runtime check), lets the page settle and lazy content load,
+ * and returns whatever `inspect` (a function run inside the page) measures. Binary project files are served to the page
+ * from memory, so images have their real size and layout matches. Used for fidelity audits against a real website.
+ */
+async function inspectRenderedPreview(files, { signal, routePath = '/', inspect, argument = null, viewport = { width: 1440, height: 900 }, timeoutMs = 90000, onPage = null } = {}) {
+  signal?.throwIfAborted();
+  const textFiles = files.filter((file) => file && file.encoding !== 'base64');
+  const binaries = new Map(files.filter((file) => file && file.encoding === 'base64' && /^public\//.test(file.path || '')).map((file) => [`/${file.path.slice('public/'.length)}`, file]));
+  const monitor = `<script>
+    window.__veaveRuntimeEvents = [];
+    window.addEventListener('message', function(event) {
+      if (event.data && (event.data.type === 'preview-error' || event.data.type === 'preview-rendered')) window.__veaveRuntimeEvents.push(event.data);
+    });
+  <\/script>`;
+  const html = seedPreviewRoute(await buildOfflinePreviewHTML(textFiles, monitor), routePath);
+  return withSharedBrowserContext({ viewport, serviceWorkers: 'block' }, async (context) => {
+    await routeLocalPreviewDependencies(context, html);
+    // Registered last, so it wins over the catch-all above: project assets are served from memory.
+    await context.route(/^http:\/\/preview\.local\/(?!$).*/, async (route) => {
+      const url = new URL(route.request().url());
+      const file = binaries.get(decodeURIComponent(url.pathname));
+      if (!file) return route.fallback();
+      const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml', avif: 'image/avif', ico: 'image/x-icon', woff2: 'font/woff2', woff: 'font/woff', ttf: 'font/ttf', otf: 'font/otf' }[String(file.path).split('.').pop().toLowerCase()] || 'application/octet-stream';
+      return route.fulfill({ status: 200, contentType: mime, body: Buffer.from(String(file.content || ''), 'base64') });
+    });
+    const page = await context.newPage();
+    const pageErrors = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+    await page.goto(`http://preview.local${String(routePath || '/').startsWith('/') ? routePath : '/'}`, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    await page.waitForFunction(() => window.__veaveRuntimeEvents?.some((event) => event.type === 'preview-error' || event.type === 'preview-rendered'), null, { timeout: timeoutMs });
+    const events = await page.evaluate(() => window.__veaveRuntimeEvents || []);
+    const failed = events.find((event) => event.type === 'preview-error') || events.findLast((event) => event.type === 'preview-rendered' && event.status !== 'success');
+    if (failed || pageErrors.length) throw new Error(`The project did not render: ${failed?.error?.message || failed?.error || pageErrors[0] || 'preview failed'}`);
+    // Scroll through the page so lazy images and reveal-on-scroll sections are laid out like on the real site.
+    await page.evaluate(async () => {
+      const step = Math.max(400, Math.floor(window.innerHeight * 0.8));
+      for (let y = 0; y < document.documentElement.scrollHeight && y < 60000; y += step) { window.scrollTo({ top: y, behavior: 'instant' }); await new Promise((resolve) => setTimeout(resolve, 40)); }
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    });
+    await page.waitForTimeout(250);
+    const measured = await page.evaluate(inspect, argument);
+    if (onPage) await onPage(page);
+    return measured;
+  });
+}
+
 async function measureRouteBlankSpace(context, html, routePath) {
   const page = await context.newPage();
   try {
@@ -394,7 +524,7 @@ async function detectBlankSpaceBatch(files, routePaths = ['/'], { signal, viewpo
   try { baseHtml = await buildOfflinePreviewHTML(files, BLANK_SPACE_MONITOR); } catch (error) { for (const route of routePaths) results.set(route, { ok: false, findings: [], error: error.message }); return results; }
   let browser;
   try {
-    browser = await launchChromium({ browserType: chromium });
+    browser = await acquireSharedBrowser();
     const context = await browser.newContext({ viewport, serviceWorkers: 'block' });
     await routeLocalPreviewDependencies(context, baseHtml);
     // Registered last so it takes priority: serve per-route seeded HTML (the virtual path differs per route).
@@ -420,12 +550,46 @@ async function detectBlankSpaceBatch(files, routePaths = ['/'], { signal, viewpo
     if (error.name === 'AbortError') throw error;
     for (const route of routePaths) if (!results.has(route)) results.set(route, { ok: false, findings: [], error: error.message });
   } finally {
-    await browser?.close().catch(() => {});
+    releaseSharedBrowser(browser);
   }
   return results;
 }
 
 // Single-route convenience wrapper.
+
+/**
+ * Pages rebuilt from a capture contain content the original only revealed with a script (fade-ins, galleries that start at
+ * opacity 0). Renders each route and returns class selectors of elements that are hidden although they hold an image or
+ * real text, so a rule can show them. Menus, dialogs and similar things that are meant to be hidden are left alone.
+ */
+async function findHiddenContent(files, routePaths = ['/'], { signal, timeoutMs = 90000 } = {}) {
+  const selectors = new Set();
+  for (const routePath of routePaths) {
+    signal?.throwIfAborted();
+    const found = await inspectRenderedPreview(files, { signal, routePath, timeoutMs, inspect: () => {
+      const root = document.querySelector('.veave-fallback');
+      if (!root) return [];
+      const intended = /(modal|menu|dropdown|popup|overlay|lightbox|tooltip|search|cart|drawer|cookie|mobile|hamburger|folder|subnav|skip|sr-only|screen-reader|hidden-)/i;
+      const out = new Set();
+      for (const element of root.querySelectorAll('*')) {
+        const style = getComputedStyle(element);
+        if (style.display === 'none' || !(style.opacity === '0' || style.visibility === 'hidden')) continue;
+        if (element.closest('[aria-hidden="true"],[hidden]')) continue;
+        const classes = [...element.classList].filter((name) => /^[\w-]+$/.test(name) && !/[0-9]{4,}/.test(name));
+        if (!classes.length || intended.test(classes.join(' '))) continue;
+        // An image that fades in after load hides ITSELF (inline opacity:0), so the element counts when it is a loaded image too.
+        const hasImage = (element.tagName === 'IMG' && element.naturalWidth > 0 && element.getBoundingClientRect().width > 1) || [...element.querySelectorAll('img')].some((image) => image.naturalWidth > 0);
+        if (!hasImage && (element.innerText || '').trim().length < 20) continue;
+        out.add(classes.slice(0, 3).map((name) => `.${CSS.escape(name)}`).join(''));
+        if (out.size >= 300) break;
+      }
+      return [...out];
+    } }).catch(() => []);
+    for (const selector of found || []) selectors.add(selector);
+  }
+  return [...selectors];
+}
+
 async function detectBlankSpace(files, { signal, routePath = '/', viewport } = {}) {
   const results = await detectBlankSpaceBatch(files, [routePath], { signal, viewport, concurrency: 1 });
   return results.get(routePath) || { ok: false, findings: [] };
@@ -440,7 +604,7 @@ async function verifyPreviewVisual(files, { signal, routePath = '/', reference, 
   const html = await buildOfflinePreviewHTML(files);
   let browser;
   try {
-    browser = await launchChromium({ browserType: chromium });
+    browser = await acquireSharedBrowser();
     const context = await browser.newContext({ viewport: { width: metadata.width, height: metadata.height }, serviceWorkers: 'block' });
     await routeLocalPreviewDependencies(context, html);
     const page = await context.newPage();
@@ -462,7 +626,7 @@ async function verifyPreviewVisual(files, { signal, routePath = '/', reference, 
       }]
     };
   } finally {
-    await browser?.close().catch(() => {});
+    releaseSharedBrowser(browser);
   }
 }
 
@@ -471,7 +635,7 @@ async function verifyRenderedTarget(files, verification, { signal } = {}) {
   const html = await buildOfflinePreviewHTML(files);
   let browser;
   try {
-    browser = await launchChromium({ browserType: chromium });
+    browser = await acquireSharedBrowser();
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' });
     await routeLocalPreviewDependencies(context);
     const page = await context.newPage();
@@ -508,7 +672,7 @@ async function verifyRenderedTarget(files, verification, { signal } = {}) {
     await context.close();
     return { status: 'passed', actual: actual.trim(), ...verification };
   } finally {
-    await browser?.close().catch(() => {});
+    releaseSharedBrowser(browser);
   }
 }
 
@@ -517,7 +681,7 @@ async function verifyPageIsolation(files, verification, { signal } = {}) {
   const html = await buildOfflinePreviewHTML(files);
   let browser;
   try {
-    browser = await launchChromium({ browserType: chromium });
+    browser = await acquireSharedBrowser();
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' });
     await routeLocalPreviewDependencies(context);
     const page = await context.newPage();
@@ -572,7 +736,7 @@ async function verifyPageIsolation(files, verification, { signal } = {}) {
     await context.close();
     return { status: 'passed', slug: verification.slug };
   } finally {
-    await browser?.close().catch(() => {});
+    releaseSharedBrowser(browser);
   }
 }
 
@@ -590,4 +754,5 @@ if (!isMainThread && workerData?.task === 'build-offline-preview') {
     }));
 }
 
-module.exports = { detectBlankSpaceBatch, detectBlankSpace, verifyPreviewRuntime, verifyPreviewVisual, verifyRenderedTarget, verifyPageIsolation };
+module.exports = {
+  findHiddenContent, inspectRenderedPreview, buildOfflinePreviewHTML, detectBlankSpaceBatch, detectBlankSpace, verifyPreviewRuntime, verifyPreviewVisual, verifyRenderedTarget, verifyPageIsolation };

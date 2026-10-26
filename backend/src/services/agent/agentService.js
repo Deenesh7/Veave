@@ -13,14 +13,14 @@ const fileManager = require('../project/fileManager');
 const { AppError, NotFoundError, AIError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
 const { hydrateFiles } = require('../storage/s3BlobStorage');
+const projectAccess = require('../collaboration/projectAccess');
 
 class AgentService {
   async processMessage(userId, projectId, userMessage, imageBase64 = null, signal, selectedElement = null) {
     signal?.throwIfAborted();
-    const projectQuery = userId
-      ? { _id: projectId, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-      : { _id: projectId };
-    const project = await Project.findOne(projectQuery);
+    // Collaborators with edit rights can run the AI on a shared project; viewers and outsiders cannot.
+    await projectAccess.requireProjectAccess(projectId, userId, 'editor');
+    const project = await Project.findById(projectId);
     if (!project) throw new NotFoundError('Project');
     project.files = await hydrateFiles(project.files);
 
@@ -69,10 +69,9 @@ class AgentService {
 
   async processStreamingMessage(userId, projectId, userMessage, imageBase64, onChunk, signal, selectedElement = null) {
     signal?.throwIfAborted();
-    const projectQuery = userId
-      ? { _id: projectId, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-      : { _id: projectId };
-    const project = await Project.findOne(projectQuery);
+    // Collaborators with edit rights can run the AI on a shared project; viewers and outsiders cannot.
+    await projectAccess.requireProjectAccess(projectId, userId, 'editor');
+    const project = await Project.findById(projectId);
     if (!project) throw new NotFoundError('Project');
     project.files = await hydrateFiles(project.files);
 
@@ -196,7 +195,8 @@ class AgentService {
 
   async handleErrorRecovery(userId, projectId, error, retryCount = 0, signal) {
     if (retryCount >= 3) throw new AIError('Max retries reached for error recovery');
-    const project = await Project.findOne({ _id: projectId, userId });
+    await projectAccess.requireProjectAccess(projectId, userId, 'editor');
+    const project = await Project.findById(projectId);
     if (!project) throw new NotFoundError('Project');
     
     const prompt = `The application crashed with the following error: ${error.message}. Please fix it.`;

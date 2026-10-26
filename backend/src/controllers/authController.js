@@ -3,8 +3,42 @@ const User = require('../models/User');
 const oauthService = require('../services/oauthService');
 const { ValidationError, AuthError } = require('../utils/errors');
 
+// Turn Google's terse OAuth errors into something the user can act on.
+const describeGoogleError = (raw) => {
+  const text = String(raw || '');
+  const redirectUri = oauthService.googleRedirectUri();
+  if (/access_denied/i.test(text)) {
+    return 'Google denied the sign-in. If you cancelled, try again. Otherwise the OAuth app is in Testing mode: add this Google account under "Test users" on the OAuth consent screen.';
+  }
+  if (/redirect_uri_mismatch/i.test(text)) {
+    return `Google rejected the redirect address. Add exactly this under "Authorized redirect URIs" for your OAuth client: ${redirectUri}`;
+  }
+  if (/invalid_client|unauthorized_client|client_secret|client was not found/i.test(text)) {
+    return 'Google does not accept the client ID / secret in backend/.env. Copy both from the same OAuth client in Google Cloud Console (no quotes or spaces) and restart the backend.';
+  }
+  if (/invalid_grant|malformed auth code|bad request/i.test(text)) {
+    return 'The Google sign-in code expired or was already used (or the redirect address differs from the one registered). Click "Continue with Google" again.';
+  }
+  if (/wrong recipient|audience/i.test(text)) {
+    return 'The Google token was issued for a different client ID than GOOGLE_CLIENT_ID in backend/.env.';
+  }
+  if (/token used (too early|too late)|clock/i.test(text)) {
+    return 'The computer clock is out of sync with Google. Turn on automatic date & time and try again.';
+  }
+  return text;
+};
+
+// The client has no refresh flow, so a 15 minute token silently logged users out mid-session.
+// Lifetime is configurable (ACCESS_TOKEN_TTL, e.g. "12h" or "7d"); default 7 days.
+const ACCESS_TOKEN_TTL = () => process.env.ACCESS_TOKEN_TTL || '7d';
+const ttlToMs = (ttl) => {
+  const match = String(ttl).match(/^(\d+)\s*([smhd])$/i);
+  if (!match) return 7 * 24 * 60 * 60 * 1000;
+  return Number(match[1]) * { s: 1000, m: 60000, h: 3600000, d: 86400000 }[match[2].toLowerCase()];
+};
+
 const generateTokens = (userId) => {
-  const accessToken = jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '15m' });
+  const accessToken = jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: ACCESS_TOKEN_TTL() });
   const refreshToken = jwt.sign({ id: userId }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
   return { accessToken, refreshToken };
 };
@@ -15,7 +49,7 @@ const sendAuthResponse = (res, user, statusCode = 200) => {
   res.cookie('token', accessToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    maxAge: 15 * 60 * 1000
+    maxAge: ttlToMs(ACCESS_TOKEN_TTL())
   });
 
   return res.status(statusCode).json({
@@ -90,17 +124,12 @@ exports.logout = async (req, res, next) => {
 
 exports.getProfile = async (req, res, next) => {
   try {
-    let user = null;
-    if (req.user && (req.user._id || req.user.id)) {
-      user = await User.findById(req.user._id || req.user.id).select('-password');
-    }
-    if (!user) {
-      // Fetch the primary real registered user from the database
-      user = await User.findOne().sort({ createdAt: 1 }).select('-password');
-    }
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'No user found in database' });
-    }
+    // Only ever describe the caller. (This used to fall back to the oldest account in the database for
+    // anyone, which leaked that user's profile and made expired sessions look logged in.)
+    const user = req.user && (req.user._id || req.user.id)
+      ? await User.findById(req.user._id || req.user.id).select('-password')
+      : null;
+    if (!user) throw new AuthError('Not authenticated');
     res.status(200).json({ success: true, data: user });
   } catch (error) {
     next(error);
@@ -149,7 +178,8 @@ exports.googleAuthCallback = async (req, res, next) => {
     const { code, error } = req.query;
 
     if (error) {
-      return res.redirect(`${clientUrl}/login?error=${encodeURIComponent(error)}`);
+      console.error(`Google OAuth was refused by Google: ${error} (${req.query.error_description || 'no description'})`);
+      return res.redirect(`${clientUrl}/login?error=${encodeURIComponent(describeGoogleError(error))}`);
     }
 
     if (!code) {
@@ -174,13 +204,13 @@ exports.googleAuthCallback = async (req, res, next) => {
     res.cookie('token', accessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      maxAge: 15 * 60 * 1000
+      maxAge: ttlToMs(ACCESS_TOKEN_TTL())
     });
 
     return res.redirect(`${clientUrl}/login?token=${accessToken}`);
   } catch (err) {
     console.error('Google OAuth callback error:', err);
-    return res.redirect(`${clientUrl}/login?error=${encodeURIComponent(err.message || 'Google authentication failed')}`);
+    return res.redirect(`${clientUrl}/login?error=${encodeURIComponent(describeGoogleError(err.message) || 'Google authentication failed')}`);
   }
 };
 
@@ -270,7 +300,7 @@ exports.appleAuthCallback = async (req, res, next) => {
     res.cookie('token', accessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      maxAge: 15 * 60 * 1000
+      maxAge: ttlToMs(ACCESS_TOKEN_TTL())
     });
 
     return res.redirect(`${clientUrl}/login?token=${accessToken}`);

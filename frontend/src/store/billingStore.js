@@ -17,11 +17,26 @@ export const useBillingStore = create((set, get) => ({
     try {
       const res = await billingService.getOverview();
       const data = res.data?.data || null;
-      set({ overview: data, isLoading: false });
+      set({ overview: data, isLoading: false, lastUpdated: Date.now() });
       return data;
     } catch (err) {
       const message = err.response?.data?.error?.message || err.message || 'Failed to fetch billing overview';
       set({ error: message, isLoading: false });
+      return null;
+    }
+  },
+
+  // Silent re-read of live usage (no spinner, no error banner). Used for polling and after anything that changes
+  // usage, so Projects / Storage / Credits / Tokens follow the real data instead of a snapshot.
+  lastUpdated: null,
+  refreshOverview: async () => {
+    if (!localStorage.getItem('veave_token')) return null;
+    try {
+      const res = await billingService.getOverview();
+      const data = res.data?.data || null;
+      if (data) set({ overview: data, lastUpdated: Date.now() });
+      return data;
+    } catch {
       return null;
     }
   },
@@ -53,9 +68,9 @@ export const useBillingStore = create((set, get) => ({
   },
 
   /**
-   * Razorpay Checkout Flow
+   * Secure checkout flow
    */
-  checkoutWithRazorpay: async (planName) => {
+  startCheckout: async (planName) => {
     set({ isProcessingPayment: true, error: null, paymentSuccess: null });
     try {
       // 1. Create order on the backend
@@ -68,11 +83,13 @@ export const useBillingStore = create((set, get) => ({
 
       const currentUser = useAuthStore.getState().user;
 
-      // If test mode or simulated order, handle verification directly if script fails
       const isScriptLoaded = await loadRazorpayScript();
+      if (!isScriptLoaded || !window.Razorpay) {
+        throw new Error('Could not load the payment checkout. Check your connection and try again.');
+      }
 
-      if (isScriptLoaded && window.Razorpay && !orderData.isTestMode) {
-        // Open live Razorpay standard checkout popup
+      {
+        // Open the payment checkout popup
         return new Promise((resolve, reject) => {
           const options = {
             key: orderData.keyId,
@@ -139,33 +156,6 @@ export const useBillingStore = create((set, get) => ({
           });
           rzp.open();
         });
-      } else {
-        // Fallback / Development Simulation mode:
-        // Automatically completes verification so developers without live Razorpay keys can test full UI activation
-        const verifyRes = await billingService.verifyPayment({
-          razorpay_order_id: orderData.orderId,
-          razorpay_payment_id: `pay_sim_${Date.now()}`,
-          razorpay_signature: 'simulated_signature',
-          plan: planName,
-        });
-
-        const verifiedData = verifyRes.data?.data;
-        if (verifiedData?.user) {
-          useAuthStore.getState().setUser(verifiedData.user);
-        }
-
-        await get().fetchOverview();
-        await get().fetchInvoices();
-
-        set({
-          isProcessingPayment: false,
-          paymentSuccess: {
-            plan: planName,
-            invoice: verifiedData?.payment,
-          },
-        });
-
-        return verifiedData;
       }
     } catch (err) {
       const message = err.response?.data?.error?.message || err.message || 'Payment initiation failed';

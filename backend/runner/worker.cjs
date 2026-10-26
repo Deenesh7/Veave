@@ -8,7 +8,7 @@ const { validateBrowser, validatePlan } = require('./browserValidation.cjs');
 
 const WORKSPACE = '/workspace';
 const OUTPUT_LIMIT = 1024 * 1024;
-const ARTIFACT_LIMIT = 5 * 1024 * 1024;
+const ARTIFACT_LIMIT = Number.parseInt(process.env.VEAVE_ARTIFACT_LIMIT_BYTES, 10) || 5 * 1024 * 1024;
 const children = new Set();
 let activeStage = 'startup';
 let stopped = false;
@@ -34,7 +34,8 @@ function environment() {
     CI: 'true', NODE_ENV: 'development', NO_COLOR: '1',
     npm_config_cache: '/tmp/veave-npm-cache', npm_config_audit: 'false', npm_config_fund: 'false',
     npm_config_ignore_scripts: activeStage === 'install' ? 'true' : 'false', npm_config_update_notifier: 'false',
-    npm_config_userconfig: '/dev/null', npm_config_globalconfig: '/dev/null',
+    // Two different, nonexistent files: npm refuses to load the same path (/dev/null) as both user and global config.
+    npm_config_userconfig: '/nonexistent/user.npmrc', npm_config_globalconfig: '/nonexistent/global.npmrc',
     npm_config_registry: 'https://registry.npmjs.org/', npm_config_fetch_retries: '1',
     ...(activeStage === 'install' ? {
       npm_config_proxy: 'http://registry-proxy:8080',
@@ -201,9 +202,41 @@ async function artifacts(collect) {
   return files;
 }
 
+// Publishing mode: the built site can be far larger than the 5 MB smoke-test artifact limit, and it is returned
+// through a mounted directory instead of the protocol stream. Same safety rules: regular files only, no links.
+async function exportDist(destination) {
+  const limitBytes = Number.parseInt(process.env.VEAVE_EXPORT_LIMIT_BYTES, 10) || 200 * 1024 * 1024;
+  const limitEntries = Number.parseInt(process.env.VEAVE_EXPORT_LIMIT_ENTRIES, 10) || 5000;
+  const root = path.join(WORKSPACE, 'dist');
+  const rootStat = await fs.lstat(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('dist must be a real directory, not a symlink.');
+  let total = 0;
+  let entries = 0;
+  async function walk(directory, relative, depth) {
+    if (depth > 20) throw new Error('dist exceeds maximum directory depth 20.');
+    await fs.mkdir(path.join(destination, relative), { recursive: true });
+    for (const name of (await fs.readdir(directory)).sort()) {
+      if (++entries > limitEntries) throw new Error(`dist exceeds ${limitEntries} entries.`);
+      const absolute = path.join(directory, name);
+      const rel = path.posix.join(relative, name);
+      const stat = await fs.lstat(absolute);
+      if (stat.isSymbolicLink()) throw new Error(`Symlinks in dist are unsupported: ${rel}`);
+      if (stat.isDirectory()) await walk(absolute, rel, depth + 1);
+      else if (stat.isFile()) {
+        total += stat.size;
+        if (total > limitBytes) throw new Error(`dist exceeds ${limitBytes} bytes.`);
+        await fs.copyFile(absolute, path.join(destination, rel));
+      } else throw new Error(`Non-regular artifact: ${rel}`);
+    }
+  }
+  await walk(root, '', 0);
+  if (!(await readRegular('dist/index.html', limitBytes)).trim()) throw new Error('A nonempty dist/index.html is required.');
+  return { entries, total };
+}
+
 async function main() {
   const mode = process.argv[2];
-  if (!['install', 'validate'].includes(mode) || process.argv.length !== 3) throw new Error('Usage: node /runner/worker.cjs install|validate');
+  if (!['install', 'validate', 'build'].includes(mode) || process.argv.length !== 3) throw new Error('Usage: node /runner/worker.cjs install|validate|build');
   if (process.platform !== 'linux') throw new Error('The worker must run inside the Linux runner container.');
   if (mode === 'install') await fs.cp('/input', WORKSPACE, { recursive: true });
   await stage('manifest', async () => {
@@ -236,6 +269,16 @@ async function main() {
     await stage('dependencies', () => run('npm', ['ls', '--all', '--json'], 30000));
     result.coverage = { kind: 'install-only', exhaustive: false, skips: ['Build and browser checks require validate mode.'] };
     result.ok = true;
+    return;
+  }
+  if (mode === 'build') {
+    await stage('build', async () => {
+      await fs.rm(path.join(WORKSPACE, 'dist'), { recursive: true, force: true });
+      await run('npm', ['run', 'build'], 300000);
+    });
+    await stage('artifacts', () => exportDist('/output'));
+    result.coverage = { kind: 'build-only', exhaustive: false, skips: ['Preview and browser checks are validate mode only.'] };
+    result.ok = result.diagnostics.length === 0;
     return;
   }
   result.lockfile = await readRegular('package-lock.json', 8 * 1024 * 1024);

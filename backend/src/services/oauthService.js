@@ -4,12 +4,17 @@ const appleSignin = require('apple-signin-auth');
 const User = require('../models/User');
 const { AuthError, ValidationError } = require('../utils/errors');
 
+// One place decides the redirect URI so the auth URL, token exchange and the setup hint always agree.
+const googleRedirectUri = () => String(process.env.GOOGLE_CALLBACK_URL || `http://localhost:${process.env.PORT || 5001}/api/auth/google/callback`).trim();
+
 class OAuthService {
+  googleRedirectUri() { return googleRedirectUri(); }
+
   constructor() {
     this.googleClient = new OAuth2Client(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_CALLBACK_URL || 'http://localhost:5000/api/auth/google/callback'
+      googleRedirectUri()
     );
   }
 
@@ -21,9 +26,9 @@ class OAuthService {
       throw new ValidationError('GOOGLE_CLIENT_ID is not configured in backend environment.');
     }
 
-    const redirectUri = process.env.GOOGLE_CALLBACK_URL || 'http://localhost:5000/api/auth/google/callback';
+    const redirectUri = googleRedirectUri();
     const params = new URLSearchParams({
-      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_id: String(process.env.GOOGLE_CLIENT_ID).trim(),
       redirect_uri: redirectUri,
       response_type: 'code',
       scope: 'openid email profile',
@@ -38,14 +43,14 @@ class OAuthService {
    * Exchanges Google authorization code for user profile
    */
   async verifyGoogleCode(code) {
-    const redirectUri = process.env.GOOGLE_CALLBACK_URL || 'http://localhost:5000/api/auth/google/callback';
+    const redirectUri = googleRedirectUri();
     
     try {
       // Exchange code for tokens
       const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
         code,
-        client_id: process.env.GOOGLE_CLIENT_ID,
-        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        client_id: String(process.env.GOOGLE_CLIENT_ID).trim(),
+        client_secret: String(process.env.GOOGLE_CLIENT_SECRET || '').trim(),
         redirect_uri: redirectUri,
         grant_type: 'authorization_code'
       });
@@ -105,7 +110,7 @@ class OAuthService {
       throw new ValidationError('APPLE_CLIENT_ID is not configured in backend environment.');
     }
 
-    const redirectUri = process.env.APPLE_CALLBACK_URL || 'http://localhost:5000/api/auth/apple/callback';
+    const redirectUri = process.env.APPLE_CALLBACK_URL || `http://localhost:${process.env.PORT || 5001}/api/auth/apple/callback`;
     const params = new URLSearchParams({
       client_id: process.env.APPLE_CLIENT_ID,
       redirect_uri: redirectUri,

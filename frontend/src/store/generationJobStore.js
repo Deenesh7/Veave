@@ -1,4 +1,5 @@
 ﻿import { create } from 'zustand';
+import { useBillingStore } from './billingStore';
 import { aiCreationService } from '../services/aiCreationService';
 
 const ACTIVE_JOB_KEY = 'veave_active_job_id';
@@ -99,9 +100,13 @@ export const useGenerationJobStore = create((set, get) => ({
     customTokens = null,
     image = null,
     sourceUrl = null,
+    prototype = undefined,
     activeSkills = [],
     githubRepo = null,
     uploadedFiles = [],
+    refreshFromSource,
+    sourceRoute,
+    viewingRoute,
     selectedElement = null,
     projectId = null,
     conversationId = null,
@@ -179,9 +184,13 @@ export const useGenerationJobStore = create((set, get) => ({
         customTokens,
         image,
         sourceUrl,
+        prototype,
         activeSkills,
         githubRepo,
         uploadedFiles,
+        refreshFromSource,
+        sourceRoute,
+        viewingRoute,
         selectedElement,
         projectId,
         conversationId: targetConvId,
@@ -658,3 +667,10 @@ if (typeof window !== 'undefined') {
   }, 100);
 }
 
+
+// A finished generation adds a project, files and token usage: re-read live billing usage right away.
+useGenerationJobStore.subscribe((state, previous) => {
+  if (state.jobStatus === 'completed' && previous.jobStatus !== 'completed') {
+    try { useBillingStore.getState().refreshOverview(); } catch { /* best effort */ }
+  }
+});

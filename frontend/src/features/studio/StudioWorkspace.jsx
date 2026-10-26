@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useSmartBack } from '../../hooks/useSmartBack';
 import { StudioTopBar } from './StudioTopBar';
 import { StudioConversationPanel, GENERATION_TIMELINE_STEPS } from './StudioConversationPanel';
 import { StudioProgressiveSkeleton } from './StudioProgressiveSkeleton';
@@ -15,6 +16,7 @@ import { useGenerationJobStore } from '../../store/generationJobStore';
 export function StudioWorkspace() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const goBack = useSmartBack('/dashboard');
 
   const { fetchProject, currentProject, setCurrentProject, updateProject } = useProjectStore();
   const { viewMode, setViewMode, previewSize, setPreviewSize, resetEditor, openFile, setActiveFile } = useEditorStore();
@@ -71,7 +73,9 @@ export function StudioWorkspace() {
   );
   const [isOpeningVisualEditor, setIsOpeningVisualEditor] = useState(false);
 
-  const handleOpenVisualEditor = (targetMode = 'editor') => {
+  const handleOpenVisualEditor = (requestedMode = 'editor') => {
+    // Used directly as an onClick handler in places, which passes the click event; only a known mode name is accepted.
+    const targetMode = ['editor', 'preview', 'screens', 'code'].includes(requestedMode) ? requestedMode : 'editor';
     if (useVisualEditorStore?.getState?.()?.setActiveMode) {
       useVisualEditorStore.getState().setActiveMode(targetMode);
     }
@@ -247,7 +251,7 @@ export function StudioWorkspace() {
   };
 
   // Natural language modification submission (Voice or Text) using persistent job
-  const handleModificationSubmit = async (modificationText, chosenModel = 'Gemini Flash 3.8', uploadedFiles = []) => {
+  const handleModificationSubmit = async (modificationText, chosenModel = 'Gemini Flash 3.8', uploadedFiles = [], options = {}) => {
     if (!currentProject?._id || !modificationText.trim()) return;
 
     setCelebrationVisible(false);
@@ -255,8 +259,8 @@ export function StudioWorkspace() {
 
     try {
       const selectedElement = useVisualEditorStore.getState().selectedElement;
-      const hasImageUpload = uploadedFiles.some((file) => file?.isImage || file?.type?.startsWith('image/'));
-      const contextualSelection = hasImageUpload && !selectedElement?.isImage ? null : selectedElement;
+      // The part of the page the user selected is where an attached image goes, so the selection is always kept.
+      const contextualSelection = selectedElement;
       await startJob({
         type: 'modify',
         projectId: currentProject._id,
@@ -265,6 +269,7 @@ export function StudioWorkspace() {
         designSystem: currentProject.settings?.designSystem || 'Modern',
         model: chosenModel,
         uploadedFiles,
+        viewingRoute: options?.viewingRoute,
         selectedElement: contextualSelection,
       });
     } catch (err) {
@@ -345,7 +350,7 @@ export function StudioWorkspace() {
             url.searchParams.delete('mode');
             window.history.replaceState(null, '', url.toString());
           } catch (e) {}
-          navigate('/dashboard');
+          goBack();
         }}
       />
     );
@@ -400,6 +405,7 @@ export function StudioWorkspace() {
                   isOpeningVisualEditor={isOpeningVisualEditor}
                   isGenerating={isGenerating}
                   previewKey={previewKey}
+                  projectId={currentProject?._id}
                   inspectionEnabled={true}
                 />
               </div>
@@ -463,6 +469,7 @@ export function StudioWorkspace() {
                 isOpeningVisualEditor={isOpeningVisualEditor}
                 isGenerating={isGenerating}
                 previewKey={previewKey}
+                projectId={currentProject?._id}
                 inspectionEnabled={false}
               />
             </div>

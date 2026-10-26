@@ -11,7 +11,8 @@ import {
   Github,
   Component as ComponentIcon,
   GitBranch,
-  Sparkles
+  Sparkles,
+  LayoutTemplate
 } from 'lucide-react';
 import PromptInput from './PromptInput';
 import DesignSystemSelector from './DesignSystemSelector';
@@ -83,6 +84,11 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
   // Automatically navigate or show preview when background job completes
   useEffect(() => {
     if (jobStatus === 'completed' && jobResult) {
+      // The job store keeps the finished result alive. Without this guard, pressing Back from the editor
+      // remounts the composer, which sees the same "completed" result and navigates straight back in.
+      const resultKey = String(jobResult.generationId || jobResult.project?._id || '');
+      if (resultKey && sessionStorage.getItem('veave_handled_generation') === resultKey) return;
+      if (resultKey) sessionStorage.setItem('veave_handled_generation', resultKey);
       const targetProject = jobResult.project;
       if (targetProject?._id) {
         sessionStorage.setItem('veave_pending_prompt', prompt.trim());
@@ -328,6 +334,15 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
     }
   };
 
+  // "Use this website as a prototype": structure/look come from the URL, content stays the user's own.
+  const [prototypeUrl, setPrototypeUrl] = useState('');
+  const [prototypeInputOpen, setPrototypeInputOpen] = useState(false);
+  const normalizedPrototypeUrl = (() => {
+    const raw = prototypeUrl.trim();
+    if (!raw) return '';
+    try { const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`); return ['http:', 'https:'].includes(u.protocol) ? u.href : ''; } catch { return ''; }
+  })();
+
   const handleSubmit = async () => {
     if (!prompt.trim() || isGenerating) return;
 
@@ -361,6 +376,7 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
         customTokens: selectedPalette || null,
         model,
         image: screenshotFile?.dataUrl || null,
+        prototype: normalizedPrototypeUrl ? { url: normalizedPrototypeUrl } : undefined,
         uploadedFiles: uploadedFiles.map(f => ({
           name: f.name,
           size: f.size,
@@ -454,7 +470,7 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
         )}
 
         {/* Attached Context Strip: Uploaded Files, Component, GitHub Repo, Active Skills */}
-        {(uploadedFiles.length > 0 || selectedComponent || connectedGitHub || activeSkills.length > 0) && (
+        {(uploadedFiles.length > 0 || selectedComponent || connectedGitHub || activeSkills.length > 0 || normalizedPrototypeUrl) && (
           <div className="flex flex-wrap items-center gap-1.5 mb-2 px-1 select-none animate-in fade-in">
             {/* Uploaded Files */}
             {uploadedFiles.map((file) => (
@@ -464,6 +480,17 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
                 onRemove={handleRemoveFile}
               />
             ))}
+
+            {/* Prototype website */}
+            {normalizedPrototypeUrl && (
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 shadow-2xs">
+                <LayoutTemplate className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="font-semibold text-[11px] truncate max-w-[170px]">Prototype: {new URL(normalizedPrototypeUrl).hostname}</span>
+                <button type="button" onClick={() => { setPrototypeUrl(''); setPrototypeInputOpen(false); }} className="text-emerald-400 hover:text-emerald-700 p-0.5 rounded-full cursor-pointer" title="Remove prototype">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
 
             {/* Selected Component Context */}
             {selectedComponent && (
@@ -520,6 +547,20 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
           </div>
         )}
 
+        {prototypeInputOpen && (
+          <div className="flex items-center gap-2 mb-2 px-1">
+            <input
+              autoFocus
+              value={prototypeUrl}
+              onChange={(e) => setPrototypeUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setPrototypeInputOpen(false); } }}
+              placeholder="Prototype website, e.g. https://example.com (layout and style only; your content)"
+              className="flex-1 min-w-0 rounded-lg border border-zinc-200 px-3 py-1.5 text-xs outline-none focus:border-zinc-900"
+            />
+            <button type="button" onClick={() => setPrototypeInputOpen(false)} className="px-2.5 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-semibold cursor-pointer">Use</button>
+          </div>
+        )}
+
         {/* Bottom Control Bar: All in 1 sleek line */}
         <div className="flex items-center justify-between gap-2 pt-2 border-t border-zinc-100 select-none flex-nowrap">
           {/* Left Controls */}
@@ -532,6 +573,16 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
               onOpenConnectors={() => setIsConnectorsOpen(true)}
               onOpenSkills={() => setIsSkillsOpen(true)}
             />
+
+            {/* Prototype website button */}
+            <button
+              type="button"
+              title="Use a website as a prototype"
+              onClick={() => setPrototypeInputOpen((open) => !open)}
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${normalizedPrototypeUrl || prototypeInputOpen ? 'bg-emerald-50 text-emerald-700' : 'text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100'}`}
+            >
+              <LayoutTemplate className="w-3.5 h-3.5" />
+            </button>
 
             {/* Slash command toggle button */}
             <button

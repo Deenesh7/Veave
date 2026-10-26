@@ -282,7 +282,7 @@ export function ScreensMode({ previewHtml }) {
                     key={`desktop-${refreshKey}`}
                     srcDoc={previewHtml}
                     title="Desktop Screen"
-                    sandbox="allow-scripts allow-same-origin allow-modals allow-popups allow-forms"
+                    sandbox="allow-scripts allow-same-origin allow-modals allow-popups allow-popups-to-escape-sandbox allow-forms"
                     className="border-0 absolute top-0 left-0 origin-top-left"
                     style={{
                       width: '1280px',
@@ -362,7 +362,7 @@ export function ScreensMode({ previewHtml }) {
                     key={`tablet-${refreshKey}`}
                     srcDoc={previewHtml}
                     title="Tablet Screen"
-                    sandbox="allow-scripts allow-same-origin allow-modals allow-popups allow-forms"
+                    sandbox="allow-scripts allow-same-origin allow-modals allow-popups allow-popups-to-escape-sandbox allow-forms"
                     className="border-0 absolute top-0 left-0 origin-top-left"
                     style={{
                       width: '768px',
@@ -443,7 +443,7 @@ export function ScreensMode({ previewHtml }) {
                     key={`mobile-${refreshKey}`}
                     srcDoc={previewHtml}
                     title="Mobile Screen"
-                    sandbox="allow-scripts allow-same-origin allow-modals allow-popups allow-forms"
+                    sandbox="allow-scripts allow-same-origin allow-modals allow-popups allow-popups-to-escape-sandbox allow-forms"
                     className="border-0 absolute top-0 left-0 origin-top-left"
                     style={{
                       width: '375px',

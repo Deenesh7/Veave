@@ -1,5 +1,8 @@
 import { create } from 'zustand';
 import { projectService } from '../services/projectService';
+import { useBillingStore } from './billingStore';
+
+const refreshUsage = () => { try { useBillingStore.getState().refreshOverview(); } catch { /* usage refresh is best effort */ } };
 
 export const useProjectStore = create((set, get) => ({
   projects: [],
@@ -41,6 +44,7 @@ export const useProjectStore = create((set, get) => ({
         currentProject: project,
         isLoading: false,
       }));
+      refreshUsage();
       return project;
     } catch (err) {
       set({ error: err.message, isLoading: false });
@@ -72,13 +76,15 @@ export const useProjectStore = create((set, get) => ({
         projects: state.projects.filter((p) => p._id !== id),
         currentProject: state.currentProject?._id === id ? null : state.currentProject,
       }));
+      refreshUsage();
     } catch (err) {
       set({ error: err.message });
       throw err;
     }
   },
 
-  setCurrentProject: (project) => set({ currentProject: project }),
+  // The page being viewed belongs to the project: opening another project starts at its home page.
+  setCurrentProject: (project) => set((state) => ({ currentProject: project, previewRoute: state.currentProject?._id === project?._id ? state.previewRoute : '/' })),
 
   updateProjectFiles: (files) =>
     set((state) => ({

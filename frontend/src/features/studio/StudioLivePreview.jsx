@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { usePreview } from '../../hooks/usePreview';
+import { useProjectStore } from '../../store/projectStore';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { usePreview, quickFingerprint } from '../../hooks/usePreview';
 import CanvasLoadingOverlay from '../../components/common/CanvasLoadingOverlay';
 import { VIEWPORT_SIZES } from '../../utils/constants';
 import { 
@@ -25,12 +26,15 @@ export function StudioLivePreview({
   isOpeningVisualEditor = false,
   isGenerating = false,
   previewKey = 0,
+  projectId = null,
   inspectionEnabled = true
 }) {
   const { iframeRef, previewHtml, previewUrl, previewBuildId, statusLabel, buildPreview } = usePreview({
     files,
     validation,
     previewKey,
+    projectId,
+    skipBuiltPreview: inspectionEnabled,
     onPreviewError: (error) => onPreviewError?.({ ...error, previewKey }),
     onPreviewRendered
   });
@@ -39,10 +43,7 @@ export function StudioLivePreview({
   const [historyStack, setHistoryStack] = useState(['/']);
   const [selectedElement, setSelectedElement] = useState(null);
 
-  const filesFingerprint = useMemo(
-    () => JSON.stringify((files || []).map(({ path, content }) => ({ path, content }))),
-    [files]
-  );
+  const filesFingerprint = useMemo(() => quickFingerprint(files || []), [files]);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,23 +51,42 @@ export function StudioLivePreview({
     const timer = setTimeout(async () => {
       await buildPreview(files);
       if (!cancelled) setIsBuilding(false);
-    }, 60);
+    }, 120);
     return () => { cancelled = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filesFingerprint, previewKey, buildPreview]);
 
-  // Reset route history when preview builds anew
+  const currentRouteRef = useRef('/');
+  currentRouteRef.current = currentRoute;
+
+  // Reset route history only for a brand new preview. Rebuilds (for example while the site is still being created)
+  // keep the current route so other pages do not bounce back to Home.
   useEffect(() => {
     setCurrentRoute('/');
     setHistoryStack(['/']);
     setSelectedElement(null);
-  }, [previewKey, previewBuildId]);
+  }, [previewKey]);
+
+  useEffect(() => {
+    setSelectedElement(null);
+  }, [previewBuildId]);
+
+  // The preview only listens for the inspect-mode message once its scripts have run. A browser-compiled preview
+  // finishes loading long before that, so the on-load message is lost and inspect mode stays ON (clicking a button
+  // selects it instead of using it). Re-send when the preview reports it has rendered.
+  const syncInspectionRef = useRef(null);
 
   // Listen for iframe events: text edits, element selection, and route changes
   useEffect(() => {
     const handleWindowMessage = (e) => {
       if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
-      if (e.data?.type === 'visual-text-edited') {
+      if (e.data?.type === 'preview-rendered') {
+        syncInspectionRef.current?.();
+        const route = currentRouteRef.current;
+        if (route && route !== '/') {
+          try { iframeRef.current.contentWindow.postMessage({ type: 'preview-restore-route', route }, '*'); } catch (err) {}
+        }
+      } else if (e.data?.type === 'visual-text-edited') {
         const { oldText, newText } = e.data;
         if (onTextUpdate && oldText && newText) {
           onTextUpdate(oldText, newText);
@@ -80,6 +100,7 @@ export function StudioLivePreview({
       } else if (e.data?.type === 'preview-route-changed') {
         const nextRoute = e.data.route || '/';
         setCurrentRoute(nextRoute);
+        useProjectStore.setState({ previewRoute: nextRoute });
         setHistoryStack((prev) => {
           if (prev[prev.length - 1] === nextRoute) return prev;
           return [...prev, nextRoute];
@@ -100,6 +121,8 @@ export function StudioLivePreview({
       }, '*');
     } catch (err) {}
   }, [iframeRef, inspectionEnabled]);
+
+  syncInspectionRef.current = syncInspectionMode;
 
   useEffect(() => {
     syncInspectionMode();
@@ -224,14 +247,6 @@ export function StudioLivePreview({
 
         <div role="status" className="px-3.5 py-1 text-[11px] text-zinc-600 bg-zinc-50 border-b border-zinc-200 shrink-0 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleNavigateBack}
-              className="p-1 -ml-1 rounded hover:bg-zinc-200 text-zinc-500 hover:text-zinc-800 transition-colors cursor-pointer"
-              title="Go back inside the preview website"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-            </button>
             <span>{isBuilding ? 'Preparing preview...' : statusLabel}</span>
           </div>
 
@@ -252,32 +267,6 @@ export function StudioLivePreview({
 
         {/* The Live Sandboxed Iframe */}
         <div className="relative flex-1 w-full h-full min-h-0 bg-white group/preview">
-          {/* Animated "Coming out of page in top left" Back Button */}
-          <div
-            className={`absolute top-3.5 left-3.5 z-30 transition-all duration-300 ease-out transform ${
-              canGoBack
-                ? 'opacity-100 translate-x-0 translate-y-0 scale-100 pointer-events-auto'
-                : 'opacity-0 -translate-x-6 -translate-y-2 scale-90 pointer-events-none'
-            }`}
-          >
-            <button
-              type="button"
-              onClick={handleNavigateBack}
-              className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/95 hover:bg-white text-zinc-800 hover:text-zinc-950 shadow-[0_6px_20px_rgba(0,0,0,0.12)] border border-zinc-200/90 backdrop-blur-md font-medium text-xs transition-all hover:scale-105 active:scale-95 cursor-pointer group"
-              title="Go back to previous page"
-            >
-              <span className="w-5 h-5 rounded-full bg-zinc-100 group-hover:bg-zinc-200 text-zinc-700 flex items-center justify-center transition-colors">
-                <ArrowLeft className="w-3 h-3 transition-transform group-hover:-translate-x-0.5" />
-              </span>
-              <span className="font-semibold text-xs text-zinc-800">Back</span>
-              {currentRoute && currentRoute !== '/' && (
-                <span className="text-[10px] text-zinc-400 font-mono max-w-[120px] truncate border-l border-zinc-200 pl-1.5">
-                  {currentRoute}
-                </span>
-              )}
-            </button>
-          </div>
-
           <iframe
             key={`${previewKey}:${previewBuildId}:${previewUrl ? 'built' : 'legacy'}`}
             ref={iframeRef}
@@ -285,7 +274,7 @@ export function StudioLivePreview({
             srcDoc={previewUrl ? undefined : previewHtml}
             title="Veave AI Live Preview"
             onLoad={syncInspectionMode}
-            sandbox={`allow-scripts allow-modals allow-popups allow-forms${previewUrl ? ' allow-same-origin' : ''}`}
+            sandbox={`allow-scripts allow-modals allow-popups allow-popups-to-escape-sandbox allow-forms${previewUrl ? ' allow-same-origin' : ''}`}
             className="w-full h-full bg-white border-0 absolute inset-0"
           />
 

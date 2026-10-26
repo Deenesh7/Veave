@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useSmartBack } from '../../hooks/useSmartBack';
 import { 
   Sparkles, 
   Monitor, 
@@ -12,7 +14,6 @@ import {
   Eye, 
   ChevronDown, 
   Check, 
-  ArrowLeft,
   Columns,
   Sliders,
   Loader2
@@ -34,6 +35,8 @@ export function StudioTopBar({
   isOpeningVisualEditor = false,
   isGenerating
 }) {
+  const navigate = useNavigate();
+  const goBack = useSmartBack('/dashboard');
   const { currentProject, projects, setCurrentProject } = useProjectStore();
   const { user } = useAuthStore();
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
@@ -71,23 +74,14 @@ export function StudioTopBar({
     <header className="h-14 bg-white border-b border-[#E2E5E8] px-3 sm:px-5 flex items-center justify-between gap-3 shrink-0 select-none z-30 shadow-2xs">
       {/* Left Area: Brand Logo, App Name, Project Dropdown */}
       <div className="flex items-center gap-3 min-w-0">
-        <button
-          type="button"
-          onClick={() => window.location.replace('/dashboard')}
-          className="p-1.5 rounded-xl hover:bg-zinc-100 text-zinc-500 hover:text-zinc-800 transition-colors cursor-pointer"
-          title="Back to Dashboard"
-        >
-          <ArrowLeft className="w-4 h-4" />
-        </button>
-
-        <div className="flex items-center gap-2.5">
+        <button type="button" onClick={goBack} title="Back to Dashboard" aria-label="Back to Dashboard" className="flex items-center gap-2.5 cursor-pointer">
           <div className="w-7 h-7 rounded-xl bg-zinc-900 flex items-center justify-center text-white shadow-xs">
             <Sparkles className="w-4 h-4" />
           </div>
           <span className="font-extrabold text-sm tracking-tight text-[#111827] hidden md:inline">
             Veave
           </span>
-        </div>
+        </button>
 
         <div className="h-4 w-px bg-zinc-200 hidden sm:block mx-0.5" />
 
@@ -117,7 +111,7 @@ export function StudioTopBar({
                       onClick={() => {
                         setCurrentProject(p);
                         setProjectDropdownOpen(false);
-                        navigate(`/editor/${p._id}`);
+                        navigate(`/editor/${p._id}`, { replace: true });
                       }}
                       className="w-full px-3 py-2 text-left text-xs hover:bg-zinc-50 flex items-center justify-between text-zinc-700 transition-colors"
                     >
@@ -210,7 +204,7 @@ export function StudioTopBar({
 
         {/* Visual Edit / Edit Design Button */}
         <button
-          onClick={onOpenVisualEdit}
+          onClick={() => onOpenVisualEdit?.('editor')}
           disabled={isOpeningVisualEditor}
           className="px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 transition-all cursor-pointer bg-zinc-50 text-zinc-600 border-zinc-200 hover:bg-zinc-100 hover:border-zinc-300 shadow-2xs active:scale-95 disabled:opacity-75"
           title="Open Full Visual Design Editor (Inspect & customize styling)"

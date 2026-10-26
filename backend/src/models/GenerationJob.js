@@ -82,7 +82,11 @@ const generationJobSchema = new mongoose.Schema({
   completedAt: {
     type: Date,
     default: null
-  }
+  },
+  // Set atomically before the credit is deducted so a retried or recovered job can never bill twice.
+  creditChargedAt: { type: Date, default: null },
+  // How many times restart recovery re-ran this job; bounded so a job that crashes the server cannot loop forever.
+  recoveryAttempts: { type: Number, default: 0 }
 }, {
   timestamps: true
 });

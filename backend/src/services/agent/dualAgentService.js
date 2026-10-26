@@ -80,10 +80,8 @@ async function runDualAgent({ runId, requireApproval = true, userId, projectId, 
   const buildTask = deps.buildTask || builder.buildTask;
 
   signal?.throwIfAborted();
-  const query = userId
-    ? { _id: projectId, $or: [{ userId }, { userId: null }, { userId: { $exists: false } }] }
-    : { _id: projectId };
-  const project = await Project.findOne(query);
+  await require('../collaboration/projectAccess').requireProjectAccess(projectId, userId, 'editor');
+  const project = await Project.findById(projectId);
   if (!project) throw new NotFoundError('Project');
   project.files = await hydrateFiles(project.files);
   const originalFiles = (project.files || []).map(({ path, content, language, encoding }) => ({ path, content, language, encoding }));
@@ -112,6 +110,7 @@ async function runDualAgent({ runId, requireApproval = true, userId, projectId, 
       question: 'Do you want the builder agent to start building this plan?',
       options: ['approve', 'cancel']
     });
+    require('../mail/jobEmails').emailUser(userId, 'plan', { projectId, summary: plan?.summary || plan?.goal || '' });
     const decision = await waitForDecision(runId, { userId, projectId, signal });
     if (decision !== 'approve') {
       onEvent({ type: 'cancelled', message: 'Plan cancelled. The project was not changed.' });
@@ -176,6 +175,7 @@ async function runDualAgent({ runId, requireApproval = true, userId, projectId, 
   conversation.messages.push({ role: 'assistant', content: summary, actions: finalActions });
   await project.save();
   await conversation.save();
+  require('../mail/jobEmails').emailUser(userId, 'project', { projectId, projectName: project.name, summary });
 
   return { message: summary, plan, completed, actions: finalActions, files: updatedFiles };
 }

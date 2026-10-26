@@ -5,6 +5,9 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { validateFilePaths } = require('./generationPipeline');
 
+// The worker returns the built site inside its result line (base64), so the limit must exceed 1.4x the artifact limit.
+const OUTPUT_LIMIT = Number.parseInt(process.env.VEAVE_WORKER_OUTPUT_LIMIT_BYTES, 10) || 128 * 1024 * 1024;
+
 function docker(args, { signal, onEvent, timeout = 30000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('docker', args, { shell: false, windowsHide: true });
@@ -13,13 +16,13 @@ function docker(args, { signal, onEvent, timeout = 30000 } = {}) {
     let failure;
     const fail = (error) => { failure = error; child.kill(); };
     const abort = () => fail(Object.assign(new Error('Validation cancelled'), { name: 'AbortError' }));
-    const timer = setTimeout(() => fail(new Error(`Docker command timed out after ${timeout}ms`)), timeout);
+    const timer = setTimeout(() => fail(Object.assign(new Error(`Docker command timed out after ${timeout}ms`), { timedOut: true, timeoutMs: timeout })), timeout);
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     child.stdout.on('data', (chunk) => {
       output += chunk.toString();
       pending += chunk.toString();
-      if (output.length > 20 * 1024 * 1024) return fail(new Error('Worker output limit exceeded'));
+      if (output.length > OUTPUT_LIMIT) return fail(new Error('Worker output limit exceeded'));
       let newline;
       while ((newline = pending.indexOf('\n')) >= 0) {
         const line = pending.slice(0, newline);
@@ -31,7 +34,7 @@ function docker(args, { signal, onEvent, timeout = 30000 } = {}) {
     });
     child.stderr.on('data', (chunk) => {
       output += chunk.toString();
-      if (output.length > 20 * 1024 * 1024) fail(new Error('Worker output limit exceeded'));
+      if (output.length > OUTPUT_LIMIT) fail(new Error('Worker output limit exceeded'));
     });
     child.on('error', (error) => { failure = error; });
     child.on('close', (code) => {
@@ -88,7 +91,9 @@ function decodeVisualReference(value) {
   return { buffer, mimeType: match[1] };
 }
 
-async function executeProject(files, { signal, onEvent, visualReference, visualThreshold } = {}) {
+// mode "validate" (default): build + preview + browser checks, artifacts returned in the result (5 MB limit).
+// mode "build": build only for publishing; the site is written to `outputDirectory` (mounted at /output).
+async function executeProject(files, { signal, onEvent, visualReference, visualThreshold, mode: pipelineMode = 'validate', outputDirectory } = {}) {
   const paths = validateFilePaths(files);
   if (paths.length) return { ok: false, diagnostics: paths };
   try { dependencyPolicy(files); }
@@ -97,6 +102,7 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
   let directory;
   let referenceDirectory;
   let resourcesCreated = false;
+  let activeMode = 'setup';
   const name = `veave-validation-${randomUUID()}`;
   const volume = `${name}-files`;
   const network = `${name}-network`;
@@ -105,10 +111,14 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
     const available = await docker(['image', 'inspect', image], { signal });
     if (available.code !== 0) throw new Error(`Validation worker unavailable. Start Docker Desktop and run npm run runner:build in backend.\n${available.output}`);
     directory = await fs.mkdtemp(path.join(os.tmpdir(), 'veave-validation-'));
-    for (const file of files) {
-      const target = path.join(directory, file.path);
-      await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o755 });
-      await fs.writeFile(target, file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : file.content, { mode: 0o644 });
+    const dirs = new Set(files.map((file) => path.dirname(path.join(directory, file.path))));
+    await Promise.all([...dirs].map((dir) => fs.mkdir(dir, { recursive: true, mode: 0o755 })));
+    for (let index = 0; index < files.length; index += 64) {
+      await Promise.all(files.slice(index, index + 64).map((file) => fs.writeFile(
+        path.join(directory, file.path),
+        file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : file.content,
+        { mode: 0o644 }
+      )));
     }
     if (visualReference) {
       const decoded = decodeVisualReference(visualReference);
@@ -127,30 +137,37 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
     const connected = await docker(['network', 'connect', '--alias', 'registry-proxy', network, proxy], { signal });
     if (connected.code !== 0) throw new Error(connected.output);
     let installed;
-    for (const mode of ['install', 'validate']) {
+    for (const mode of ['install', pipelineMode]) {
+      activeMode = mode;
       const args = ['run', '--rm', '--name', name, '--init', '--read-only',
         '--cap-drop=ALL', '--security-opt=no-new-privileges', '--memory=2g', '--cpus=2', '--pids-limit=256',
         '--shm-size=256m', '--tmpfs', '/tmp:rw,nosuid,nodev,size=512m',
         '--tmpfs', '/home/pwuser:rw,nosuid,nodev,size=64m,uid=1000,gid=1000',
         '--mount', `type=volume,source=${volume},target=/workspace`,
         '--network', mode === 'install' ? network : 'none'];
+      if (mode !== 'install') args.push('-e', `VEAVE_ARTIFACT_LIMIT_BYTES=${Number.parseInt(process.env.VEAVE_ARTIFACT_LIMIT_BYTES, 10) || 48 * 1024 * 1024}`);
       if (mode === 'install') args.push('--mount', `type=bind,source=${directory},target=/input,readonly`);
+      if (mode === 'build') {
+        if (!outputDirectory) throw new Error('Build mode needs an output directory.');
+        args.push('--mount', `type=bind,source=${outputDirectory},target=/output`);
+      }
       if (mode === 'validate' && referenceDirectory) {
         args.push('--mount', `type=bind,source=${referenceDirectory},target=/reference,readonly`,
           '-e', 'VEAVE_VISUAL_REFERENCE=/reference/reference-image',
           '-e', `VEAVE_VISUAL_THRESHOLD=${visualThreshold || process.env.SCREENSHOT_VISUAL_THRESHOLD || '0.82'}`);
       }
       args.push(image, mode);
-      const outcome = await docker(args, { signal, onEvent, timeout: mode === 'install' ? 300000 : 960000 });
+      const outcome = await docker(args, { signal, onEvent, timeout: mode === 'install' ? 300000 : mode === 'build' ? 420000 : 960000 });
       const lines = outcome.output.split('\n').filter((item) => item.startsWith('VEAVE_RESULT '));
       if (lines.length !== 1) throw new Error(`Validation worker returned ${lines.length} result records (exit ${outcome.code}).\n${outcome.output}`);
       const result = JSON.parse(lines[0].slice(13));
       if (typeof result.ok !== 'boolean' || !Array.isArray(result.diagnostics) || !Array.isArray(result.checks)) {
         throw new Error('Invalid worker result schema');
       }
-      if (!result.ok || outcome.code !== 0) return { ...result, ok: false };
+      if (!result.ok || outcome.code !== 0) return { ...result, ok: false, exitCode: outcome.code };
        const required = mode === 'install'
          ? ['install', 'dependencies']
+         : mode === 'build' ? ['build', 'artifacts']
          : ['syntax', 'build', 'preview', 'browser', ...(referenceDirectory ? ['visual'] : []), 'artifacts'];
       if (required.some((name) => !result.checks.some((check) => check.name === name && check.status === 'passed'))) {
         throw new Error('Worker omitted a required validation stage.');
@@ -160,7 +177,11 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
     }
   } catch (error) {
     if (error.name === 'AbortError') throw error;
-    return { ok: false, blocked: true, diagnostics: [{ category: 'infrastructure', path: null, message: error.message }] };
+    // Timeouts and an unavailable runner are environment problems, reported as such (never as a source error).
+    if (error.timedOut) {
+      return { ok: false, blocked: true, infrastructure: true, diagnostics: [{ category: 'timeout', stage: activeMode, timedOut: true, timeoutMs: error.timeoutMs, path: null, message: error.message }] };
+    }
+    return { ok: false, blocked: true, infrastructure: true, diagnostics: [{ category: 'infrastructure', stage: activeMode, path: null, message: error.message }] };
   } finally {
     // Remove by our unique name even if the docker CLI was cancelled or timed out.
     if (resourcesCreated) {

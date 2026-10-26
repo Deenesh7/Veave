@@ -35,6 +35,8 @@ const auth = async (req, res, next) => {
   }
 };
 
+// Guests (no token) are allowed. A token that is present but expired/invalid is NOT a guest: answering 401
+// lets the client re-login instead of silently saving work under no account.
 const optionalAuth = async (req, res, next) => {
   try {
     let token;
@@ -44,24 +46,28 @@ const optionalAuth = async (req, res, next) => {
       token = req.cookies.token;
     }
 
-    if (token === 'null' || token === 'undefined') {
-      token = null;
+    if (!token || token === 'null' || token === 'undefined' || token === 'none') {
+      req.user = null;
+      return next();
     }
 
-    if (token) {
-      try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        req.user = await User.findById(decoded.id);
-      } catch (err) {
-        req.user = null;
-      }
-    } else {
-      req.user = null;
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      const error = new AuthError(err.name === 'TokenExpiredError' ? 'Your session expired. Please log in again.' : 'Invalid session. Please log in again.');
+      error.code = 'TOKEN_INVALID';
+      return next(error);
     }
-    next();
+    req.user = await User.findById(decoded.id);
+    if (!req.user) {
+      const error = new AuthError('Account not found. Please log in again.');
+      error.code = 'TOKEN_INVALID';
+      return next(error);
+    }
+    return next();
   } catch (error) {
-    req.user = null;
-    next();
+    return next(error);
   }
 };
 

@@ -1,4 +1,4 @@
-﻿// Source-level repair for blank space reported by detectBlankSpace. It only edits the exact class
+// Source-level repair for blank space reported by detectBlankSpace. It only edits the exact class
 // string of the offending element, and only fixed pixel height / padding utilities, so content,
 // images and every other section stay untouched.
 const HEIGHT_TOKEN = /^(?:[\w-]+(?:\[[^\]]*\])?:)*(?:min-)?h-\[[\d.]+px\]$/;

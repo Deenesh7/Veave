@@ -128,6 +128,27 @@ function scaffoldReactProject(sourceFiles = [], options = {}) {
       language: 'html'
     });
   }
+  // Crawlability: a model-written index.html must still carry the basics search engines look for.
+  if (seen.has('index.html')) {
+    const indexFile = seen.get('index.html');
+    let html = indexFile.content;
+    const before = html;
+    if (!/<html[^>]*\blang=/i.test(html)) html = html.replace(/<html/i, '<html lang="en"');
+    if (!/<meta[^>]+name=["']viewport["']/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => `${m}\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />`);
+    if (!/<meta[^>]+name=["']description["']/i.test(html)) html = html.replace(/<\/head>/i, `  <meta name="description" content="${escapeHtml(projectName)} - official website." />\n  </head>`);
+    if (!/<title>[^<]+<\/title>/i.test(html)) html = html.replace(/<\/head>/i, `  <title>${escapeHtml(projectName)}</title>\n  </head>`);
+    if (html !== before) seen.set('index.html', { ...indexFile, content: html });
+  }
+
+  // robots.txt (the sitemap line is added with the real address when the site is published)
+  if (!seen.has('public/robots.txt')) {
+    seen.set('public/robots.txt', { path: 'public/robots.txt', content: 'User-agent: *\nAllow: /\n', language: 'plaintext' });
+  }
+
+  // Per-page <title>, description, canonical and social tags (read by crawlers after prerendering at publish time).
+  if (!seen.has('src/hooks/useSeo.js') && !seen.has('src/hooks/useSeo.ts')) {
+    seen.set('src/hooks/useSeo.js', { path: 'src/hooks/useSeo.js', content: USE_SEO_JS, language: 'javascript' });
+  }
 
   // 5) package.json
   if (!seen.has('package.json')) {
@@ -372,6 +393,31 @@ function buildManifestJson(name) {
   };
 }
 
+const USE_SEO_JS = `import { useEffect } from 'react';
+
+// Call once per page: useSeo({ title: 'Pricing | Acme', description: 'Plans and pricing for Acme.' })
+// Sets the document title and the description / canonical / Open Graph tags that search engines and link previews read.
+export default function useSeo({ title, description, image, path } = {}) {
+  useEffect(() => {
+    if (title) document.title = title;
+    const setMeta = (attr, key, value) => {
+      if (!value) return;
+      let tag = document.head.querySelector(\`meta[\${attr}="\${key}"]\`);
+      if (!tag) { tag = document.createElement('meta'); tag.setAttribute(attr, key); document.head.appendChild(tag); }
+      tag.setAttribute('content', value);
+    };
+    setMeta('name', 'description', description);
+    setMeta('property', 'og:title', title);
+    setMeta('property', 'og:description', description);
+    setMeta('property', 'og:image', image);
+    setMeta('name', 'twitter:card', image ? 'summary_large_image' : 'summary');
+    let link = document.head.querySelector('link[rel="canonical"]');
+    if (!link) { link = document.createElement('link'); link.setAttribute('rel', 'canonical'); document.head.appendChild(link); }
+    link.setAttribute('href', window.location.origin + (path || window.location.pathname));
+  }, [title, description, image, path]);
+}
+`;
+
 function buildIndexHtml(name) {
   return `<!doctype html>
 <html lang="en">
@@ -380,6 +426,12 @@ function buildIndexHtml(name) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>${escapeHtml(name)}</title>
+    <meta name="description" content="${escapeHtml(name)} - official website." />
+    <meta name="robots" content="index, follow" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="${escapeHtml(name)}" />
+    <meta property="og:description" content="${escapeHtml(name)} - official website." />
+    <meta name="twitter:card" content="summary_large_image" />
   </head>
   <body class="bg-[#09090b] text-[#f8fafc] antialiased">
     <div id="root"></div>

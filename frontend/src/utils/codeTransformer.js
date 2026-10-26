@@ -3,10 +3,13 @@ export function repairAndSanitizeReactCode(code) {
   let str = String(code);
 
   // 1. Strip TypeScript interfaces: interface Foo { ... }
-  str = str.replace(/(?:export\s+)?interface\s+\w+[\s\S]*?\{[\s\S]*?\n\}/g, '');
+  // Only real declarations: at the start of a line, with the body brace right after the name (or `extends ...`).
+  // An unanchored match deleted everything from the word "interface" inside JSX text (e.g. "a modern interface
+  // carefully designed...") up to the next closing brace, truncating the component.
+  str = str.replace(/^[ \t]*(?:export\s+)?(?:declare\s+)?interface\s+\w+(?:<[^>\n{]*>)?(?:\s+extends\s+[^{\n]+)?\s*\{[\s\S]*?\n[ \t]*\}[ \t]*/gm, '');
 
-  // 2. Strip TypeScript types: type Foo = ...;
-  str = str.replace(/(?:export\s+)?type\s+\w+[\s\S]*?=\s*[^;]+;/g, '');
+  // 2. Strip TypeScript types: type Foo = ...;  (same rule: a declaration starts a line and `=` follows the name)
+  str = str.replace(/^[ \t]*(?:export\s+)?(?:declare\s+)?type\s+\w+(?:<[^>\n=]*>)?\s*=\s*[^;]+;/gm, '');
 
   // 3. Strip const NAME: Type[] =
   str = str.replace(/:\s*[A-Z]\w*(?:\[\])?\s*=/g, ' =');
@@ -27,10 +30,11 @@ export function repairAndSanitizeReactCode(code) {
 
   // 8. Fix empty ternary expressions {isAudioMuted ? : } or {cond ? : }
   str = str.replace(/\{\s*isAudioMuted\s*\?\s*:\s*\}/g, '{isAudioMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}');
-  str = str.replace(/\?\s*:\s*/g, '? null : ');
+  // Only an empty ternary consequent (`cond ? : alt`); never touch regex groups like (?:...) or optional TS props.
+  str = str.replace(/(?<=\s)\?\s+:(?=\s)/g, '? null :');
 
   // 9. Fix stray "avatar" line in JSX
-  str = str.replace(/"avatar"/g, '{/* avatar */}');
+  str = str.replace(/^[ \t]*"avatar"[ \t]*$/gm, '{/* avatar */}');
 
   // 10. Strictly sanitize and eliminate any purple / violet / fuchsia / lavender classes and hex codes
   str = str.replace(/\b(text|bg|border|ring|fill|stroke|from|to|via)-purple-(\d+)\b/g, '$1-blue-$2');
@@ -138,12 +142,13 @@ export function inlinePreviewAssets(files = []) {
   });
 }
 
-function collectReferencedPreviewAssets(files = []) {
+function collectReferencedPreviewAssets(files = [], { allowEmptyContent = false } = {}) {
   const assets = [];
   const textFiles = files.filter((file) => file && file.encoding !== 'base64' && /\.(?:jsx?|tsx?|css|html)$/i.test(file.path || ''));
   const corpus = textFiles.map((file) => String(file.content || '')).join('\n');
   for (const file of files) {
-    if (file?.encoding !== 'base64' || !file.path?.startsWith('public/') || !file.content) continue;
+    if (file?.encoding !== 'base64' || !file.path?.startsWith('public/')) continue;
+    if (!file.content && !allowEmptyContent) continue;
     const mimeType = PREVIEW_ASSET_MIME_TYPES[file.path.split('.').pop()?.toLowerCase()];
     if (!mimeType) continue;
     const publicPath = `/${file.path.slice('public/'.length)}`;
@@ -153,12 +158,72 @@ function collectReferencedPreviewAssets(files = []) {
   return assets;
 }
 
-function replacePreviewAssetPaths(content, assets) {
+function replacePreviewAssetPaths(content, assets, assetBase = '') {
   let result = content;
   for (const asset of assets) {
-    if (result.includes(asset.publicPath)) result = result.split(asset.publicPath).join(`data:${asset.mimeType};base64,${asset.base64}`);
+    if (!result.includes(asset.publicPath)) continue;
+    // External mode points at the asset server; inline mode embeds the bytes as a data URL.
+    const replacement = assetBase ? `${assetBase}${asset.publicPath}` : `data:${asset.mimeType};base64,${asset.base64}`;
+    result = result.split(asset.publicPath).join(replacement);
   }
   return result;
+}
+
+// External mode: asset bytes are NOT embedded. The shim only knows which public paths exist and rewrites
+// references to `${assetBase}${path}`, so the document stays small and the browser caches the files.
+function buildExternalAssetShim(assets, assetBase) {
+  if (!assets.length) return '';
+  const paths = JSON.stringify(Object.fromEntries(assets.map((asset) => [asset.publicPath, 1]))).replace(/</g, '\\u003c');
+  const base = JSON.stringify(assetBase).replace(/</g, '\\u003c');
+  return `<script>
+    (function() {
+      var known = ${paths};
+      var base = ${base};
+      function resolve(value) {
+        if (typeof value !== 'string' || !value) return value;
+        var key = value.split('?')[0].split('#')[0];
+        if (key.charAt(0) !== '/') key = '/' + key;
+        return known[key] ? base + key : value;
+      }
+      function fixSrcset(value) {
+        return String(value).split(',').map(function(part) {
+          var bits = part.trim().split(/\\s+/); bits[0] = resolve(bits[0]); return bits.join(' ');
+        }).join(', ');
+      }
+      function fixStyle(value) {
+        return String(value).replace(/url\\((['"]?)([^)'"]+)\\1\\)/g, function(_, q, u) { return 'url(' + q + resolve(u) + q + ')'; });
+      }
+      var nativeSetAttribute = Element.prototype.setAttribute;
+      Element.prototype.setAttribute = function(name, value) {
+        var lower = String(name).toLowerCase();
+        if (lower === 'src' || lower === 'poster') value = resolve(value);
+        else if (lower === 'srcset') value = fixSrcset(value);
+        else if (lower === 'style') value = fixStyle(value);
+        return nativeSetAttribute.call(this, name, value);
+      };
+      function fixElement(el) {
+        if (!el || el.nodeType !== 1) return;
+        ['src', 'poster'].forEach(function(attr) {
+          var v = el.getAttribute(attr); var r = resolve(v);
+          if (v && r !== v) nativeSetAttribute.call(el, attr, r);
+        });
+        var srcset = el.getAttribute('srcset');
+        if (srcset) nativeSetAttribute.call(el, 'srcset', fixSrcset(srcset));
+        var style = el.getAttribute('style');
+        if (style && style.indexOf('url(') !== -1) nativeSetAttribute.call(el, 'style', fixStyle(style));
+      }
+      function scan(root) {
+        fixElement(root);
+        if (root.querySelectorAll) root.querySelectorAll('[src],[srcset],[poster],[style]').forEach(fixElement);
+      }
+      new MutationObserver(function(records) {
+        records.forEach(function(r) {
+          if (r.type === 'attributes') fixElement(r.target);
+          else r.addedNodes.forEach(scan);
+        });
+      }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['src', 'srcset', 'poster', 'style'] });
+    })();
+  <\/script>`;
 }
 
 function buildPreviewAssetShim(assets) {
@@ -224,7 +289,13 @@ function buildPreviewAssetShim(assets) {
   <\/script>`;
 }
 
-export function buildPreviewHTML(files, dependencies = []) {
+/**
+ * @param {object} [options]
+ * @param {string} [options.assetBase] When set (e.g. a URL or a placeholder token), images/fonts under public/ are referenced
+ *   as `${assetBase}/path` instead of being embedded as base64. Used for stored, precompiled previews.
+ */
+export function buildPreviewHTML(files, dependencies = [], options = {}) {
+  const assetBase = options.assetBase || '';
   if (!files || files.length === 0) {
     return '<html><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#09090b;color:#71717a;font-family:Inter,system-ui,sans-serif"><p>No files to preview</p></body></html>';
   }
@@ -233,10 +304,10 @@ export function buildPreviewHTML(files, dependencies = []) {
   // JSX/JS module made the modules megabytes large and Babel standalone choked
   // (blank preview). CSS gets data URLs for referenced assets only; JS/JSX keeps
   // short paths and a runtime shim resolves them to blob URLs.
-  const previewAssets = collectReferencedPreviewAssets(files);
+  const previewAssets = collectReferencedPreviewAssets(files, { allowEmptyContent: Boolean(assetBase) });
   const previewFiles = files.map((file) => (
     file?.path?.endsWith('.css') && file.encoding !== 'base64'
-      ? { ...file, content: replacePreviewAssetPaths(String(file.content || ''), previewAssets) }
+      ? { ...file, content: replacePreviewAssetPaths(String(file.content || ''), previewAssets, assetBase) }
       : file
   ));
   const cssFiles = previewFiles.filter((f) => f.path.endsWith('.css'));
@@ -279,7 +350,10 @@ export function buildPreviewHTML(files, dependencies = []) {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <base target="_self" />
-  ${buildPreviewAssetShim(previewAssets)}
+  <link rel="preconnect" href="https://unpkg.com" crossorigin />
+  <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  ${assetBase ? buildExternalAssetShim(previewAssets, assetBase) : buildPreviewAssetShim(previewAssets)}
   <script>
     // srcdoc/sandboxed previews cannot change location.pathname (it stays "srcdoc"
     // and history.pushState throws), so every route rendered Home. Keep a virtual
@@ -287,12 +361,58 @@ export function buildPreviewHTML(files, dependencies = []) {
     (function() {
       var virtualPath = '/';
       window.__veavePathname = function() { return virtualPath; };
+      // A page opened by navigation starts at its top, also when the scrolling happens in a container instead of the window.
+      function scrollPageToTop() {
+        try {
+          window.scrollTo(0, 0);
+          if (document.documentElement) document.documentElement.scrollTop = 0;
+          if (document.body) document.body.scrollTop = 0;
+          var all = document.querySelectorAll('body *');
+          for (var i = 0; i < all.length && i < 3000; i++) {
+            var el = all[i];
+            if (el.scrollTop > 0 && el.scrollHeight > el.clientHeight) el.scrollTop = 0;
+          }
+        } catch (e) {}
+      }
       function setPath(url) {
         if (typeof url !== 'string' || !url) return;
+        var before = virtualPath;
         try { virtualPath = new URL(url, 'http://preview.local' + virtualPath).pathname || '/'; } catch (e) {}
+        if (virtualPath !== before && !/#./.test(url)) {
+          scrollPageToTop();
+          // The new page renders after this call, and may be shorter or taller: scroll again once it is in the DOM.
+          setTimeout(scrollPageToTop, 0);
+          setTimeout(scrollPageToTop, 60);
+          setTimeout(scrollPageToTop, 250);
+        }
       }
       history.pushState = function(state, title, url) { setPath(url); };
       history.replaceState = function(state, title, url) { setPath(url); };
+    })();
+  <\/script>
+  <script>
+    // The preview iframe is sandboxed without allow-same-origin, so touching localStorage/sessionStorage throws
+    // "The document is sandboxed" and crashes apps that read a saved theme/cart/token while rendering. Fall back
+    // to in-memory storage so such sites render exactly as they would on a real page.
+    (function() {
+      function memoryStorage() {
+        var data = {};
+        return {
+          getItem: function(k) { return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null; },
+          setItem: function(k, v) { data[String(k)] = String(v); },
+          removeItem: function(k) { delete data[k]; },
+          clear: function() { data = {}; },
+          key: function(i) { return Object.keys(data)[i] || null; },
+          get length() { return Object.keys(data).length; }
+        };
+      }
+      ['localStorage', 'sessionStorage'].forEach(function(name) {
+        var usable = true;
+        try { var s = window[name]; s.getItem('__veave'); } catch (e) { usable = false; }
+        if (!usable) {
+          try { Object.defineProperty(window, name, { configurable: true, value: memoryStorage() }); } catch (e) {}
+        }
+      });
     })();
   <\/script>
   <title>Preview</title>
@@ -354,6 +474,10 @@ export function buildPreviewHTML(files, dependencies = []) {
         if (cleanPattern === cleanPath) return true;
         var patternParts = cleanPattern.split('/').filter(Boolean);
         var pathParts = cleanPath.split('/').filter(Boolean);
+        if (patternParts[patternParts.length - 1] === '*') {
+          var base = patternParts.slice(0, -1);
+          return pathParts.length >= base.length && base.every(function(part, index) { return part.charAt(0) === ':' || part === pathParts[index]; });
+        }
         if (patternParts.length !== pathParts.length) return false;
         return patternParts.every(function(part, index) { return part.charAt(0) === ':' || part === pathParts[index]; });
       }
@@ -380,9 +504,9 @@ export function buildPreviewHTML(files, dependencies = []) {
       function Routes(props) {
         var path = React.useContext(RouterContext).path;
         var routes = React.Children.toArray(props.children);
-        var selected = routes.find(function(route) { return route && route.props && matches(route.props.path, path); }) ||
+        var selected = routes.find(function(route) { return route && route.props && route.props.path && route.props.path !== '*' && matches(route.props.path, path); }) ||
           routes.find(function(route) { return route && route.props && route.props.index && path === '/'; }) ||
-          routes.find(function(route) { return route && route.props && route.props.path === '*'; });
+          routes.find(function(route) { return route && route.props && (route.props.path === '*' || !route.props.path); });
         return selected ? selected.props.element || null : null;
       }
       function Link(props) {
@@ -864,6 +988,19 @@ export function buildPreviewHTML(files, dependencies = []) {
         return;
       }
 
+      // A link to another website must never replace the preview itself (it would leave the app and look broken or blank):
+      // it opens in a new tab, exactly like the published site's link would take the visitor away from the page.
+      if (/^https?:/i.test(href) || href.indexOf('//') === 0) {
+        try {
+          var external = new URL(href, window.location.href);
+          if (external.origin !== window.location.origin && !e.defaultPrevented && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            window.open(external.href, '_blank', 'noopener');
+          }
+        } catch (err) {}
+        return;
+      }
+
       if (href.startsWith('/')) {
         e.preventDefault();
         try {
@@ -900,7 +1037,7 @@ export function buildPreviewHTML(files, dependencies = []) {
       window.addEventListener('popstate', function(e) {
         try {
           var r = (e.state && e.state.path) || window.__veavePathname() || '/';
-          if (window.__veaveHistory && typeof window.__veaveHistory.back === 'function') {
+          if (!window.__veaveRouteBack && window.__veaveHistory && typeof window.__veaveHistory.back === 'function') {
             window.__veaveHistory.back();
           }
           window.parent.postMessage({ type: 'preview-route-changed', route: r }, '*');
@@ -1316,22 +1453,35 @@ export function buildPreviewHTML(files, dependencies = []) {
           hoveredVisualElement.classList.remove('veave-inspect-highlight');
           hoveredVisualElement = null;
         }
+      } else if (event.data.type === 'preview-restore-route') {
+        // The preview was rebuilt (e.g. while the site is still being created); keep the page the user was on.
+        try {
+          var restoreRoute = event.data.route || '/';
+          if (restoreRoute !== window.__veavePathname()) {
+            window.history.replaceState({}, '', restoreRoute);
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          }
+        } catch (e) {}
       } else if (event.data.type === 'preview-navigate-back') {
         var targetRoute = event.data.route || '/';
-
-        var restored = false;
-        if (window.__veaveHistory && typeof window.__veaveHistory.back === 'function') {
-          restored = window.__veaveHistory.back();
-        }
-
-        if (!restored) {
+        // The studio owns the list of visited pages, so going back means: show the page it names.
+        // (Never history.back(): the iframe shares the tab's history, so that could leave the studio.)
+        if (targetRoute !== window.__veavePathname()) {
           try {
-            if (window.history.length > 1 && !event.data.forceRoot) {
-              window.history.back();
-            } else {
-              window.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
-            }
+            window.__veaveRouteBack = true;
+            window.history.replaceState({ path: targetRoute }, '', targetRoute);
+            window.dispatchEvent(new PopStateEvent('popstate', { state: { path: targetRoute } }));
+            window.scrollTo(0, 0);
           } catch (e) {}
+          window.__veaveRouteBack = false;
+        } else {
+          var restored = false;
+          if (window.__veaveHistory && typeof window.__veaveHistory.back === 'function') {
+            restored = window.__veaveHistory.back();
+          }
+          if (!restored) {
+            try { window.scrollTo({ top: 0, left: 0, behavior: 'smooth' }); } catch (e) {}
+          }
         }
 
         try {
@@ -1771,6 +1921,30 @@ function transformFileContent(file) {
     (_, name) => `var ${name} = function() { return [function() {}, { scrollPrev: function() {}, scrollNext: function() {}, canScrollPrev: function() { return true; }, canScrollNext: function() { return true; }, on: function() {}, off: function() {} }]; };`
   );
 
+  // Handle: import * as NS from './relative/path'
+  content = content.replace(
+    /import\s+\*\s+as\s+([\w$]+)\s+from\s+['"](\.[^'"]+)['"];?/g,
+    (_, name, path) => `var ${name} = window.__require('${resolveModulePath(file.path, path)}') || {};`
+  );
+
+  // Handle: import Default, { A, B as C } from './relative/path'  and  import Default, * as NS from './relative/path'
+  content = content.replace(
+    /import\s+([\w$]+)\s*,\s*(?:\*\s+as\s+([\w$]+)|\{([^}]*)\})\s+from\s+['"](\.[^'"]+)['"];?/g,
+    (_, def, ns, imports, path) => {
+      const resolved = resolveModulePath(file.path, path);
+      const mod = `__imp_${def}`;
+      let result = `var ${mod} = window.__require('${resolved}') || {};\nvar ${def} = ${mod}.default || ${mod};\n`;
+      if (ns) result += `var ${ns} = ${mod};\n`;
+      else {
+        (imports || '').split(',').map((e) => e.trim()).filter((e) => e && !/^type\s+/i.test(e)).forEach((entry) => {
+          const parts = entry.split(/\s+as\s+/i).map((p) => p.trim());
+          result += `var ${parts[1] || parts[0]} = ${mod}['${parts[0]}'] || ${mod}.default;\n`;
+        });
+      }
+      return result;
+    }
+  );
+
   // Handle: import DefaultExport from './relative/path'
   content = content.replace(
     /import\s+([\w$]+)\s+from\s+['"](\.[^'"]+)['"];?/g,
@@ -1799,13 +1973,45 @@ function transformFileContent(file) {
 
   // Handle any remaining imports (npm packages - just stub them)
   content = content.replace(
-    /import\s+(?:\{[^}]+\}|[\w$]+)\s+from\s+['"][^'"]+['"];?/g,
+    /import\s+(?:\{[^}]*\}|\*\s+as\s+[\w$]+|[\w$]+(?:\s*,\s*(?:\{[^}]*\}|\*\s+as\s+[\w$]+))?)\s+from\s+['"][^'"]+['"];?/g,
     '// [import removed - not available in preview]'
   );
 
   // Handle: export default function Name
   const modulePath = file.path.replace(/\.(?:jsx?|tsx?)$/, '');
   let exportedName = null;
+
+  // Handle re-exports: export { default } from './x', export { A as B } from './x', export * from './x'.
+  // These must run before the plain `export { ... }` handler, which would strip the braces and leave a dangling `from`.
+  let reExportIndex = 0;
+  content = content.replace(
+    /export\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]\s*;?/g,
+    (_, entries, source) => {
+      if (!source.startsWith('.')) return '';
+      const id = reExportIndex++;
+      const mod = `__reexp_${id}`;
+      let result = `var ${mod} = window.__require('${resolveModulePath(file.path, source)}') || {};\n`;
+      entries.split(',').map((entry) => entry.trim()).filter((entry) => entry && !/^type\s+/i.test(entry)).forEach((entry, index) => {
+        const parts = entry.split(/\s+as\s+/i).map((part) => part.trim());
+        const imported = parts[0];
+        const exported = parts[1] || parts[0];
+        const local = `${mod}_${index}`;
+        result += `var ${local} = ${mod}['${imported}']${imported === 'default' ? '' : ` || ${mod}.default`};\n`;
+        if (exported === 'default') exportedName = local;
+        else namedExports.push({ local, exported });
+      });
+      return result;
+    }
+  );
+  content = content.replace(
+    /export\s*\*\s*from\s*['"]([^'"]+)['"]\s*;?/g,
+    (_, source) => {
+      if (!source.startsWith('.')) return '';
+      const id = reExportIndex++;
+      const mod = `__reexp_${id}`;
+      return `var ${mod} = window.__require('${resolveModulePath(file.path, source)}') || {};\nObject.keys(${mod}).forEach(function (key) { if (key !== 'default') { (window.__reexports = window.__reexports || {})[key] = ${mod}[key]; } });\n`;
+    }
+  );
 
   content = content.replace(
     /export\s+default\s+function\s+([\w$]+)/g,

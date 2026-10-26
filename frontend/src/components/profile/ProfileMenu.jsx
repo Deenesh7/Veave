@@ -33,7 +33,7 @@ export function ProfileMenu() {
 
   // Helper to format plan name from DB cleanly
   const formatPlanName = (planStr) => {
-    if (!planStr) return 'Free Plan';
+    if (!planStr) return 'Free Tier';
     if (planStr.toLowerCase().includes('plan')) return planStr;
     return `${planStr.charAt(0).toUpperCase() + planStr.slice(1)} Plan`;
   };

@@ -1,5 +1,8 @@
 const path = require('path').posix;
+const { createHash } = require('crypto');
+const { MIME_TYPES } = require('../clone/assetLocalizationService');
 const generationPipeline = require('./generationPipeline');
+const structuralContext = require('./structuralContext');
 
 /**
  * Change Intent Categories
@@ -50,6 +53,15 @@ function buildTextOutcomeVerification(prompt = '') {
     targetText: intent.replacement,
     expectedText: intent.replacement
   };
+}
+
+// "Change X to Y" / "add the text 'Y'": the rendered page must show Y afterwards (checked by the incremental validation).
+function buildTextOutcomeExpectation(prompt = '', route = null) {
+  const intent = extractTextReplacementIntent(prompt);
+  const added = String(prompt).match(/\b(?:add|insert|include|put|write)\b[^"'\u201c]{0,40}["'\u201c]([^"'\u201d]{3,200})["'\u201d]/i);
+  const text = intent?.replacement || added?.[1] || null;
+  if (!text) return null;
+  return { route: route || null, texts: [text.replace(/^["'`]|["'`]$/g, '')], assetPaths: [], requireAsset: false };
 }
 
 function extractRequestedColor(prompt = '') {
@@ -339,7 +351,66 @@ function buildTargetStyleVerification(prompt = '', selectedElement = null) {
   };
 }
 
-function validateStrictScopeOperations(prompt = '', operations = [], existingFiles = [], selectedElement = null) {
+/**
+ * A part taken from the real website (colour, font, text, image, logo) may need a small CSS rule (@font-face), a new
+ * asset file and the one patch that uses it. Everything still has to stay surgical: existing files may only be patched,
+ * each patch must be small, and global style files may only gain font/variable rules.
+ */
+function validateSourceFocusedOperations(operations = [], existingFiles = []) {
+  const existing = new Map(existingFiles.map(normalizeFile).filter(Boolean).map((file) => [file.path, file]));
+  if (!Array.isArray(operations) || !operations.length) throw new Error('Strict scope violation: the edit contains no operations.');
+  for (const operation of operations) {
+    const type = String(operation?.operation || operation?.type || '').toLowerCase();
+    const isPatch = type === 'patch' || type === 'patch_file';
+    if (!existing.has(operation.path)) continue; // a new file (component, asset) is allowed
+    if (!isPatch) throw new Error(`Strict scope violation: existing file "${operation.path}" must be changed with a small patch, not ${type || 'rewritten'}.`);
+    if (typeof operation.search !== 'string' || !operation.search.trim() || typeof operation.replace !== 'string') throw new Error('Strict scope violation: the operation must contain exact search and replacement text.');
+    if (operation.search.length > 4000 || operation.replace.length > 6000) throw new Error('Strict scope violation: patch is broader than the mentioned part. Use a smaller exact search block.');
+    if (/(?:^|\/)(?:index\.(?:css|scss|sass|less)|tokens?\.json|tailwind\.config\.[^/]+)$/i.test(operation.path) && !/@font-face|font-family|--[\w-]*font/i.test(operation.replace)) {
+      throw new Error(`Strict scope violation: global style file "${operation.path}" may only gain the real site's font rules for this edit.`);
+    }
+  }
+}
+
+
+const IMAGE_FILE = /\.(?:png|jpe?g|webp|gif|svg|avif|ico)(?:[?#]|$)/i;
+
+/**
+ * An edit made from the real website may only use what the real page shows. Every image reference the edit ADDS must be
+ * one of the real page's image tokens; an existing project image picked by its file name, an icon-library glyph or an
+ * SVG that is not in the real markup is invention and is rejected, so the model must retry from the real data.
+ */
+function validateSourceFidelity(operations = [], facts = null) {
+  if (!facts) return;
+  const tokens = new Set(facts.tokens || []);
+  const markup = String(facts.markup || '');
+  for (const operation of operations) {
+    const added = String(operation.replace ?? operation.content ?? '');
+    const removed = String(operation.search ?? '');
+    if (!added || /\.(?:png|jpe?g|webp|gif|avif|ico|woff2?|ttf|otf)$/i.test(operation.path || '')) continue;
+    const isNew = (value) => !removed.includes(value);
+    for (const match of added.matchAll(/(?:\bsrc|\bsrcSet|\bposter|\bhref)\s*=\s*(?:\{\s*)?["'`]([^"'`]+)["'`]|url\(\s*["']?([^"')]+)["']?\s*\)|import\s+[\w{}\s,*]+\s+from\s+["']([^"']+)["']/g)) {
+      const value = (match[1] || match[2] || match[3] || '').trim();
+      if (!value || !IMAGE_FILE.test(value) && !/__VEAVE_CLONE_ASSET_\d+__/.test(value)) continue;
+      if (/^data:/i.test(value) || !isNew(value)) continue;
+      const token = value.match(/__VEAVE_CLONE_ASSET_\d+__/)?.[0];
+      if (token && tokens.has(token)) continue;
+      throw new Error(`Fidelity violation: "${value.slice(0, 120)}" is not an image of the real page. Use only the image tokens listed under REAL PAGE IMAGES; never pick another project image by its file name.`);
+    }
+    if (facts.identity) {
+      const lucide = added.match(/import\s*\{[^}]*\}\s*from\s*["']lucide-react["']/);
+      if (lucide && isNew(lucide[0])) throw new Error('Fidelity violation: an icon-library glyph cannot stand in for the real logo/image. Use the real page image token or its exact inline SVG.');
+    }
+    for (const svg of added.matchAll(/<svg\b[\s\S]*?<\/svg>/gi)) {
+      if (!isNew(svg[0].slice(0, 120))) continue;
+      const signature = (svg[0].match(/\sd\s*=\s*["']([^"']{20,})["']/) || [])[1];
+      if (!signature || !markup.includes(signature.slice(0, 40))) throw new Error('Fidelity violation: the inline SVG is not in the real page markup. Paste the exact SVG from the real page or use an image token; never draw an approximation.');
+    }
+  }
+}
+
+function validateStrictScopeOperations(prompt = '', operations = [], existingFiles = [], selectedElement = null, options = {}) {
+  if (options.sourceFocused) { validateSourceFocusedOperations(operations, existingFiles); return validateSourceFidelity(operations, options.sourceFacts); }
   if (!isElementScopedRequest(prompt)) return;
   if (!Array.isArray(operations) || operations.length !== 1) {
     throw new Error('Strict scope violation: a single-element request must produce exactly one surgical patch.');
@@ -355,7 +426,12 @@ function validateStrictScopeOperations(prompt = '', operations = [], existingFil
   if (!existingPaths.has(operation.path)) {
     throw new Error(`Strict scope violation: patch target "${operation.path}" is not an existing project file.`);
   }
-  if (selectedElement?.sourceFile && operation.path !== selectedElement.sourceFile) {
+  // sourceFile is a frontend guess; only enforce it when the guessed file really contains the patched text.
+  const guessedFile = selectedElement?.sourceFile
+    ? existingFiles.map(normalizeFile).filter(Boolean).find((file) => file.path === selectedElement.sourceFile)
+    : null;
+  const guessHoldsText = guessedFile && typeof operation.search === 'string' && guessedFile.content.includes(operation.search);
+  if (guessHoldsText && operation.path !== selectedElement.sourceFile) {
     throw new Error(`Strict scope violation: selected element belongs to "${selectedElement.sourceFile}", not "${operation.path}".`);
   }
   if (/(?:^|\/)(?:index\.(?:css|scss|sass|less)|tokens?\.json|tailwind\.config\.[^/]+)$/i.test(operation.path)) {
@@ -501,25 +577,55 @@ function validateColorReplacementCoverage(prompt = '', operations = [], existing
   }
 }
 
+const MAX_UPLOADED_IMAGES = 4;
+const MAX_UPLOADED_IMAGE_BYTES = 6 * 1024 * 1024;
+
+function uploadedImageSlug(name = '') {
+  const base = String(name).replace(/\.[a-z0-9]+$/i, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  return base || 'image';
+}
+
+/**
+ * Valid images the user attached to this edit. Each one becomes a real project asset
+ * (public/assets/uploads/<name>-<hash>.<ext>, referenced as /assets/uploads/...), never base64 pasted into source code.
+ */
 function getUploadedImageAssets(uploadedFiles = []) {
-  return (Array.isArray(uploadedFiles) ? uploadedFiles : [])
-    .filter((file) => file?.isImage && /^data:image\/(?:png|jpe?g|webp|gif|svg\+xml|avif);base64,/i.test(file.dataUrl || ''))
-    .filter((file) => Buffer.byteLength(file.dataUrl, 'utf8') <= 4 * 1024 * 1024)
-    .slice(0, 4)
-    .map((file, index) => ({
-      token: `__VEAVE_UPLOADED_IMAGE_${index}__`,
-      name: String(file.name || `image-${index + 1}`),
-      type: String(file.type || 'image/*'),
-      dataUrl: file.dataUrl
-    }));
+  const assets = [];
+  const seen = new Set();
+  for (const file of Array.isArray(uploadedFiles) ? uploadedFiles : []) {
+    if (assets.length >= MAX_UPLOADED_IMAGES) break;
+    const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/i.exec(String(file?.dataUrl || ''));
+    if (!file?.isImage || !match) continue;
+    const mime = match[1].toLowerCase();
+    const type = MIME_TYPES[mime];
+    if (!type || !String(type.extension).match(/^(?:png|jpg|webp|gif|svg|avif|ico)$/)) continue;
+    const body = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
+    if (!body.length || body.length > MAX_UPLOADED_IMAGE_BYTES || !type.signature(body)) continue;
+    const hash = createHash('sha256').update(body).digest('hex').slice(0, 10);
+    if (seen.has(hash)) continue;
+    seen.add(hash);
+    const filePath = `public/assets/uploads/${uploadedImageSlug(file.name)}-${hash}.${type.extension}`;
+    assets.push({
+      token: `__VEAVE_UPLOADED_IMAGE_${assets.length}__`,
+      name: String(file.name || `image-${assets.length + 1}`),
+      type: mime,
+      bytes: body.length,
+      filePath,
+      publicPath: `/${filePath.slice('public/'.length)}`,
+      base64: body.toString('base64')
+    });
+  }
+  return assets;
 }
 
 function compactEmbeddedImageAssets(files = []) {
   const valueToToken = new Map();
   const assets = [];
+  const capturedView = require('../clone/capturedHtmlView');
   const compactedFiles = files.map(normalizeFile).filter(Boolean).map((file) => ({
     ...file,
-    content: file.content.replace(/data:image\/(?:png|jpe?g|webp|gif|svg\+xml|avif);base64,[a-z0-9+/=]+/gi, (dataUrl) => {
+    // Pages rebuilt from a captured website are shown to the model as readable markup (see capturedHtmlView), not as one escaped line.
+    content: capturedView.viewOf(file.content).replace(/data:image\/(?:png|jpe?g|webp|gif|svg\+xml|avif);base64,[a-z0-9+/=]+/gi, (dataUrl) => {
       let token = valueToToken.get(dataUrl);
       if (!token) {
         token = `__VEAVE_EXISTING_IMAGE_${assets.length}__`;
@@ -540,17 +646,39 @@ function compactAssetReferences(value, assets = []) {
 }
 
 function hydrateUploadedImageOperations(operations = [], uploadedFiles = [], existingAssets = []) {
-  const assets = getUploadedImageAssets(uploadedFiles);
-  const allAssets = [...existingAssets, ...assets];
-  if (!allAssets.length) return operations;
+  const uploaded = getUploadedImageAssets(uploadedFiles);
+  if (!uploaded.length && !existingAssets.length) return operations;
+  const fields = ['search', 'replace', 'content'];
+  const usesUploaded = operations.some((operation) => fields.some((field) => typeof operation?.[field] === 'string' && uploaded.some((asset) => operation[field].includes(asset.token))));
+  if (uploaded.length && !usesUploaded) {
+    throw new Error(`The attached image was not placed in the project. Use the exact token ${uploaded.map((asset) => asset.token).join(' or ')} as the image src (or CSS url()) in the requested place.`);
+  }
   return operations.map((operation) => {
     const hydrated = { ...operation };
-    for (const field of ['search', 'replace', 'content']) {
+    for (const field of fields) {
       if (typeof hydrated[field] !== 'string') continue;
-      for (const asset of allAssets) hydrated[field] = hydrated[field].split(asset.token).join(asset.dataUrl);
+      // Uploaded images become a normal public asset path; images already embedded in source keep their exact data.
+      for (const asset of uploaded) hydrated[field] = hydrated[field].split(asset.token).join(asset.publicPath);
+      for (const asset of existingAssets) hydrated[field] = hydrated[field].split(asset.token).join(asset.dataUrl);
     }
     return hydrated;
   });
+}
+
+/**
+ * Adds the attached image files to the project for every uploaded image the edited source actually references.
+ * @returns {{files: object[], added: object[]}}
+ */
+function attachUploadedImageFiles(files = [], uploadedFiles = []) {
+  const assets = getUploadedImageAssets(uploadedFiles);
+  if (!assets.length) return { files, added: [] };
+  const normalized = files.map(normalizeFile).filter(Boolean);
+  const sources = normalized.filter((file) => file.encoding !== 'base64' && !file.blob).map((file) => file.content).join('\n');
+  const existing = new Set(normalized.map((file) => file.path));
+  const added = assets
+    .filter((asset) => sources.includes(asset.publicPath) && !existing.has(asset.filePath))
+    .map((asset) => ({ path: asset.filePath, content: asset.base64, language: 'binary', encoding: 'base64' }));
+  return { files: added.length ? [...files, ...added] : files, added };
 }
 
 function validatePageCreationOperations(prompt = '', operations = [], existingFiles = []) {
@@ -766,6 +894,160 @@ function normalizeFile(f) {
  * Select the smallest set of target files relevant to the user's request
  */
 function selectTargetFiles(prompt = '', files = [], conversation = null) {
+  const selected = selectTargetFilesRaw(prompt, files, conversation);
+  return expandTargetsWithImports(selected, files, prompt);
+}
+
+/**
+ * LSP-assisted selection. Same contract as selectTargetFiles plus evidence for the prompt. Never throws: when the
+ * language server cannot help (disabled, crashed, unresolved) it returns the heuristic selection and says why.
+ */
+async function selectTargetFilesLsp({ prompt = '', files = [], conversation = null, selectedElement = null, projectKey = null, buffers = null, signal, lsp = null } = {}) {
+  const heuristic = () => selectTargetFiles(prompt, files, conversation);
+  const manager = lsp || require('../lsp/lspManager');
+  if (!manager.isEnabled() || !projectKey) {
+    return { targets: heuristic(), readOnly: [], source: 'heuristic', reasons: [], fallbackReason: manager.isEnabled() ? 'no project key' : 'LSP disabled', sharedImpact: [], constraints: [], strictScope: false, unresolved: null, metrics: { ms: 0, symbols: 0, lspCalls: 0 } };
+  }
+  try {
+    const resolved = await require('../lsp/lspTargeting').resolveTargets({
+      prompt, files, conversation, selectedElement, projectKey: String(projectKey), lsp: manager, buffers, signal,
+      deps: {
+        normalizeFile,
+        resolveImportPath,
+        selectTargetFiles,
+        selectTargetFilesRaw,
+        isElementScoped: isElementScopedRequest,
+        isBroadRequest: (text, normalized) => PROJECT_WIDE_REQUEST.test(String(text || '')) || isPageCreationRequest(text) || isProjectWideColorReplacement(text, normalized)
+      }
+    });
+    return resolved;
+  } catch (error) {
+    return { targets: heuristic(), readOnly: [], source: 'heuristic', reasons: [], fallbackReason: `LSP error: ${error.message}`, sharedImpact: [], constraints: [], strictScope: false, unresolved: null, metrics: { ms: 0, symbols: 0, lspCalls: 0 } };
+  }
+}
+
+/**
+ * Hybrid-search selection (exact + lexical + semantic + structural). Same result shape as selectTargetFilesLsp, plus read-only
+ * source `blocks`. Never throws: any failure returns the heuristic selection with the reason.
+ */
+async function selectTargetFilesHybrid({ prompt = '', files = [], conversation = null, selectedElement = null, viewingRoute = null, projectKey = null, signal, manager = null, embedder = null } = {}) {
+  const codeSearch = manager || require('../search/projectIndex');
+  const fallback = (reason) => ({ targets: selectTargetFiles(prompt, files, conversation), readOnly: [], blocks: [], source: 'heuristic', reasons: [], fallbackReason: reason, sharedImpact: [], constraints: [], strictScope: false, unresolved: null, outline: '', metrics: { ms: 0, lspCalls: 0, symbols: 0 }, search: null });
+  if (!codeSearch.isEnabled() || !projectKey) return fallback(codeSearch.isEnabled() ? 'no project key' : 'code search disabled');
+  try {
+    return await require('../search/codeSearchTargeting').resolveTargetsHybrid({
+      prompt, files, conversation, selectedElement, viewingRoute, projectKey: String(projectKey), manager: codeSearch, signal,
+      embedder: embedder || require('../search/embedder'),
+      deps: {
+        normalizeFile, resolveImportPath, selectTargetFiles, selectTargetFilesRaw, isElementScoped: isElementScopedRequest,
+        isBroadRequest: (text, normalized) => PROJECT_WIDE_REQUEST.test(String(text || '')) || isPageCreationRequest(text) || isProjectWideColorReplacement(text, normalized)
+      }
+    });
+  } catch (error) {
+    return fallback(`code search error: ${error.message}`);
+  }
+}
+
+const TEXT_SOURCE_RE = /\.(?:jsx?|tsx?|css|scss|json|html|md)$/i;
+
+function resolveImportPath(fromPath, spec, paths) {
+  if (!spec.startsWith('.')) return null;
+  const parts = fromPath.split('/').slice(0, -1);
+  for (const seg of spec.split('/')) {
+    if (seg === '.' || seg === '') continue;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  }
+  const base = parts.join('/');
+  const tries = [base, ...['.jsx', '.js', '.tsx', '.ts', '.css', '.json'].map((e) => base + e),
+    ...['.jsx', '.js', '.tsx', '.ts'].map((e) => `${base}/index${e}`)];
+  return tries.find((t) => paths.has(t)) || null;
+}
+
+// Adds the files the targets import (and files whose name matches words in the prompt) so the
+// model sees the code that actually owns the element, and drops binary/base64 files from targets.
+function expandTargetsWithImports(targets, files, prompt = '') {
+  const all = (Array.isArray(files) ? files : []).map(normalizeFile).filter(Boolean);
+  const byPath = new Map(all.map((f) => [f.path, f]));
+  const paths = new Set(byPath.keys());
+  const usable = (f) => f && f.encoding !== 'base64' && TEXT_SOURCE_RE.test(f.path) && !/package-lock\.json$/.test(f.path);
+  const result = [];
+  const seen = new Set();
+  const add = (f) => { if (usable(f) && !seen.has(f.path)) { seen.add(f.path); result.push(f); } };
+  (targets || []).forEach(add);
+
+  // Prompt words that match page/component file names (e.g. "contact form" -> Contact.jsx).
+  const words = new Set(String(prompt).toLowerCase().match(/[a-z]{4,}/g) || []);
+  const generic = new Set(['make', 'change', 'update', 'section', 'button', 'color', 'colour', 'text', 'page', 'that', 'this', 'with', 'from', 'into', 'have', 'should', 'background']);
+  for (const f of all) {
+    if (!/^src\/(?:pages|components|sections|views|features)\//i.test(f.path) || !/\.(?:jsx|tsx)$/i.test(f.path)) continue;
+    const name = f.path.split('/').pop().replace(/\.[^.]+$/, '').toLowerCase();
+    if (name.length >= 4 && [...words].some((w) => !generic.has(w) && (name === w || name === w.replace(/s$/, '') || name + 's' === w))) add(f);
+    if (result.length >= 12) break;
+  }
+
+  // One-hop relative imports of the primary targets (components, data, hooks, styles).
+  for (const t of [...result].slice(0, 6)) {
+    const re = /(?:import|export)\s+(?:[^'"]*?\sfrom\s+)?['"]([^'"]+)['"]/g;
+    let m;
+    while ((m = re.exec(t.content || '')) !== null) {
+      const resolved = resolveImportPath(t.path, m[1], paths);
+      if (resolved) add(byPath.get(resolved));
+      if (result.length >= 16) return result;
+    }
+  }
+  return result.length ? result : (targets || []);
+}
+
+
+/**
+ * Files that can actually reach the screen: everything imported (transitively) from the app's entry files.
+ * A component that nothing imports (for example a leftover Navbar.jsx next to the real header inside a layout file)
+ * cannot change what the user sees, so it must not be chosen as the place to edit just because of its file name.
+ */
+function reachableFromEntry(files = []) {
+  const all = files.map(normalizeFile).filter(Boolean);
+  const byPath = new Map(all.map((file) => [file.path, file]));
+  const paths = new Set(byPath.keys());
+  const entries = all.filter((file) => /^src\/(?:main|index)\.(?:jsx?|tsx?)$/i.test(file.path) || /^src\/App\.(?:jsx?|tsx?)$/i.test(file.path)).map((file) => file.path);
+  if (!entries.length) return null;
+  const seen = new Set(entries);
+  const queue = [...entries];
+  while (queue.length) {
+    const file = byPath.get(queue.pop());
+    if (!file || typeof file.content !== 'string' || file.encoding === 'base64') continue;
+    const re = /(?:import|export)\s+(?:[^'"]*?\sfrom\s+)?['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)/g;
+    let match;
+    while ((match = re.exec(file.content)) !== null) {
+      const resolved = resolveImportPath(file.path, match[1] || match[2] || '', paths);
+      if (resolved && !seen.has(resolved)) { seen.add(resolved); queue.push(resolved); }
+    }
+  }
+  return seen;
+}
+
+/** Name-hint matches that cannot reach the screen are dropped; reachable files that really render the element are added first. */
+function preferRenderedOwners(matches, candidates, prompt) {
+  const reachable = reachableFromEntry(candidates);
+  if (!reachable) return [...matches];
+  const text = String(prompt || '').toLowerCase();
+  const owners = [];
+  const tagFor = [
+    [/\b(?:navbar|header|nav|menu|navigation|logo|brand(?:ing)?)\b/, /<(?:header|nav)\b/],
+    [/\b(?:footer|bottom bar)\b/, /<footer\b/]
+  ];
+  for (const [promptPattern, tagPattern] of tagFor) {
+    if (!promptPattern.test(text)) continue;
+    for (const file of candidates) {
+      if (reachable.has(file.path) && /\.(?:jsx|tsx)$/i.test(file.path) && tagPattern.test(file.content || '')) owners.push(file);
+    }
+  }
+  const live = [...matches].filter((file) => !/\.(?:jsx?|tsx?)$/i.test(file.path) || reachable.has(file.path));
+  const merged = [...new Set([...owners, ...live])];
+  return merged.length ? merged : [...matches];
+}
+
+function selectTargetFilesRaw(prompt = '', files = [], conversation = null) {
   if (!Array.isArray(files) || files.length === 0) return [];
   const p = normalizePrompt(prompt).toLowerCase();
 
@@ -834,7 +1116,8 @@ function selectTargetFiles(prompt = '', files = [], conversation = null) {
     { patterns: [/modal/i, /dialog/i, /popup/i], fileHints: ['modal', 'dialog'] },
     { patterns: [/sidebar/i, /aside/i, /drawer/i], fileHints: ['sidebar', 'drawer'] },
     { patterns: [/card/i], fileHints: ['card'] },
-    { patterns: [/image/i, /photo/i, /picture/i, /logo/i, /avatar/i, /thumbnail/i], fileHints: ['hero', 'image', 'gallery', 'card', 'logo', 'avatar'] },
+    { patterns: [/logo/i, /brand(?:ing)?\b/i, /favicon/i], fileHints: ['navbar', 'header', 'footer', 'logo', 'brand', 'layout', 'sidebar'] },
+    { patterns: [/image/i, /photo/i, /picture/i, /avatar/i, /thumbnail/i], fileHints: ['hero', 'image', 'gallery', 'card', 'logo', 'avatar'] },
     { patterns: [/font\b/i, /typography/i, /text size/i, /font size/i, /heading size/i], fileHints: ['index.css', 'app', 'hero', 'header'] },
     { patterns: [/\bcolors?\b/i, /\bthemes?\b/i, /\bpalettes?\b/i, /background\b/i], fileHints: ['tokens', 'index.css', 'app'] }
   ];
@@ -883,7 +1166,7 @@ function selectTargetFiles(prompt = '', files = [], conversation = null) {
 
   // If specific component file found, return matching components
   if (matches.size > 0) {
-    return [...matches].slice(0, 10);
+    return preferRenderedOwners(matches, candidates, p).slice(0, 10);
   }
 
   // Fallback: if App.jsx exists, it is the root component
@@ -1210,22 +1493,146 @@ function validateMinimalDiff(beforeFiles = [], afterFiles = [], targetFiles = []
   return { valid: true, changedPaths };
 }
 
+
+// --- Edit scope guard ---------------------------------------------------------------------------------------------
+// A localized request may change the requested files, the modules they import, and the modules that import them.
+// Rewrites of any other EXISTING source file are reverted unless the request is explicitly project-wide, so an edit
+// to one page cannot silently rewrite unrelated pages. New files and dependency/config files are always allowed.
+const PROJECT_WIDE_REQUEST = /\b(all|every|each|entire|whole|site-?wide|global(?:ly)?|throughout|everywhere|redesign|rebrand|re-?theme|theme|dark mode|rename|migrate|refactor)\b/i;
+const SCOPE_EXEMPT_PATH = /^(?:package(?:-lock)?\.json|tsconfig[^/]*\.json|vite\.config\.[cm]?[jt]s|tailwind\.config\.[cm]?[jt]s|postcss\.config\.[cm]?[jt]s|index\.html|src\/(?:index|App|main)\.(?:css|jsx?|tsx?)|src\/tokens\.json|src\/styles\/.*)$/;
+
+function enforceEditScope(beforeFiles = [], changedFiles = [], targetFiles = [], prompt = '', options = {}) {
+  const protocol = require('./aiProtocol');
+  if (options?.strict && !PROJECT_WIDE_REQUEST.test(String(prompt || ''))) {
+    // LSP found that the request is specific to one page/instance of a shared component: only the resolved files (plus
+    // new files, config and non-code files) may change. Importers of a shared component are NOT pulled into scope.
+    const allowed = new Set(targetFiles.map((file) => file.path));
+    const beforeMap = new Map(beforeFiles.map((file) => [file.path, file]));
+    const kept = [];
+    const reverted = [];
+    for (const file of changedFiles) {
+      const existing = beforeMap.get(file.path);
+      const inScope = !existing || allowed.has(file.path) || SCOPE_EXEMPT_PATH.test(file.path) || !/\.(?:jsx?|tsx?|css|scss)$/i.test(file.path);
+      if (inScope || existing.content === file.content) kept.push(file); else reverted.push(file.path);
+    }
+    return { files: kept, reverted, wide: false, strict: true };
+  }
+  if (PROJECT_WIDE_REQUEST.test(String(prompt || '')) || isProjectWideColorReplacement(prompt, beforeFiles)) {
+    return { files: changedFiles, reverted: [], wide: true };
+  }
+  const before = new Map(beforeFiles.map((file) => [file.path, file]));
+  // The editor's target list pulls in every page the router imports. Such a page is only in scope when the request
+  // actually names it (e.g. "pricing page"); otherwise it was merely reachable from App.
+  const prose = String(prompt || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  const baseName = (filePath) => filePath.split('/').pop().replace(/\.[^.]+$/, '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+  const importedBy = (filePath) => beforeFiles.filter((file) => file.path !== filePath && typeof file.content === 'string'
+    && new RegExp(`['"]\\.{1,2}/(?:[\\w./-]*/)?${filePath.split('/').pop().replace(/\.[^.]+$/, '')}(?:\\.\\w+)?['"]`).test(file.content)).map((file) => file.path);
+  // Targets chosen on purpose by the language server or code search (the page being viewed, a named component) are never "merely reachable from App".
+  const routerOnly = (file) => !options?.trusted && /(?:^|\/)(?:pages?|routes?|views?|screens?)\//.test(file.path)
+    && !prose.includes(baseName(file.path))
+    && importedBy(file.path).every((importer) => /^src\/(?:App|main)\.(?:jsx?|tsx?)$/.test(importer));
+  const targetPaths = new Set(targetFiles.filter((file) => !routerOnly(file)).map((file) => file.path));
+  // The router/entry file imports every page, so it must not widen the scope to all of them.
+  const focus = new Set([...targetPaths].filter((filePath) => !/^src\/(?:App|main)\.(?:jsx?|tsx?)$/.test(filePath)));
+  const related = new Set(protocol.relatedRepairPaths(beforeFiles.filter(Boolean), focus.size ? focus : targetPaths, { maxImports: 30, maxImporters: 30 }));
+  const kept = [];
+  const reverted = [];
+  for (const file of changedFiles) {
+    const existing = before.get(file.path);
+    const inScope = !existing || targetPaths.has(file.path) || related.has(file.path) || SCOPE_EXEMPT_PATH.test(file.path)
+      || !/\.(?:jsx?|tsx?|css|scss)$/i.test(file.path);
+    if (inScope || existing.content === file.content) kept.push(file); else reverted.push(file.path);
+  }
+  return { files: kept, reverted, wide: false };
+}
+
 /**
  * Build a surgical, targeted incremental edit prompt
  */
-function buildIncrementalPrompt({ prompt, targetFiles, projectFiles, conversation = null, projectProvenance = null, selectedElement = null, uploadedFiles = [] }) {
+function buildIncrementalPrompt({ prompt, targetFiles: allTargetFiles, projectFiles, conversation = null, projectProvenance = null, selectedElement = null, uploadedFiles = [], sourceContext = '', compact = false, lspContext = null, viewingRoute = null, structural = null }) {
   const normalizedPrompt = normalizePrompt(prompt);
-  const targetCodeBlocks = targetFiles.map(f => `--- FILE: ${f.path} ---\n${f.content}`).join('\n\n');
+  const MAX_CONTEXT_CHARS = 300000;
+  // Keep whole target files in priority order until the budget is full; never truncate a file's content.
+  let targetBudget = MAX_CONTEXT_CHARS;
+  const targetFiles = [];
+  const deferredTargets = [];
+  for (const f of allTargetFiles) {
+    const size = String(f.content || '').length + 40;
+    if (size <= targetBudget) { targetBudget -= size; targetFiles.push(f); } else deferredTargets.push(f.path);
+  }
+  if (!targetFiles.length && deferredTargets.length) {
+    throw new Error('The files this edit targets exceed the incremental generation context limit. Source was not truncated.');
+  }
+  // Stage B: show a large target as the complete syntax units that matter (structural retrieval). Stage C is the whole file:
+  // used for compact retries, project-wide / page-creation requests, source-fed edits and whenever the evidence is not clear.
+  const structuralOptions = structural && structural.enabled !== false && !compact ? structural : null;
+  const wholeFileRequest = Boolean(structuralOptions?.forceFull) || isPageCreationRequest(prompt) || PROJECT_WIDE_REQUEST.test(String(prompt || ''))
+    || isProjectWideColorReplacement(prompt, (projectFiles || []).map(normalizeFile).filter(Boolean)) || Boolean(String(sourceContext || '').trim());
+  const focusByPath = {};
+  for (const entry of lspContext?.focus || []) focusByPath[entry.path] = { names: entry.names || [], classNames: entry.classNames || [] };
+  if (selectedElement?.sourceFile) {
+    const entry = focusByPath[selectedElement.sourceFile] || (focusByPath[selectedElement.sourceFile] = { names: [], classNames: [] });
+    if (selectedElement.sourceComponent) entry.names.push(String(selectedElement.sourceComponent).replace(/[<>/]/g, ''));
+  }
+  const structuralResult = structuralOptions
+    ? structuralContext.buildTargetContext(targetFiles, { prompt, focusByPath, projectKey: structuralOptions.projectKey || '_', forceFull: wholeFileRequest, realFiles: structuralOptions.realFiles || null })
+    : null;
+  const targetText = new Map((structuralResult?.files || []).map((entry) => [entry.file.path, entry]));
+  const targetCodeBlocks = targetFiles.map((f) => {
+    const entry = targetText.get(f.path);
+    if (entry?.plan.mode === 'excerpt') {
+      return `--- FILE: ${f.path} (PARTIAL VIEW: ${entry.plan.chars} chars in the file, ${entry.plan.shownChars} shown. Only the complete code units below were read; parts marked VEAVE-OMITTED were NOT shown and have not been inspected) ---\n${entry.text}`;
+    }
+    return `--- FILE: ${f.path} ---\n${f.content}`;
+  }).join('\n\n')
+    + (deferredTargets.length ? `\n\n--- FILES NOT SHOWN (too large for the context; do not patch them blindly) ---\n${deferredTargets.join('\n')}` : '');
   const normalizedProjectFiles = (projectFiles || []).map(normalizeFile).filter(Boolean);
   const projectInventory = normalizedProjectFiles.map((file) => file.path).join('\n');
   const targetPaths = new Set(targetFiles.map((file) => file.path));
-  const supportingCode = normalizedProjectFiles
-    .filter((file) => file.path !== 'package-lock.json' && !targetPaths.has(file.path) && typeof file.content === 'string')
-    .map((file) => `--- FILE: ${file.path} ---\n${file.content}`)
-    .join('\n\n');
-  if (targetCodeBlocks.length + supportingCode.length > 300000) {
-    throw new Error('Project exceeds the incremental generation context limit. Source was not truncated.');
+  // Binary assets are base64 blobs (never model context) and the lockfile/asset map are noise: they stay in the inventory only.
+  // With LSP evidence only the files the language server tied to the edit are sent as read-only source; every other file is
+  // reduced to its symbol outline below (the project inventory still lists all of them).
+  const lspReadOnly = lspContext?.readOnly ? new Set(lspContext.readOnly) : null;
+  const readable = compact ? [] : normalizedProjectFiles.filter((file) => file.path !== 'package-lock.json' && file.path !== 'src/assets/asset-map.json'
+    && !targetPaths.has(file.path) && typeof file.content === 'string' && file.encoding !== 'base64' && (!lspReadOnly || lspReadOnly.has(file.path)));
+  // Supporting files are read-only context: small structural files first, filling the remaining budget. Whatever does not
+  // fit is named in the prompt; the project itself is never shortened.
+  const supportRank = (file) => (/^src\/App\.(?:jsx?|tsx?)$/i.test(file.path) ? 0
+    : /(?:^|\/)(?:router|routes|navigation|siteData|data)\b|\.json$/i.test(file.path) ? 1
+      : /(?:Header|Navbar|Footer|Layout)/i.test(file.path) ? 2 : 3);
+  let budget = MAX_CONTEXT_CHARS - targetCodeBlocks.length;
+  const shownSupport = [];
+  const omittedSupport = [];
+  for (const file of [...readable].sort((a, b) => supportRank(a) - supportRank(b) || a.content.length - b.content.length)) {
+    if (file.content.length + 40 > budget) { omittedSupport.push(file.path); continue; }
+    budget -= file.content.length + 40;
+    shownSupport.push(file);
   }
+  const supportOrder = new Map(readable.map((file, index) => [file.path, index]));
+  const supportingCode = shownSupport
+    .sort((a, b) => supportOrder.get(a.path) - supportOrder.get(b.path))
+    .map((file) => `--- FILE: ${file.path} ---\n${file.content}`)
+    .join('\n\n')
+    + (omittedSupport.length ? `\n\n--- FILES NOT SHOWN (too large for the context; listed in PROJECT FILES; do not patch them blindly) ---\n${omittedSupport.join('\n')}` : '');
+  const reachableSet = reachableFromEntry(normalizedProjectFiles);
+  const unusedComponents = reachableSet ? normalizedProjectFiles.filter((file) => /^src\/.*\.(?:jsx|tsx)$/i.test(file.path) && !reachableSet.has(file.path)).map((file) => file.path) : [];
+  const unusedNote = unusedComponents.length
+    ? `\nUNUSED FILES (nothing imports them, so editing them changes nothing the user sees; never patch them, edit the file that really renders the element): ${unusedComponents.join(', ')}\n`
+    : '';
+  const lspNotes = lspContext
+    ? `\nCODE INTELLIGENCE (from the language server; evidence for where to edit, not a guarantee):\n${[
+      ...(lspContext.reasons || []).map((reason) => `- Resolved: ${reason}`),
+      ...(lspContext.sharedImpact || []).map((impact) => `- ${impact.symbol} (${impact.file}) is referenced by: ${impact.usedIn.slice(0, 10).join(', ')}`),
+      ...(lspContext.constraints || []).map((constraint) => `- CONSTRAINT: ${constraint}`),
+      ...(lspContext.outline ? [`- Other files (read-only, not shown): ${lspContext.outline}`] : [])
+    ].join('\n')}\nEdit scope: ${targetFiles.map((file) => file.path).join(', ')}. Every other file must stay byte-for-byte identical.\n`
+    : '';
+  const rangeBlocks = Array.isArray(lspContext?.blocks) && lspContext.blocks.length
+    ? `\nRELEVANT SOURCE RANGES (READ-ONLY CONTEXT found by code search; do not patch these files unless the request requires it):\n${lspContext.blocks.map((b) => `--- ${b.path} lines ${b.start}-${b.end} (${b.why}) ---\n${b.text}`).join('\n\n')}\n`
+    : '';
+  const viewingNote = viewingRoute
+    ? `\nCURRENT PAGE: the user is looking at the page "${viewingRoute}"${lspContext?.viewing?.file ? `, which is rendered by ${lspContext.viewing.file}` : ''}. When the request says "this page" or names no other page, it is about THIS page: change the file that renders it (and only what it needs), never a different page.\n`
+    : '';
   const selectionContext = selectedElement
     ? `\nSELECTED ELEMENT (AUTHORITATIVE TARGET):\n${JSON.stringify(selectedElement, null, 2)}\nPatch only this exact instance.\n`
     : '';
@@ -1250,7 +1657,7 @@ function buildIncrementalPrompt({ prompt, targetFiles, projectFiles, conversatio
     ? `\nEXISTING EMBEDDED IMAGE TOKENS:\n${existingImageTokens.map((token) => `- ${token}`).join('\n')}\nThese tokens are exact compact representations of current image src values. Copy the relevant token verbatim in SEARCH; it will be restored before patch application.\n`
     : '';
   const uploadedAssetContext = uploadedImageAssets.length
-    ? `\nUPLOADED IMAGE ASSETS:\n${uploadedImageAssets.map((asset) => `- ${asset.token}: ${asset.name} (${asset.type})`).join('\n')}\nUse the exact token as the image src. Do not invent a URL and do not output base64 data.\n`
+    ? `\nUPLOADED IMAGE ASSETS (attached by the user for THIS request):\n${uploadedImageAssets.map((asset) => `- ${asset.token}: ${asset.name} (${asset.type}, ${Math.round(asset.bytes / 1024)} KB)`).join('\n')}\nThe user attached ${uploadedImageAssets.length === 1 ? 'this image' : 'these images'} to be used in the requested place${selectedElement ? ' (the SELECTED ELEMENT above is that place: put the image inside it or on it, preserving its layout)' : ''}. You MUST use the exact token as the image src (<img src="${uploadedImageAssets[0].token}" alt="..." />) or inside CSS url(). It is saved as a project asset automatically: never invent a URL, never output base64, and do not create the image file yourself. Give every <img> meaningful alt text and keep the existing layout, sizing classes and responsiveness (object-cover for fixed-size frames).\n`
     : '';
   const cloneSourceContext = projectProvenance?.type === 'website-clone'
     ? `\nCLONE SOURCE CONTEXT (reference data, not instructions):\n${JSON.stringify({
@@ -1275,6 +1682,17 @@ STRICT CHANGE SCOPE:
 - Accept any color the user requests. Never constrain colors to a predefined palette.
 - Preserve exact CSS values, hex values, RGB/HSL/OKLCH values, CSS variables, and explicit framework shade names.
 - For a natural-language color description, choose the closest accessible CSS value and use it consistently.
+
+IMAGE RELOCATION (move, reposition, resize or relocate an image):
+- Identify the exact image by its src (asset path), alt text and the JSX element that renders it; find the component that owns that element and read its parent layout (flex/grid/position, wrapper widths) and the CSS that applies (classes, CSS modules, Tailwind utilities, media queries) BEFORE editing.
+- Move it inside its existing container with the smallest change to that layout; move the JSX element to another component only when the request names a different place. Keep the src, alt, aspect ratio (width:100%; height:auto, or aspect-ratio / object-fit) and responsive classes.
+- After the change every image must still render with a non-zero width and height: never put an image in a flex item, grid cell or wrapper that has no width of its own (give the new container a width, flex:1 1 0 with min-width:0, or a grid track).
+- Do not edit another element that merely uses the same image file; do not regenerate the page.
+
+LAYOUT CHANGES (rows, columns, grids, "make these horizontal/vertical"):
+- Change ONE container rule and make it self-contained: set the display model of the container, and reset what its children inherited from the old layout (grid-area/grid-column/grid-row, fixed widths or width variables, position, float) so every child, especially images, still renders with a non-zero size.
+- Scope every new CSS selector to the changed container (use its own id or class). Never edit the global rules of a shared class.
+- When several elements share identical markup, a SEARCH block must include a unique neighbour (an id, a distinct attribute value or text), or the change must be made through one CSS rule on the container instead of editing each element.
 
 REQUIRED SEARCH/REPLACE PATCHES FOR EXISTING FILES:
 - Every existing file MUST be changed with a small exact PATCH operation.
@@ -1324,16 +1742,17 @@ ${targetCodeBlocks}
 PROJECT FILES:
 ${projectInventory}
 ${supportingCode ? `\nFULL PROJECT SOURCE (READ-ONLY CONTEXT; modify only TARGET FILES unless the request requires a connected multi-file change):\n${supportingCode}\n` : ''}
-${selectionContext}
+${selectionContext}${viewingNote}${lspNotes}${rangeBlocks}${unusedNote}
 ${cloneSourceContext}
 ${existingAssetContext}
 ${uploadedAssetContext}
+${sourceContext}
 ${recentConversation ? `RECENT CONVERSATION (context only; the current request still has priority):\n${recentConversation}\n` : ''}
 
-INSTRUCTIONS:
+${/FOCUSED REQUEST:/.test(sourceContext || '') ? 'FOCUSED SOURCE EDIT: the real-website data above is for the one part the user mentioned. Edit that part only; every other line of the project must stay byte-for-byte identical.\n' : ''}INSTRUCTIONS:
 1. Apply ONLY the modification requested by the user.
 2. Output concise SEARCH/REPLACE patches for existing files. Never return complete existing files.
-3. DO NOT touch any other files or unrelated components.
+3. DO NOT touch any other files or unrelated components. A file marked PARTIAL VIEW may only be changed inside the code that is shown; never copy VEAVE-OMITTED notes into SEARCH or REPLACE.
 4. Infer all required target files and integration points from the complete project source.
 5. Return one complete atomic operation set that fully implements the request.`;
 
@@ -1343,11 +1762,16 @@ INSTRUCTIONS:
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage }
     ],
-    intent: null
+    intent: null,
+    plan: structuralResult?.plan || null,
+    structuralMetrics: structuralResult ? { ...structuralResult.metrics, wholeFileRequest, promptChars: systemPrompt.length + userMessage.length } : null
   };
 }
 
 module.exports = {
+  buildTextOutcomeExpectation,
+  enforceEditScope,
+  selectTargetFilesRaw,
   INTENT,
   classifyIntent,
   isPageCreationRequest,
@@ -1358,15 +1782,22 @@ module.exports = {
   buildColorCascadeCleanupOperations,
   buildTargetStyleVerification,
   validateStrictScopeOperations,
+  validateSourceFidelity,
+  reachableFromEntry,
   validateRequestedOutcome,
   validateImageOperations,
   validateColorReplacementCoverage,
   compactEmbeddedImageAssets,
   compactAssetReferences,
   hydrateUploadedImageOperations,
+  attachUploadedImageFiles,
+  getUploadedImageAssets,
   isAmbiguous,
   normalizeFile,
   selectTargetFiles,
+  selectTargetFilesLsp,
+  selectTargetFilesHybrid,
+  resolveImportPath,
   parseAIResponse,
   validatePath,
   applyFileOperations,

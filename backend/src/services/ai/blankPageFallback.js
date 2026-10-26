@@ -23,7 +23,7 @@ function findRouteComponentPath(files = [], routePath = '/') {
   const source = String(app.content || '');
   const escaped = routePath.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
   const patterns = [
-    new RegExp(`['"]${escaped}['"]\\s*:\\s*([A-Z][\\w]*)`),
+    new RegExp(`['"]${escaped}['"]\\s*:\\s*(?:\\(\\s*[\\w{},\\s.]*\\)\\s*=>\\s*\\(?\\s*<\\s*)?([A-Z][\\w]*)`),
     new RegExp(`path=["']${escaped}["'][^>]*element=\\{\\s*<\\s*([A-Z][\\w]*)`),
     new RegExp(`path:\\s*['"]${escaped}['"][^}]*?(?:component|element)\\s*:\\s*(?:<\\s*)?([A-Z][\\w]*)`)
   ];
@@ -41,11 +41,11 @@ function findRouteComponentPath(files = [], routePath = '/') {
   return files.map((file) => file.path).find((filePath) => new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.(?:jsx?|tsx?)$`, 'i').test(filePath)) || null;
 }
 
-function sanitizeCapturedHtml(html = '') {
+function sanitizeCapturedHtml(html = '', { keepChrome = false } = {}) {
   return String(html)
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<(script|style|noscript|iframe|object|embed|template)\b[\s\S]*?<\/\1>/gi, '')
-    .replace(/<(header|nav|footer)\b[\s\S]*?<\/\1>/gi, '')
+    .replace(keepChrome ? /$^/ : /<(header|nav|footer)\b[\s\S]*?<\/\1>/gi, '')
     .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*')/gi, '')
     .replace(/\s(?:srcset|sizes|loading|data-[\w-]+)\s*=\s*("[^"]*"|'[^']*')/gi, '')
     .replace(/href\s*=\s*(["'])\s*javascript:[^"']*\1/gi, 'href="#"')
@@ -80,4 +80,4 @@ function applyFallbackPage(files = [], page, { assets = [], localize = (value) =
   return { files: updated, applied: true, componentPath };
 }
 
-module.exports = { capturedTextLength, isBlankRoute, findRouteComponentPath, sanitizeCapturedHtml, applyFallbackPage };
+module.exports = { buildFallbackComponent, FALLBACK_CSS, stripTags, capturedTextLength, isBlankRoute, findRouteComponentPath, sanitizeCapturedHtml, applyFallbackPage };

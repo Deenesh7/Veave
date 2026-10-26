@@ -8,8 +8,12 @@ const { hydrateFiles } = require('../storage/s3BlobStorage');
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // Legacy
 const MAX_CHECKPOINTS = 100000;
 const configuredCheckpointBytes = Number.parseInt(process.env.MAX_SESSION_CHECKPOINT_BYTES, 10);
-// 0 = unlimited
-const MAX_CHECKPOINT_BYTES = configuredCheckpointBytes === 0 ? Infinity : Math.max(1024 * 1024, configuredCheckpointBytes || 12 * 1024 * 1024);
+// A MongoDB document cannot exceed 16 MB, and the whole conversation (every checkpoint's source) lives in one document.
+// So history is always bounded: 0 or a larger value in the environment still cannot go above this ceiling.
+const HARD_CHECKPOINT_CEILING = 12 * 1024 * 1024;
+const MAX_CHECKPOINT_BYTES = configuredCheckpointBytes > 0
+  ? Math.min(HARD_CHECKPOINT_CEILING, Math.max(1024 * 1024, configuredCheckpointBytes))
+  : HARD_CHECKPOINT_CEILING;
 
 function filesHash(files) {
   if (!Array.isArray(files)) return '';
@@ -42,6 +46,9 @@ function restoreWithBinaryAssets(snapshot = [], currentFiles = []) {
 async function syncProjectFilesTable(projectId, userId, files = []) {
   if (!projectId || !Array.isArray(files) || files.length === 0) return;
   try {
+    // Files belong to the project's owner, not to whichever collaborator happened to trigger this write.
+    const projectOwner = await Project.findById(projectId).select('userId').lean();
+    if (projectOwner) userId = projectOwner.userId || null;
     const paths = files.map(f => f.path);
     await ProjectFile.deleteMany({ projectId, path: { $nin: paths } });
     const ops = files.map(f => ({
@@ -333,6 +340,17 @@ class SessionManager {
     // Binary clone assets stay authoritative in Project/ProjectFile storage.
     // Repeating base64 in each checkpoint can exceed MongoDB's BSON limit.
     const sanitizedFiles = sourceSnapshot(files);
+    const snapshotSize = (list) => list.reduce((sum, file) => sum + Buffer.byteLength(String(file.content || ''), 'utf8') + String(file.path || '').length, 0);
+
+    // A single revision larger than the history budget cannot be stored in the conversation document. The project itself
+    // is already saved; only this undo step is skipped, never a half-written checkpoint.
+    if (snapshotSize(sanitizedFiles) > MAX_CHECKPOINT_BYTES) {
+      logger.warn(`[SessionManager] Source is ${Math.round(snapshotSize(sanitizedFiles) / 1048576)} MB, above the ${Math.round(MAX_CHECKPOINT_BYTES / 1048576)} MB history limit: no undo checkpoint recorded for "${String(prompt).slice(0, 60)}".`);
+      session.lastActivityAt = now;
+      session.expiresAt = new Date(Date.now() + this.TTL_MS);
+      await session.save();
+      return session;
+    }
 
     // Deduplication: if files did not change compared to current active checkpoint, skip duplicate checkpoint
     const currentCp = session.checkpoints[session.currentIndex];
@@ -450,6 +468,7 @@ class SessionManager {
     }
 
     await project.save();
+    require('../search/projectIndexHooks').invalidate(project._id); // undo/redo/restore changed the saved files
     await syncProjectFilesTable(project._id, userId, project.files);
 
     const rollbackSummary = `Reverted to Checkpoint ${targetCp.stepNumber}: "${targetCp.changeSummary || targetCp.userPrompt}"`;
@@ -521,6 +540,7 @@ class SessionManager {
     }
 
     await project.save();
+    require('../search/projectIndexHooks').invalidate(project._id); // undo/redo/restore changed the saved files
     await syncProjectFilesTable(project._id, userId, project.files);
 
     const redoSummary = `Restored forward to Checkpoint ${targetCp.stepNumber}: "${targetCp.changeSummary || targetCp.userPrompt}"`;
@@ -581,6 +601,7 @@ class SessionManager {
     if (targetCp.validation) project.validation = targetCp.validation;
     if (targetCp.dependencies) project.dependencies = targetCp.dependencies;
     await project.save();
+    require('../search/projectIndexHooks').invalidate(project._id); // undo/redo/restore changed the saved files
     await syncProjectFilesTable(project._id, userId, project.files);
 
     const summary = `Restored to Checkpoint ${targetCp.stepNumber}: "${targetCp.changeSummary || targetCp.userPrompt}"`;

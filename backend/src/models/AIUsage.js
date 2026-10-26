@@ -9,7 +9,9 @@ const aiUsageSchema = new mongoose.Schema({
   outputTokens: { type: Number, default: 0 },
   totalTokens: { type: Number, default: 0 },
   requestDuration: { type: Number, default: 0 },
-  cost: { type: Number, default: 0 }
+  cost: { type: Number, default: 0 },
+  // 'reported' = provider-measured; 'estimated' = chars/4 guess; 'unknown' = no usable figure. Older records count as reported.
+  usageSource: { type: String, enum: ['reported', 'estimated', 'unknown'], default: 'reported' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('AIUsage', aiUsageSchema);
