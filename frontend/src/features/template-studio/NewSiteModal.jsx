@@ -33,7 +33,7 @@ const EXAMPLES = {
 const placeholderFor = (template) => template?.scratch ? 'e.g. "Create a modern engineering college website with admissions, departments, faculty, campus facilities, placements, events and contact information."' : `${EXAMPLES[template?.id] || `A ${String(template?.category || 'business').toLowerCase()} website.`} Or describe any other kind of website, e.g. "A modern engineering college with departments, admissions and placements."`;
 
 // One card shell for every design in the strip: same size, padding, radius, gap and selection badge.
-const CARD = 'group relative flex h-[76px] w-[248px] shrink-0 snap-start items-center gap-3 rounded-lg border p-2 text-left transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5E7B5F]';
+const CARD = 'group relative flex h-[76px] w-full shrink-0 items-center gap-3 rounded-lg border p-2 text-left transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5E7B5F]';
 const SelectedBadge = () => <span className="absolute -right-1.5 -top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-[#5E7B5F] text-white shadow"><Check className="h-3 w-3" aria-label="Selected" /></span>;
 
 /** The visually distinct "Create from Scratch" card: same shell, dashed green border. */
@@ -275,24 +275,24 @@ export default function NewSiteModal({ open, onClose }) {
         {phase === 'progress' ? (
           <div className="min-h-0 flex-1 overflow-auto p-5"><GenerationProgress job={websiteJob} pages={pages} starting={starting} onRetry={() => generateSite(fullBrief)} onOpen={finish} /></div>
         ) : loading ? (
-          <div className="grid flex-1 gap-3 p-5 lg:grid-cols-[68fr_32fr]"><Skeleton className="h-full min-h-[320px]" /><Skeleton className="h-full min-h-[320px]" /></div>
+          <div className="grid flex-1 gap-3 p-5 lg:grid-cols-[236px_320px_1fr]"><Skeleton className="h-full min-h-[320px]" /><Skeleton className="h-full min-h-[320px]" /><Skeleton className="h-full min-h-[320px]" /></div>
         ) : error ? (
           <div className="p-5"><ErrorNote onRetry={load}>{error}</ErrorNote></div>
         ) : (
           <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col" noValidate>
-            {/* Workspace: live preview (left, 68%) and theme controls (right, 32%). On small screens they stack and the body scrolls. */}
-            <div className="min-h-0 flex-1 overflow-y-auto md:grid md:grid-rows-[minmax(0,1fr)] md:grid-cols-[minmax(0,1fr)_280px] md:overflow-hidden lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1fr)_340px]">
-              <div className={`flex min-h-0 min-w-0 flex-col md:border-r ${line}`}>
-                <div className={`flex shrink-0 snap-x items-stretch gap-3 overflow-x-auto overflow-y-hidden border-b ${line} bg-[#FBF9F4] px-4 pb-3 pt-4`} role="group" aria-label="Choose a design">
+            {/* Workspace, three columns: 1) templates, 2) theme and typography, 3) live preview. On small screens they stack and the body scrolls. */}
+            <div className="min-h-0 flex-1 overflow-y-auto md:grid md:grid-rows-[minmax(0,1fr)] md:grid-cols-[200px_260px_minmax(0,1fr)] md:overflow-hidden lg:grid-cols-[236px_320px_minmax(0,1fr)]">
+              <nav className={`min-h-0 min-w-0 border-b ${line} bg-[#FBF9F4] md:overflow-y-auto md:overscroll-contain md:border-b-0 md:border-r`} aria-label="Templates">
+                <p className={`px-3 pb-1 pt-4 text-xs font-medium uppercase tracking-wider ${muted}`}>1. Template</p>
+                <div className="flex flex-col gap-3 px-3 pb-4 pt-2" role="group" aria-label="Choose a design">
                   <ScratchCard selected={Boolean(selected?.scratch)} onSelect={select} />
                   {templates.map((template) => <TemplateCard key={template.id} template={template} selected={selected?.id === template.id} onSelect={select} />)}
                 </div>
-                {selected ? <LivePreview template={selected} pages={detail?.data?.pages || []} theme={payload} onTheme={(result) => setAdjusted(result.adjusted || [])} /> : <p className={`p-6 text-sm ${muted}`}>Choose a design to see its website.</p>}
-              </div>
+              </nav>
               {/* Theme sidebar: fixed width from tablet up, its own scroll area; below tablet it is a collapsible panel under the preview. */}
-              <aside className={`min-h-0 min-w-0 border-t ${line} bg-[#FBF9F4] md:border-t-0`} aria-label="Theme customization">
+              <aside className={`min-h-0 min-w-0 border-b ${line} bg-[#FBF9F4] md:border-b-0 md:border-r`} aria-label="Theme and typography">
                 <button type="button" onClick={() => setThemeOpen((value) => !value)} aria-expanded={themeOpen} className={`flex w-full items-center justify-between px-4 py-3 text-left font-serif text-sm ${ink} md:hidden`}>
-                  <span>Customize theme{payload ? ' (customised)' : ''}</span><ChevronDown className={`h-4 w-4 transition ${themeOpen ? 'rotate-180' : ''}`} />
+                  <span>2. Theme and typography{payload ? ' (customised)' : ''}</span><ChevronDown className={`h-4 w-4 transition ${themeOpen ? 'rotate-180' : ''}`} />
                 </button>
                 <div className={`${themeOpen ? 'block' : 'hidden'} min-w-0 md:block md:h-full md:overflow-y-auto md:overscroll-contain`}>
                   <ThemeEditor theme={theme} onChange={setTheme} detail={detail?.data} library={library} libraryFailed={libraryFailed} adjusted={adjusted} onReset={() => { setTheme(DEFAULT_THEME()); setAdjusted([]); }}
@@ -307,6 +307,9 @@ export default function NewSiteModal({ open, onClose }) {
                   </ThemeEditor>
                 </div>
               </aside>
+              <section className="flex min-h-[420px] min-w-0 flex-col md:min-h-0" aria-label="Preview">
+                {selected ? <LivePreview template={selected} pages={detail?.data?.pages || []} theme={payload} onTheme={(result) => setAdjusted(result.adjusted || [])} /> : <p className={`p-6 text-sm ${muted}`}>Choose a design to see its website.</p>}
+              </section>
             </div>
 
             {/* Site information: always visible, never behind the footer. */}
