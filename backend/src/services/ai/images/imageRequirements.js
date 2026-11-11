@@ -15,7 +15,7 @@ const INDUSTRIES = [
   { id: 'architecture', match: /\b(architect|architecture|interior design|interior designer|construction|real estate|property|realtor|builder|home design|renovation|furniture)\b/i, subject: 'architecture and interiors',
     hero: 'modern architecture residential building exterior', features: ['modern living room interior design', 'architect reviewing building plans', 'contemporary kitchen interior'],
     about: 'architecture studio team working', team: 'architects team portrait studio', service: ['modern house exterior', 'commercial building glass facade', 'bedroom interior design minimal'], gallery: ['staircase architecture detail', 'luxury home interior', 'urban skyline buildings'] },
-  { id: 'education', match: /\b(school|college|university|education|academy|institute|course|learning|student|tuition|campus|training)\b/i, subject: 'education',
+  { id: 'education', match: /\b(schools?|colleges?|universit(?:y|ies)|educat\w*|academ(?:y|ies)|institutes?|courses?|learning|students?|tuition|campus|training)\b/i, subject: 'education',
     hero: 'university campus students walking', features: ['students studying in library', 'classroom teacher lesson', 'graduation ceremony students'],
     about: 'school building campus', team: 'teachers faculty group portrait', service: ['science laboratory students', 'students group discussion', 'computer lab learning'], gallery: ['campus garden students', 'sports ground school', 'students reading books'] },
   { id: 'healthcare', match: /\b(clinic|hospital|health|medical|dental|dentist|doctor|pharmacy|therapy|wellness|care|physio|cardio)\b/i, subject: 'healthcare',
@@ -171,4 +171,4 @@ async function buildRequirements({ prompt, spec = null, ask = null, cfg = imageC
   return { ...heuristicRequirements({ prompt, spec, cfg }), source: 'heuristic' };
 }
 
-module.exports = { buildRequirements, heuristicRequirements, normalizeModelPlan, detectIndustry, ASPECTS, slug };
+module.exports = { buildRequirements, heuristicRequirements, normalizeModelPlan, detectIndustry, pagesFor, baseSlot, promptSubject, ASPECTS, slug };

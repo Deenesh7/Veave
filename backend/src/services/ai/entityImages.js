@@ -23,6 +23,51 @@ const ENTITY_TYPES = new Set(['person', 'company', 'brand', 'organization', 'pro
 
 const NOT_ENTITIES = new Set(['create', 'build', 'make', 'design', 'generate', 'website', 'web', 'site', 'page', 'landing', 'portfolio', 'blog', 'store', 'shop', 'app', 'dashboard', 'modern', 'simple', 'beautiful', 'professional', 'responsive', 'dark', 'light', 'react', 'tailwind', 'javascript', 'html', 'css', 'node', 'mongodb', 'github', 'google fonts', 'home', 'about', 'contact', 'services', 'pricing', 'team', 'blog', 'faq', 'login', 'signup', 'ui', 'ux', 'seo', 'api', 'i', 'a', 'an', 'the']);
 
+/* ---------------------------------------------------------------- identity evidence ---------------------------------------------------------------- */
+
+const SOCIAL_HOST = /(?:^|\.)(?:facebook|instagram|pinterest|twitter|x|tiktok|linkedin|reddit|tumblr|quora|youtube|ytimg|fbcdn|cdninstagram)\.(?:com|net|co)$/i;
+const AGGREGATOR_HOST = /(?:^|\.)(?:alamy|alamyimages|gettyimages|shutterstock|istockphoto|dreamstime|depositphotos|123rf|pngtree|pngwing|freepik|vecteezy|quotefancy|brainyquote|picsart|pikbest|wallpaperaccess|wallpapercave)\.[a-z.]+$/i;
+const REFERENCE_HOST = /(?:^|\.)(?:wikipedia|wikimedia|wikidata|britannica)\.org$|(?:^|\.)britannica\.com$/i;
+const NEWS_HOST = /(?:^|\.)(?:thehindu|indianexpress|timesofindia\.indiatimes|hindustantimes|ndtv|deccanherald|deccanchronicle|dtnext|newindianexpress|business-standard|economictimes\.indiatimes|livemint|thehindubusinessline|bbc|reuters|apnews|theguardian|nytimes|washingtonpost|cnn|forbes|bloomberg)\.[a-z.]+$/i;
+
+const hostOf = (url) => { try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; } };
+
+/** What kind of website the picture comes from, which is the main evidence of whose picture it is. */
+function sourceTier(candidate, entityName) {
+  const host = hostOf(candidate.pageUrl) || hostOf(candidate.imageUrl || candidate.url);
+  if (!host) return { tier: 'unknown', host };
+  if (SOCIAL_HOST.test(host)) return { tier: 'social', host };
+  if (AGGREGATOR_HOST.test(host)) return { tier: 'aggregator', host };
+  if (REFERENCE_HOST.test(host)) return { tier: 'reference', host };
+  if (NEWS_HOST.test(host)) return { tier: 'news', host };
+  const tokens = imageSearch.distinctiveTokens(entityName).filter((token) => token.length >= 4);
+  if (/\.(?:edu|gov|ac)(?:\.[a-z]{2})?$|\.nic\.in$|\.gov\.[a-z]{2}$/.test(host) || tokens.some((token) => host.replace(/[^a-z0-9]/g, '').includes(token))) return { tier: 'official', host };
+  return { tier: 'unknown', host };
+}
+
+/**
+ * Is this search result evidence of the NAMED subject? A person is accepted only on strong evidence: the whole name in the
+ * title and in the surrounding page text from an official, reference or news site (or in two independent fields from any other
+ * ordinary site). Social posts and stock aggregators are never accepted for a person. A result that does not qualify is dropped, so
+ * the section falls back to a generic relevant photograph that never claims to show that person.
+ */
+function assessIdentity(candidate, entity) {
+  const { tier, host } = sourceTier(candidate, entity.name);
+  if (tier === 'social' || tier === 'aggregator') return { ok: false, tier, host, reason: `${tier} source` };
+  const inTitle = imageSearch.matchesSubject(candidate.title || '', entity.name);
+  const pageSlug = (() => { try { return decodeURIComponent(new URL(candidate.pageUrl).pathname).replace(/[-_/.+]+/g, ' '); } catch { return ''; } })();
+  const inContext = imageSearch.matchesSubject(`${candidate.snippet || ''} ${pageSlug}`, entity.name);
+  const reasons = [inTitle ? 'name in title' : null, inContext ? 'name in page text' : null, tier !== 'unknown' ? `${tier} source` : null].filter(Boolean);
+  if (entity.type === 'person') {
+    const strong = ['official', 'reference', 'news'].includes(tier) && (inTitle || inContext);
+    const corroborated = inTitle && inContext;
+    if (!strong && !corroborated) return { ok: false, tier, host, reason: 'identity not established' };
+    return { ok: true, level: strong && (inTitle || tier === 'reference') ? 'high' : 'medium', tier, host, via: reasons };
+  }
+  if (!inTitle && !inContext) return { ok: false, tier, host, reason: 'name not in title or page text' };
+  return { ok: true, level: tier === 'unknown' ? 'medium' : 'high', tier, host, via: reasons };
+}
+
 const typeOf = (value) => (ENTITY_TYPES.has(String(value || '').toLowerCase()) ? String(value).toLowerCase() : 'organization');
 
 /** Capitalised name-like phrases ("Sundar Pichai", "Tata Motors") when no model is available to ask. */
@@ -110,6 +155,7 @@ async function discoverEntityImages({ prompt, ask = null, signal, env = process.
   const missing = [];
   const usedHashes = new Set();
   const usedUrls = new Set();
+  const rejectedIdentity = [];
 
   for (const entity of entities) {
     if (signal?.aborted) break;
@@ -132,6 +178,8 @@ async function discoverEntityImages({ prompt, ask = null, signal, env = process.
         if (taken >= (step.role === 'logo' ? 1 : 2) || mine.length >= MAX_IMAGES_PER_ENTITY) break;
         if (!candidate.imageUrl || usedUrls.has(candidate.imageUrl)) continue;
         usedUrls.add(candidate.imageUrl);
+        const identity = step.role === 'logo' ? { ok: true, level: 'medium', tier: sourceTier(candidate, entity.name).tier, host: sourceTier(candidate, entity.name).host, via: ['logo search'] } : assessIdentity(candidate, entity);
+        if (!identity.ok) { rejectedIdentity.push({ entity: entity.name, url: candidate.imageUrl, reason: identity.reason, host: identity.host }); continue; }
         try {
           const buffer = await download(candidate.imageUrl, { signal });
           const sniffed = remoteImageLocalizer.sniffImage(buffer);
@@ -148,7 +196,8 @@ async function discoverEntityImages({ prompt, ask = null, signal, env = process.
           mine.push({
             entity: entity.name, entityType: entity.type, entityRole: entity.role || '', kind: kindFor(step.role, dims, candidate.title, entity.type),
             url: candidate.imageUrl, title: String(candidate.title || '').slice(0, 140), pageUrl: candidate.pageUrl || null, source: candidate.source || 'web',
-            width: dims.width, height: dims.height, mime: sniffed.mime, extension: sniffed.extension, hash10: hash.slice(0, 10)
+            width: dims.width, height: dims.height, mime: sniffed.mime, extension: sniffed.extension, hash10: hash.slice(0, 10),
+            identity: { level: identity.level, tier: identity.tier, host: identity.host, via: identity.via }
           });
           taken += 1;
         } catch (error) {
@@ -160,7 +209,7 @@ async function discoverEntityImages({ prompt, ask = null, signal, env = process.
     else missing.push(entity);
     if (onNote) onNote(`${entity.name}: ${mine.length ? `${mine.length} verified image(s)` : 'no verified image'}`);
   }
-  return { entities, assets, missing };
+  return { entities, assets, missing, rejectedIdentity };
 }
 
 const SECTION_GUIDE = {
@@ -183,7 +232,8 @@ function buildPromptBlock({ assets = [], missing = [] } = {}) {
     const first = list[0];
     lines.push(`\n${entity} (${first.entityType}${first.entityRole ? `, ${first.entityRole}` : ''}):`);
     for (const asset of list) {
-      lines.push(`- ${asset.url}  [${asset.kind}, ${asset.width}x${asset.height}${asset.title ? `, "${asset.title}"` : ''}] best for ${SECTION_GUIDE[asset.kind] || SECTION_GUIDE.general}${asset.pageUrl ? ` (source: ${asset.pageUrl})` : ''}`);
+      const evidence = asset.identity ? ` identity: ${asset.identity.level} confidence (${(asset.identity.via || []).join(', ') || 'source'}; ${asset.identity.host || 'unknown source'})` : '';
+      lines.push(`- ${asset.url}  [${asset.kind}, ${asset.width}x${asset.height}${asset.title ? `, "${asset.title}"` : ''}]${evidence} best for ${SECTION_GUIDE[asset.kind] || SECTION_GUIDE.general}${asset.pageUrl ? ` (source: ${asset.pageUrl})` : ''}`);
     }
   }
   if (missing.length) {
@@ -194,7 +244,7 @@ RULES FOR THESE IMAGES:
 - Use them as <img src="EXACT URL above"> (the build downloads them into the project). Copy each URL exactly; never edit, shorten or "fix" it.
 - Put every verified image in the section where it belongs: the hero gets the strongest wide scene or main portrait; the About section gets the person/company picture; Team and Speaker sections get each person's OWN portrait next to that person's name; product and gallery sections get matching pictures; a logo only goes in the navbar/footer/partner strip.
 - Never put one named person's picture under a different name, and never use these pictures for unrelated people. Use each image at most once, except a logo (navbar + footer).
-- Every <img> needs a fixed-aspect frame (aspect-square, aspect-[4/5], aspect-video ...) with \`w-full h-full object-cover\` (portraits also \`object-top\`; logos \`object-contain\`), meaningful alt text containing the name, and loading="lazy" below the fold. No stretching, no empty boxes, no broken-image icons.
+- Every <img> needs a fixed-aspect frame (aspect-square, aspect-[4/5], aspect-video ...) with \`w-full h-full object-cover\` (portraits also \`object-top\`; logos \`object-contain\`), meaningful alt text containing the name (only for a picture whose identity line says so), and loading="lazy" below the fold. No stretching, no empty boxes, no broken-image icons.
 - Add a small "Image credits" line in the footer that names each picture's source site.
 - For all other images on the site (generic features, services, gallery tiles that are NOT about the named entities) follow the normal image rules; do not reuse the pictures above for them.`);
   return lines.join('\n');
@@ -223,4 +273,4 @@ function spareAssets(files = [], assets = []) {
   return assets.filter((asset) => !sources.includes(`added-${asset.hash10}`) && !sources.includes(asset.url));
 }
 
-module.exports = { extractEntities, heuristicEntities, discoverEntityImages, buildPromptBlock, findUnusedAssets, spareAssets, searchPlan, kindFor };
+module.exports = { assessIdentity, sourceTier, extractEntities, heuristicEntities, discoverEntityImages, buildPromptBlock, findUnusedAssets, spareAssets, searchPlan, kindFor };

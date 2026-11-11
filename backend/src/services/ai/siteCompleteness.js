@@ -71,7 +71,7 @@ function luminance(hex) {
  * @param {{prompt?:string, spec?:{pages?:Array}, prototypeBg?:string|null}} context
  * @returns {Array<{category:'completeness', path:string, message:string, kind:string}>}
  */
-function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null, brokenImageLinks = [], entityAssets = [], imageInfo = null, spareImages = [], missingImages = [] } = {}) {
+function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null, brokenImageLinks = [], entityAssets = [], compositionPlan = null, imageInfo = null, spareImages = [], missingImages = [] } = {}) {
   const issues = [];
   const byPath = new Map(files.map((file) => [file.path, file]));
   const app = byPath.get('src/App.jsx') || byPath.get('src/App.tsx') || byPath.get('src/App.js');
@@ -124,9 +124,12 @@ function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null
   const homeSource = homeTree.map(textOf).join('\n');
   const sections = (homeSource.match(/<section\b/gi) || []).length;
   const words = visibleWords(homeSource);
-  const minimumSections = singleScreen ? 4 : 6;
-  if (sections < minimumSections || words < (singleScreen ? 150 : 350)) {
-    add('length', `The home page is too short (${sections} section(s), about ${words} words). Make it a full-length page with at least ${minimumSections} distinct <section> blocks (hero, key features, detailed content, statistics or timeline, testimonials or highlights, call to action) and real, specific copy of at least ${singleScreen ? 150 : 350} words. No placeholders.`, home.path);
+  // With a composition plan the home page is as long as the plan says (the plan never pads a page beyond the facts it was given).
+  const plannedHome = compositionPlan?.pages?.find((page) => page.route === '/')?.sections?.length || 0;
+  const minimumSections = singleScreen ? 4 : (plannedHome ? Math.min(6, Math.max(3, plannedHome)) : 6);
+  const minimumWords = singleScreen ? 150 : (plannedHome ? Math.min(350, Math.max(120, plannedHome * 60)) : 350);
+  if (sections < minimumSections || words < minimumWords) {
+    add('length', `The home page is too short (${sections} section(s), about ${words} words). ${plannedHome ? 'Build every section of the composition plan for the home page' : `Make it a full-length page with at least ${minimumSections} distinct <section> blocks (hero, key features, detailed content, statistics or timeline, testimonials or highlights, call to action)`} with real, specific copy of at least ${minimumWords} words taken from the request. No placeholders.`, home.path);
   }
 
   // 4. Footer.

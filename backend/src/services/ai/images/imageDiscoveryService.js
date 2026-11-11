@@ -127,7 +127,7 @@ async function fulfilSlot(requirement, ctx) {
       if (verified.meta.hash) taken.hashes.push(verified.meta.hash);
       const path = `${IMAGE_DIR}/${requirement.slot}.webp`;
       const asset = {
-        id: requirement.slot, jobId: ctx.scope, page: requirement.page, route: requirement.route, section: requirement.section, category: requirement.category,
+        id: requirement.slot, jobId: ctx.scope, page: requirement.page, route: requirement.route, section: requirement.section, sectionId: requirement.sectionId || null, layout: requirement.layout || null, generic: Boolean(requirement.generic), category: requirement.category,
         alt: sentence(requirement.altHint).slice(0, 160), aspect: requirement.aspect, hero: Boolean(requirement.hero),
         path, publicPath: `/${path.slice('public/'.length)}`, mime: verified.meta.mime, width: verified.meta.width, height: verified.meta.height, bytes: verified.meta.bytes, sha256: verified.meta.sha256, hash: verified.meta.hash,
         sourceUrl: candidate.url, sourcePage: candidate.pageUrl || null, provider: candidate.provider, creator: candidate.creator || '', license: candidate.license || '', licenseUrl: candidate.licenseUrl || '',
