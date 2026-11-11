@@ -33,14 +33,14 @@ const NEWS_HOST = /(?:^|\.)(?:thehindu|indianexpress|timesofindia\.indiatimes|hi
 const hostOf = (url) => { try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; } };
 
 /** What kind of website the picture comes from, which is the main evidence of whose picture it is. */
-function sourceTier(candidate, entityName) {
+function sourceTier(candidate, entityName, affiliation = '') {
   const host = hostOf(candidate.pageUrl) || hostOf(candidate.imageUrl || candidate.url);
   if (!host) return { tier: 'unknown', host };
   if (SOCIAL_HOST.test(host)) return { tier: 'social', host };
   if (AGGREGATOR_HOST.test(host)) return { tier: 'aggregator', host };
   if (REFERENCE_HOST.test(host)) return { tier: 'reference', host };
   if (NEWS_HOST.test(host)) return { tier: 'news', host };
-  const tokens = imageSearch.distinctiveTokens(entityName).filter((token) => token.length >= 4);
+  const tokens = [...imageSearch.distinctiveTokens(entityName), ...imageSearch.distinctiveTokens(affiliation)].filter((token) => token.length >= 4 && !['college', 'university', 'institute', 'school', 'trust', 'group', 'foundation'].includes(token));
   if (/\.(?:edu|gov|ac)(?:\.[a-z]{2})?$|\.nic\.in$|\.gov\.[a-z]{2}$/.test(host) || tokens.some((token) => host.replace(/[^a-z0-9]/g, '').includes(token))) return { tier: 'official', host };
   return { tier: 'unknown', host };
 }
@@ -52,8 +52,12 @@ function sourceTier(candidate, entityName) {
  * the section falls back to a generic relevant photograph that never claims to show that person.
  */
 function assessIdentity(candidate, entity) {
-  const { tier, host } = sourceTier(candidate, entity.name);
+  const { tier, host } = sourceTier(candidate, entity.name, entity.affiliation || '');
   if (tier === 'social' || tier === 'aggregator') return { ok: false, tier, host, reason: `${tier} source` };
+  // A namesake is told apart by the institution: it must appear with the name (or the page must already have been checked for both).
+  const affTokens = require('./research/webResearch').affiliationTokens(entity.affiliation || '');
+  const context = `${candidate.title || ''} ${candidate.snippet || ''} ${candidate.pageUrl || ''} ${host}`.toLowerCase();
+  const affiliationSeen = !affTokens.length || candidate.pageVerified || affTokens.some((token) => context.includes(token.slice(0, 6)));
   const inTitle = imageSearch.matchesSubject(candidate.title || '', entity.name);
   const pageSlug = (() => { try { return decodeURIComponent(new URL(candidate.pageUrl).pathname).replace(/[-_/.+]+/g, ' '); } catch { return ''; } })();
   const inContext = imageSearch.matchesSubject(`${candidate.snippet || ''} ${pageSlug}`, entity.name);
@@ -62,7 +66,9 @@ function assessIdentity(candidate, entity) {
     const strong = ['official', 'reference', 'news'].includes(tier) && (inTitle || inContext);
     const corroborated = inTitle && inContext;
     if (!strong && !corroborated) return { ok: false, tier, host, reason: 'identity not established' };
-    return { ok: true, level: strong && (inTitle || tier === 'reference') ? 'high' : 'medium', tier, host, via: reasons };
+    if (!affiliationSeen && tier !== 'reference' && tier !== 'official') return { ok: false, tier, host, reason: `${entity.affiliation} is not mentioned with the name (possibly a namesake)` };
+    if (affTokens.length && affiliationSeen) reasons.push('institution matches');
+    return { ok: true, level: strong && (inTitle || tier === 'reference' || candidate.pageVerified) ? 'high' : 'medium', tier, host, via: reasons };
   }
   if (!inTitle && !inContext) return { ok: false, tier, host, reason: 'name not in title or page text' };
   return { ok: true, level: tier === 'unknown' ? 'medium' : 'high', tier, host, via: reasons };
@@ -94,12 +100,22 @@ function heuristicEntities(prompt = '') {
   return [...found.values()].slice(0, MAX_ENTITIES);
 }
 
+/** The institution a request ties a named subject to: "Deepak Nallasamy of Saveetha", "founder of Saveetha", "Dr X at the University of Y". */
+function affiliationFor(prompt = '', name = '') {
+  const text = String(prompt).replace(/\s+/g, ' ');
+  const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tail = '((?:the\\s+)?[A-Z][\\w&.\\-]*(?:\\s+(?:of|for|and|&|the)?\\s*[A-Z][\\w&.\\-]*){0,5})';
+  const patterns = [new RegExp(`${escaped}\\s*,?\\s+(?:of|at|from|with)\\s+${tail}`), new RegExp(`${escaped}[^.]{0,40}?\\b(?:founder|chairman|chancellor|director|president|dean|principal|professor|head|ceo|trustee|secretary)\\s+(?:of|at)\\s+${tail}`, 'i'), new RegExp(`\\b(?:founder|chairman|chancellor|director|president|dean|principal|professor|head|ceo|trustee|secretary)\\s+(?:of|at)\\s+${tail}`)];
+  for (const pattern of patterns) { const m = pattern.exec(text); if (m && m[1] && m[1].trim().toLowerCase() !== String(name).toLowerCase()) return m[1].replace(/\s+(?:explaining|and|who|which|that)$/i, '').trim().slice(0, 80); }
+  return '';
+}
+
 /** @param ask async (system, user) => string, optional */
 async function extractEntities(prompt, { ask = null } = {}) {
   if (ask) {
     try {
       const raw = await ask(
-        'You extract named real-world entities from a website request. Reply with ONLY a JSON array, no prose. Each item: {"name": exact name as it should be searched, "type": "person"|"company"|"brand"|"organization"|"product"|"place"|"event", "role": one short phrase for how it appears on the website (e.g. "speaker", "founder", "the company the site is for", "team member")}. Include only specific, identifiable real people, companies, brands, organisations, products, places or events that the website is ABOUT or FEATURES. Do not include generic words, technologies (React, Tailwind), page names, or the invented name of a brand-new business with no public presence. Return [] when there are none. Maximum 5 items.',
+        'You extract named real-world entities from a website request. Reply with ONLY a JSON array, no prose. Each item: {"name": exact name as it should be searched, "affiliation": the institution or organisation the request ties it to ("" if none), "type": "person"|"company"|"brand"|"organization"|"product"|"place"|"event", "role": one short phrase for how it appears on the website (e.g. "speaker", "founder", "the company the site is for", "team member")}. Include only specific, identifiable real people, companies, brands, organisations, products, places or events that the website is ABOUT or FEATURES. Do not include generic words, technologies (React, Tailwind), page names, or the invented name of a brand-new business with no public presence. Return [] when there are none. Maximum 5 items.',
         String(prompt || '').slice(0, 4000)
       );
       const json = (/\[[\s\S]*\]/.exec(String(raw || '')) || [])[0];
@@ -108,24 +124,28 @@ async function extractEntities(prompt, { ask = null } = {}) {
         const seen = new Set();
         return parsed
           .filter((item) => item && typeof item.name === 'string' && item.name.trim().length >= 2)
-          .map((item) => ({ name: item.name.replace(/\s+/g, ' ').trim().slice(0, 80), type: typeOf(item.type), role: String(item.role || '').slice(0, 60) }))
+          .map((item) => ({ name: item.name.replace(/\s+/g, ' ').trim().slice(0, 80), type: typeOf(item.type), role: String(item.role || '').slice(0, 60), affiliation: String(item.affiliation || '').trim().slice(0, 80) || affiliationFor(prompt, item.name) }))
           .filter((item) => !NOT_ENTITIES.has(item.name.toLowerCase()) && !seen.has(item.name.toLowerCase()) && seen.add(item.name.toLowerCase()))
           .slice(0, MAX_ENTITIES);
       }
     } catch { /* fall through to the rule-based extraction */ }
   }
-  return heuristicEntities(prompt).map((item) => ({ ...item, role: '' }));
+  return heuristicEntities(prompt).map((item) => ({ ...item, role: '', affiliation: affiliationFor(prompt, item.name) }));
 }
 
-/** The searches that give an entity the pictures a website needs for it. */
+/** The searches that give an entity the pictures a website needs for it, written in the context of its institution. */
 function searchPlan(entity) {
   const name = entity.name;
-  if (entity.type === 'person') return [{ role: 'portrait', queries: [`"${name}"`, `"${name}" portrait`] }, { role: 'scene', queries: [`"${name}" speaking`, `"${name}" event`] }];
+  const aff = entity.affiliation ? ` ${entity.affiliation}` : '';
+  if (entity.type === 'person') return [
+    { role: 'portrait', queries: [`"${name}"${aff} photograph`, `"${name}"${aff} official profile`, `"${name}"${aff}`, `"${name}" portrait`] },
+    { role: 'scene', queries: [`"${name}"${aff} achievements photographs`, `"${name}"${aff} educational events`, `"${name}" speaking`, `"${name}" event`] }
+  ];
   if (entity.type === 'product') return [{ role: 'product', queries: [`"${name}"`, `"${name}" product`] }];
   if (entity.type === 'place') return [{ role: 'scene', queries: [`"${name}"`, `"${name}" view`] }];
   if (entity.type === 'event') return [{ role: 'scene', queries: [`"${name}"`] }];
   // company, brand, organisation
-  return [{ role: 'scene', queries: [`"${name}" headquarters`, `"${name}" office building`, `"${name}"`] }, { role: 'logo', queries: [`"${name}" logo`] }];
+  return [{ role: 'scene', queries: [`"${name}" campus photograph`, `"${name}" headquarters`, `"${name}" office building`, `"${name}"`] }, { role: 'logo', queries: [`"${name}" logo`] }];
 }
 
 async function measure(buffer, sniffed) {
@@ -149,8 +169,8 @@ function kindFor(role, dims, title = '', entityType = '') {
  * Finds, downloads and verifies pictures for every entity.
  * @returns {{entities: Array, assets: Array, missing: Array}} assets carry no buffers; they are primed into the downloader cache.
  */
-async function discoverEntityImages({ prompt, ask = null, signal, env = process.env, fetchJson, download = remoteImageLocalizer.downloadPublicImage, onNote = null } = {}) {
-  const entities = await extractEntities(prompt, { ask });
+async function discoverEntityImages({ prompt, ask = null, signal, env = process.env, fetchJson, download = remoteImageLocalizer.downloadPublicImage, onNote = null, entities: given = null, researchImages = [] } = {}) {
+  const entities = given || await extractEntities(prompt, { ask });
   const assets = [];
   const missing = [];
   const usedHashes = new Set();
@@ -170,6 +190,8 @@ async function discoverEntityImages({ prompt, ask = null, signal, env = process.
         } catch (error) { if (signal?.aborted) throw error; }
         if (results.length >= 6) break;
       }
+      // Pictures found on pages that were already checked to be about this subject come first (their page carries the name and institution).
+      if (step.role === 'portrait' || step.role === 'scene') results = [...researchImages.filter((item) => item.entity === entity.name).map((item) => ({ ...item, pageVerified: true })), ...results];
       if (!results.length && step.role !== 'logo') {
         try { results = (await imageSearch.searchWikimedia(entity.name, { fetchJson, signal })).map((item) => ({ imageUrl: item.url, title: item.title, pageUrl: item.pageUrl, source: item.source })); } catch (error) { if (signal?.aborted) throw error; }
       }
@@ -193,12 +215,14 @@ async function discoverEntityImages({ prompt, ask = null, signal, env = process.
           if (usedHashes.has(hash)) continue;
           usedHashes.add(hash);
           remoteImageLocalizer.primeImageCache(candidate.imageUrl, buffer);
-          mine.push({
+          const asset = {
             entity: entity.name, entityType: entity.type, entityRole: entity.role || '', kind: kindFor(step.role, dims, candidate.title, entity.type),
             url: candidate.imageUrl, title: String(candidate.title || '').slice(0, 140), pageUrl: candidate.pageUrl || null, source: candidate.source || 'web',
             width: dims.width, height: dims.height, mime: sniffed.mime, extension: sniffed.extension, hash10: hash.slice(0, 10),
             identity: { level: identity.level, tier: identity.tier, host: identity.host, via: identity.via }
-          });
+          };
+          Object.defineProperty(asset, 'buffer', { value: buffer, enumerable: false });
+          mine.push(asset);
           taken += 1;
         } catch (error) {
           if (signal?.aborted) throw error;
@@ -210,6 +234,42 @@ async function discoverEntityImages({ prompt, ask = null, signal, env = process.
     if (onNote) onNote(`${entity.name}: ${mine.length ? `${mine.length} verified image(s)` : 'no verified image'}`);
   }
   return { entities, assets, missing, rejectedIdentity };
+}
+
+/**
+ * Turns the verified pictures into project files (WebP, saved under public/assets/images) and manifest assets, so they are placed,
+ * validated and recovered exactly like every other picture, and the generator is handed local paths instead of remote links.
+ */
+async function materializeAssets(found, { maxWidth = 1600 } = {}) {
+  const sharp = require('sharp');
+  const { averageHash } = require('./images/imageVerification');
+  const slugify = (value) => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'subject';
+  const counters = new Map();
+  const assets = [];
+  const files = [];
+  for (const raw of found.assets || []) {
+    if (!raw.buffer) continue;
+    let webp;
+    try { webp = await sharp(raw.buffer, { failOn: 'error' }).rotate().resize({ width: maxWidth, withoutEnlargement: true }).webp({ quality: 84 }).toBuffer({ resolveWithObject: true }); } catch { continue; }
+    const key = `${slugify(raw.entity)}-${raw.kind === 'logo' ? 'logo' : (raw.kind === 'portrait' ? 'portrait' : 'photo')}`;
+    const n = (counters.get(key) || 0) + 1; counters.set(key, n);
+    const id = `${key}-${String(n).padStart(2, '0')}`;
+    const path = `public/assets/images/${id}.webp`;
+    const person = raw.entityType === 'person';
+    const high = raw.identity?.level === 'high';
+    const alt = raw.kind === 'logo' ? `${raw.entity} logo`
+      : (person ? (raw.kind === 'portrait' ? (high ? `Portrait of ${raw.entity}${raw.entityRole ? `, ${raw.entityRole}` : ''}` : `Photograph of ${raw.entity} (${raw.identity?.host || 'source'})`) : `${raw.entity}${raw.title && !/^file:/i.test(raw.title) ? `: ${String(raw.title).replace(/\s+/g, ' ').slice(0, 80)}` : ''}`) : `${raw.entity}${raw.title ? `: ${String(raw.title).replace(/\s+/g, ' ').slice(0, 80)}` : ''}`);
+    const sha256 = createHash('sha256').update(webp.data).digest('hex');
+    assets.push({
+      id, kind: 'entity', pictureKind: raw.kind, entity: raw.entity, entityType: raw.entityType, entityRole: raw.entityRole, page: null, route: null, section: null, sectionId: null,
+      category: raw.kind === 'portrait' ? 'team' : (raw.kind === 'logo' ? 'logo' : 'feature'), aspect: raw.kind === 'portrait' ? '4/5' : '4/3', hero: false, generic: false,
+      alt, path, publicPath: `/${path.slice('public/'.length)}`, mime: 'image/webp', width: webp.info.width, height: webp.info.height, bytes: webp.data.length, sha256, hash: await averageHash(webp.data).catch(() => ''),
+      sourceUrl: raw.url, sourcePage: raw.pageUrl || null, provider: raw.source || raw.identity?.host || 'web', creator: '', license: 'as published by the source site', licenseUrl: '', query: raw.entity,
+      identity: raw.identity, status: 'verified', storage: 'pending_commit', url: `/${path.slice('public/'.length)}`
+    });
+    files.push({ path, content: webp.data.toString('base64'), language: 'binary', encoding: 'base64' });
+  }
+  return { assets, files };
 }
 
 const SECTION_GUIDE = {
@@ -233,7 +293,7 @@ function buildPromptBlock({ assets = [], missing = [] } = {}) {
     lines.push(`\n${entity} (${first.entityType}${first.entityRole ? `, ${first.entityRole}` : ''}):`);
     for (const asset of list) {
       const evidence = asset.identity ? ` identity: ${asset.identity.level} confidence (${(asset.identity.via || []).join(', ') || 'source'}; ${asset.identity.host || 'unknown source'})` : '';
-      lines.push(`- ${asset.url}  [${asset.kind}, ${asset.width}x${asset.height}${asset.title ? `, "${asset.title}"` : ''}]${evidence} best for ${SECTION_GUIDE[asset.kind] || SECTION_GUIDE.general}${asset.pageUrl ? ` (source: ${asset.pageUrl})` : ''}`);
+      lines.push(`- ${asset.url}  [${asset.pictureKind || asset.kind}, ${asset.width}x${asset.height}${asset.title ? `, "${asset.title}"` : ''}]${evidence} best for ${SECTION_GUIDE[asset.pictureKind || asset.kind] || SECTION_GUIDE.general}${asset.pageUrl ? ` (source: ${asset.pageUrl})` : ''}`);
     }
   }
   if (missing.length) {
@@ -262,6 +322,7 @@ function findUnusedAssets(files = [], assets = []) {
     if (seen.has(asset.entity)) continue; // only each entity's primary picture is mandatory
     seen.add(asset.entity);
     const saved = `added-${asset.hash10}`;
+    if (asset.publicPath) { if (!sources.includes(asset.publicPath)) unused.push({ ...asset, savedPath: asset.publicPath }); continue; }
     if (!sources.includes(saved) && !sources.includes(asset.url)) unused.push({ ...asset, savedPath: `/assets/images/${saved}.${asset.extension}` });
   }
   return unused;
@@ -273,4 +334,4 @@ function spareAssets(files = [], assets = []) {
   return assets.filter((asset) => !sources.includes(`added-${asset.hash10}`) && !sources.includes(asset.url));
 }
 
-module.exports = { assessIdentity, sourceTier, extractEntities, heuristicEntities, discoverEntityImages, buildPromptBlock, findUnusedAssets, spareAssets, searchPlan, kindFor };
+module.exports = { affiliationFor, materializeAssets, assessIdentity, sourceTier, extractEntities, heuristicEntities, discoverEntityImages, buildPromptBlock, findUnusedAssets, spareAssets, searchPlan, kindFor };

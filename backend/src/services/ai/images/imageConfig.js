@@ -10,6 +10,8 @@ function imageConfig(env = process.env) {
     minSite: int(env.IMAGE_MIN_SITE, 6),
     // How many images the plan may ask for in total, and how many search results one slot may try before it is reported missing.
     maxAssets: Math.max(6, int(env.IMAGE_DISCOVERY_MAX, 14)),
+    // Self-healing: how many times a failed image check may search for new pictures before the job gives up (placing pictures that already exist is free and not counted).
+    recoveryAttempts: int(env.IMAGE_RECOVERY_ATTEMPTS, 3),
     maxCandidatesPerSlot: Math.max(3, int(env.IMAGE_CANDIDATES_PER_SLOT, 6)),
     alternateQueriesPerSlot: Math.max(1, int(env.IMAGE_ALTERNATE_QUERIES, 3)),
     minShortSide: int(env.IMAGE_MIN_SHORT_SIDE, 400),

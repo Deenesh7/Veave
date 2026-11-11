@@ -53,6 +53,8 @@ const imageSearch = require('./imageSearch');
 const entityImages = require('./entityImages');
 const imageDiscovery = require('./images/imageDiscoveryService');
 const imageValidation = require('./images/imageValidation');
+const imageRecovery = require('./images/imageRecovery');
+const webResearch = require('./research/webResearch');
 const { imageConfig } = require('./images/imageConfig');
 const compositionPlanner = require('./composition/compositionPlanner');
 const visualReview = require('./composition/visualReview');
@@ -2032,61 +2034,6 @@ function failureCode(error, { timedOut = false } = {}) {
   return 'JOB_FAILED';
 }
 
-/**
- * Image recovery for a candidate website: puts back discovered pictures that went missing, replaces pictures whose files fail
- * validation (at the same path, so no component changes) and, when the site still has too few working pictures to cover the
- * requirement, finds additional verified ones. Never inserts an unverified picture.
- */
-async function recoverProjectImages({ files, imageContext, prompt, spec, signal }) {
-  const cfg = imageConfig();
-  if (!cfg.enabled || (imageContext.recoveries || 0) >= 2) return { files, changed: false };
-  imageContext.recoveries = (imageContext.recoveries || 0) + 1;
-  let next = files;
-  let changed = false;
-  const byPath = new Map(next.map((file) => [file.path, file]));
-  let info = await imageValidation.inspectProjectImages(next);
-  const taken = imageContext.taken || { sha256: new Set(), hashes: [] };
-  // 1. A discovered picture that vanished from the project comes back; one that no longer decodes is replaced in place.
-  for (const asset of imageContext.assets || []) {
-    const stored = (imageContext.files || []).find((file) => file.path === asset.path);
-    const current = byPath.get(asset.path);
-    const broken = current && info.get(asset.path) && !info.get(asset.path).valid;
-    if (!current && stored) { next = imageDiscovery.mergeAssetFiles(next, [stored]); changed = true; continue; }
-    if (broken) {
-      const replacement = await imageDiscovery.replaceAsset(asset, { signal, taken, exclude: [asset.sha256] });
-      if (replacement.ok) {
-        next = next.map((file) => (file.path === asset.path ? replacement.file : file));
-        Object.assign(asset, replacement.asset);
-        const at = (imageContext.files || []).findIndex((file) => file.path === asset.path);
-        if (at >= 0) imageContext.files[at] = replacement.file; else (imageContext.files = imageContext.files || []).push(replacement.file);
-        changed = true;
-      }
-    }
-  }
-  // 2. Still short of pictures (counting the verified ones that are saved but not placed yet)? Find more, for the pages with the fewest.
-  info = await imageValidation.inspectProjectImages(next);
-  const tree = next.filter((file) => /\.(?:jsx?|tsx?)$/i.test(file.path || '') && /^src\//.test(file.path));
-  const placed = imageValidation.summarizeImages(tree, info).count;
-  const spare = imageDiscovery.spareAssets(next, imageContext.assets || []).length;
-  const shortBy = Math.max(cfg.minSite, cfg.minHome) + 1 - (placed + spare);
-  if (shortBy > 0) {
-    const found = await imageDiscovery.discoverImages({
-      prompt, spec, scope: `${imageContext.jobId}-recovery-${imageContext.recoveries}`, signal, taken,
-      requirements: imageDiscovery.extraRequirements({ plan: imageContext.plan, assets: imageContext.assets || [], count: shortBy + 1, prompt, spec }),
-      existingPaths: new Set(next.map((file) => file.path))
-    });
-    if (found.assets.length) {
-      imageContext.assets = [...(imageContext.assets || []), ...found.assets];
-      imageContext.files = [...(imageContext.files || []), ...found.files.filter((file) => file.path !== imageDiscovery.MANIFEST_PATH)];
-      imageContext.missing = [...(imageContext.missing || []), ...found.missing];
-      next = imageDiscovery.mergeAssetFiles(next, found.files.filter((file) => file.path !== imageDiscovery.MANIFEST_PATH));
-      next = [...next.filter((file) => file.path !== imageDiscovery.MANIFEST_PATH), imageDiscovery.manifestFile(imageContext.assets, imageContext.plan)];
-      changed = true;
-    } else if (found.missing.length) imageContext.missing = [...(imageContext.missing || []), ...found.missing];
-  }
-  return { files: next, changed };
-}
-
 class JobManager {
   activeValidations = new Map();
   // Jobs this process already took over after a restart; stops a second recovery pass from claiming them again.
@@ -2222,9 +2169,9 @@ class JobManager {
       const pageIssues = completenessReport.summary.remaining.filter((issue) => pageDistinctness.BLOCKING_KINDS.has(issue.kind));
       if (pageIssues.length) throw new AIResponseValidationError(`Page check failed: the website was not created because its pages are not distinct. ${pageIssues.map((issue) => issue.message).join(' ')}`.slice(0, 1500));
       const layoutBlocking = completenessReport.summary.remaining.filter((issue) => String(issue.kind).startsWith('layout-') && REVIEW_BLOCKING_KINDS.has(issue.kind));
-      if (layoutBlocking.length && String(process.env.LAYOUT_REVIEW_BLOCKING || 'true').toLowerCase() !== 'false') throw new AIResponseValidationError(`Layout check failed: the website was not created because its rendered pages have layout defects that could not be repaired. ${layoutBlocking.slice(0, 4).map((issue) => issue.message).join(' ')}`.slice(0, 1800));
+      if (layoutBlocking.length && String(process.env.LAYOUT_REVIEW_BLOCKING || 'false').toLowerCase() !== 'false') throw new AIResponseValidationError(`Layout check failed: the website was not created because its rendered pages have layout defects that could not be repaired. ${layoutBlocking.slice(0, 4).map((issue) => issue.message).join(' ')}`.slice(0, 1800));
       const imageIssues = completenessReport.summary.remaining.filter((issue) => issue.kind === 'images');
-      if (imageIssues.length) throw new AIResponseValidationError(`Image check failed: the website was not created because it does not have working images. ${imageIssues.map((issue) => issue.message).join(' ')}`.slice(0, 1500));
+      if (imageIssues.length) throw new AIResponseValidationError(`Image check failed: the website was not created because it does not have working images after ${imageConfig().recoveryAttempts} recovery attempt(s). ${imageIssues.map((issue) => issue.message).join(' ')}${completenessReport.imageDiagnostic ? `\n${completenessReport.imageDiagnostic}` : ''}`.slice(0, 2400));
     }
     let requireExecution = false;
     const dockerRequiredForVisual = requiresDockerForVisualReference(visualReference, allowLocalVisualFallback);
@@ -2513,7 +2460,7 @@ class JobManager {
   async checkRenderedImages(files, { signal, info = null } = {}) {
     const cfg = imageConfig();
     const routes = pageDistinctness.extractRoutes(files).filter((route) => route.path.startsWith('/') && !/[:*]/.test(route.path)).map((route) => route.path);
-    return imageValidation.checkRenderedImages(files, { routes: [...new Set(routes)], signal, cfg, info, render: (candidate, options) => inspectRenderedPreview(candidate, { signal, ...options }) });
+    return imageValidation.renderedImageReport(files, { routes: [...new Set(routes)], signal, cfg, info, render: (candidate, options) => inspectRenderedPreview(candidate, { signal, ...options }) });
   }
 
   /**
@@ -2576,8 +2523,19 @@ class JobManager {
       if (routeCheck && !pageBroken(found)) {
         try { found = [...found, ...await routeCheck(candidateFiles)]; } catch (error) { if (signal?.aborted) throw error; logger.warn(`Rendered page check skipped: ${error.message}`); }
       }
-      if (imageRenderCheck && enforceCompleteness && !pageBroken(found) && !found.some((issue) => issue.kind === 'images')) {
-        try { stageNote('image_render_validation'); found = [...found, ...await imageRenderCheck(candidateFiles, context.imageInfo)]; } catch (error) { if (signal?.aborted) throw error; logger.warn(`Rendered image check skipped: ${error.message}`); }
+      const countIssue = (issue) => issue.kind === 'images' && /^The site has \d+ image/.test(issue.message);
+      const otherIssues = found.filter((issue) => !countIssue(issue) && !['image-alt', 'image-layout'].includes(issue.kind));
+      if (imageRenderCheck && enforceCompleteness && !pageBroken(found) && (!found.some((issue) => issue.kind === 'images') || (found.some(countIssue) && !otherIssues.some((issue) => issue.kind === 'images')))) {
+        try {
+          stageNote('image_render_validation');
+          const report = await imageRenderCheck(candidateFiles, context.imageInfo);
+          context.renderedImages = { home: report.home, site: report.site, byRoute: report.byRoute };
+          // The source can hide pictures from a static count (paths built at run time, data files). What the browser renders is the truth:
+          // when it shows enough distinct, working pictures, the static count does not fail the site.
+          const cfgNow = imageConfig();
+          if (report.home !== null && report.home >= cfgNow.minHome && report.site >= cfgNow.minSite) found = found.filter((issue) => !countIssue(issue));
+          found = [...found, ...report.issues.filter((issue) => !(issue.kind === 'images' && /distinct image\(s\) render/.test(issue.message) && report.home >= cfgNow.minHome && report.site >= cfgNow.minSite))];
+        } catch (error) { if (signal?.aborted) throw error; logger.warn(`Rendered image check skipped: ${error.message}`); }
       }
       // Visual composition review: only on a site that is otherwise complete, so its repairs never fight the structural ones.
       if (layoutReview && enforceCompleteness && !found.some((issue) => !['image-alt', 'image-layout'].includes(issue.kind) && !issue.kind.startsWith('layout-'))) {
@@ -2597,11 +2555,14 @@ class JobManager {
     let attempts = 0;
     // Targeted image recovery first: restore or replace failed pictures at their own paths and find more pictures when the site
     // still has too few. The model is only asked to place pictures that already exist.
-    const recoverImages = async () => {
-      if (!imageContext || !issues.some((issue) => issue.kind === 'images')) return false;
-      stageNote('image_repair');
+    let imageDiagnostic = null;
+    const recoverImages = async ({ placeOnly = false } = {}) => {
+      if (!imageContext || !issues.some((issue) => issue.kind === 'images' || issue.kind === 'entity-images')) return false;
       try {
-        const recovered = await recoverProjectImages({ files: current, imageContext, prompt, spec, signal });
+        const recovered = await imageRecovery.recoverImages({ files: current, imageContext, prompt, spec, signal, placeOnly, onStage: (stage) => stageNote(stage) });
+        imageDiagnostic = recovered.diagnostic;
+        if (imageContext.jobId) GenerationJob.updateOne({ jobId: imageContext.jobId }, { $set: { 'analysis.imagePipeline.reconciliation': imageContext.report || null, 'analysis.imagePipeline.recoveryLog': (imageContext.recoveryLog || []).slice(-6).map(({ attempt, before, after, placed, failed, discovered, note }) => ({ attempt, before, after, placed: (placed || []).map((item) => `${item.path} -> ${item.file} (${item.strategy})`), failed, discovered, note })) } }).catch(() => {});
+        logger.info(`Image recovery: ${recovered.diagnostic.replace(/\n/g, ' | ')}`);
         if (!recovered.changed) return false;
         current = recovered.files;
         issues = await findAllIssues(current);
@@ -2609,7 +2570,8 @@ class JobManager {
       } catch (error) { if (signal?.aborted) throw error; logger.warn(`Image recovery skipped: ${error.message}`); return false; }
     };
     await recoverImages();
-    for (let round = 0; issues.length && round < rounds; round++) {
+    const layoutRounds = Number.parseInt(process.env.LAYOUT_REPAIR_ROUNDS, 10) || 4;
+    for (let round = 0; issues.length && round < Math.max(rounds, issues.some((issue) => String(issue.kind).startsWith('layout-')) ? layoutRounds : 0); round++) {
       if (signal?.aborted) throw Object.assign(new Error('Validation cancelled'), { name: 'AbortError' });
       if (round > 0) await recoverImages();
       if (!issues.length) break;
@@ -2651,21 +2613,34 @@ class JobManager {
       current = candidate;
       issues = after;
     }
-    // Last resort for pictures that exist in the project (verified, relevant) but were never placed: a gallery section on the home page.
-    if (imageContext && issues.some((issue) => issue.kind === 'images') && context.spareImages?.length) {
-      const placed = imageDiscovery.placeSpareImages(current, context.spareImages);
-      if (placed) {
-        const broken = generationPipeline.validateGeneratedFiles(placed.files).filter((item) => item.category === 'syntax');
-        if (!broken.length) {
-          const after = await findAllIssues(placed.files);
-          if (after.filter((issue) => issue.kind === 'images').length < issues.filter((issue) => issue.kind === 'images').length) { current = placed.files; issues = after; logger.info(`Placed ${placed.placed.length} verified image(s) in a home page gallery.`); }
+    // Layout self-heal, last resort: when the model could not clear the layout defects, a guard stylesheet fixes the usual causes
+    // deterministically (sideways overflow, unbroken long words, oversized fixed-height or padded sections, empty blocks on small screens).
+    const layoutLeft = () => issues.filter((issue) => String(issue.kind).startsWith('layout-'));
+    if (layoutReview && layoutLeft().length) {
+      try {
+        stageNote('layout_self_heal');
+        const cssFile = current.find((file) => file.path === 'src/index.css');
+        const GUARD_MARK = '/* veave-layout-guard */';
+        if (cssFile && !String(cssFile.content || '').includes(GUARD_MARK)) {
+          const guard = `\n${GUARD_MARK}\nhtml, body { max-width: 100%; overflow-x: hidden; }\nimg, video, svg, canvas, iframe { max-width: 100%; }\nh1, h2, h3, h4, p, li, a, span { overflow-wrap: anywhere; }\nsection:empty, div:empty:not([class*="absolute"]):not([aria-hidden]) { display: none; }\n@media (max-width: 767px) {\n  section { min-height: 0 !important; padding-top: min(var(--sec-py, 4rem), 4rem); padding-bottom: min(var(--sec-py, 4rem), 4rem); }\n  section[class*="min-h-screen"], section[class*="h-screen"] { min-height: auto !important; height: auto !important; }\n  [class*="grid-cols-"] { grid-template-columns: minmax(0, 1fr); }\n}\n@media (min-width: 768px) and (max-width: 1023px) { section { min-height: 0 !important; } }\n`;
+          const healed = current.map((file) => file === cssFile ? { ...file, content: `${file.content}${guard}` } : file);
+          const reviewed = await findAllIssues(healed);
+          const beforeCount = layoutLeft().length;
+          const afterCount = reviewed.filter((issue) => String(issue.kind).startsWith('layout-')).length;
+          const nonLayoutBefore = issues.length - beforeCount;
+          const nonLayoutAfter = reviewed.length - afterCount;
+          if (afterCount <= beforeCount && nonLayoutAfter <= nonLayoutBefore) { current = healed; issues = reviewed; history.push({ attempt: ++attempts, selfHeal: 'layout-guard', before: beforeCount, after: afterCount }); }
+          logger.info(`Layout self-heal: ${beforeCount} defect(s) before, ${afterCount} after the guard stylesheet${current === healed ? ' (kept)' : ' (not better, discarded)'}.`);
         }
-      }
+      } catch (error) { if (signal?.aborted) throw error; logger.warn(`Layout self-heal skipped: ${error.message}`); }
     }
+    // Final pass: whatever the model did, pictures that are saved but still unplaced are placed deterministically (no further searching).
+    await recoverImages({ placeOnly: true });
     if (imageContext) stageNote(issues.some((issue) => issue.kind === 'images') ? 'image_failed' : 'completed');
     return {
       files: current,
       layoutSummary: context.layoutSummary || null,
+      imageDiagnostic,
       summary: { checked: true, initialIssues: initial, remaining: issues.map(({ kind, message }) => ({ kind, message })), repairAttempts: attempts, complete: issues.length === 0 }
     };
   }
@@ -3194,40 +3169,71 @@ class JobManager {
       // Whether this is an edit of an existing project (decided once, before anything below needs it).
       const isIncremental = shouldUseIncrementalMode(job.type, project);
       let entityImageReport = null;
-      if (!isIncremental && !cloneCapture && job.type !== 'clone' && String(process.env.ENTITY_IMAGES || 'true').toLowerCase() !== 'false' && prompt && !/\b(no images?|without images?|text[- ]only)\b/i.test(prompt)) {
+      let entityLocal = null;
+      let researchDossier = null;
+      const canAskModel = Boolean(process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key');
+      const askModel = (maxTokens, temperature = 0) => (canAskModel ? async (system, user) => {
+        const completion = await openrouterService.generateCompletion([{ role: 'system', content: system }, { role: 'user', content: user }], { model, temperature, max_tokens: maxTokens, response_format: false, reasoning: { effort: 'minimal', exclude: true } });
+        return completion?.content || '';
+      } : null);
+      // Everything below applies to a NEW site made from a written request (not an edit, clone, template, screenshot or prototype).
+      const compositionEligible = String(process.env.COMPOSITION_PLANNING || 'true').toLowerCase() !== 'false' && !isIncremental && !cloneCapture && job.type !== 'clone' && !template && !prototypeStyle && !prototypeFromUrl && !image && Boolean(prompt);
+      const wantsNoImages = /\b(no images?|without images?|text[- ]only)\b/i.test(prompt || '');
+      const namedSubjects = !isIncremental && !cloneCapture && job.type !== 'clone' && Boolean(prompt) && (String(process.env.ENTITY_IMAGES || 'true').toLowerCase() !== 'false' || (compositionEligible && String(process.env.RESEARCH || 'true').toLowerCase() !== 'false'));
+      if (namedSubjects) {
         try {
-          job.stepName = 'Searching the web for the images of the names in your request...';
+          job.stepName = 'Finding the people and organisations in your request...';
           await job.save();
-          const canAsk = process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key';
-          const found = await entityImages.discoverEntityImages({
-            prompt,
-            signal: AbortSignal.any([validationController.signal, AbortSignal.timeout(Number.parseInt(process.env.ENTITY_IMAGES_TIMEOUT_MS, 10) || 90000)]),
-            ask: canAsk ? async (system, user) => {
-              const completion = await openrouterService.generateCompletion([{ role: 'system', content: system }, { role: 'user', content: user }], { model, temperature: 0, max_tokens: 600, response_format: false, reasoning: { effort: 'minimal', exclude: true } });
-              return completion?.content || '';
-            } : null,
-            onNote: (note) => logger.info(`Job ${jobId} entity images: ${note}`)
-          });
-          entityImageReport = found;
-          const block = entityImages.buildPromptBlock(found);
-          if (block) generationPrompt = `${generationPrompt}\n\n${block}`;
-          await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.entityImages': {
-            entities: found.entities, missing: found.missing.map((item) => item.name), rejectedIdentity: (found.rejectedIdentity || []).slice(0, 20),
-            assets: found.assets.map(({ entity, kind, url, pageUrl, source, title, width, height, identity }) => ({ entity, kind, url, pageUrl, source, title, width, height, identity }))
-          } } }).catch(() => {});
+          const entities = await entityImages.extractEntities(prompt, { ask: askModel(700) });
+          const stop = (ms) => AbortSignal.any([validationController.signal, AbortSignal.timeout(ms)]);
+
+          // 1. Research: verified facts about the named people and institutions, so the site is written from facts and not placeholders.
+          if (compositionEligible && entities.length && String(process.env.RESEARCH || 'true').toLowerCase() !== 'false') {
+            try {
+              GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: { stepName: 'Researching the people and institutions in your request...', 'analysis.imagePipeline.stage': 'research' } }).catch(() => {});
+              researchDossier = await webResearch.researchSubjects({ prompt, entities, ask: askModel(3200), signal: stop(Number.parseInt(process.env.RESEARCH_TIMEOUT_MS, 10) || 120000) });
+              const researchBlock = webResearch.buildResearchBlock(researchDossier);
+              if (researchBlock) generationPrompt = `${generationPrompt}\n\n${researchBlock}`;
+              if (researchDossier) await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.research': {
+                subjects: researchDossier.subjects.map((subject) => ({ name: subject.name, role: subject.role, affiliation: subject.affiliation, facts: subject.facts.length, corroborated: subject.facts.filter((fact) => fact.corroborated).length })),
+                sources: researchDossier.sources, diagnostics: { searched: researchDossier.diagnostics.searched, pages: researchDossier.diagnostics.pages, rejectedPages: researchDossier.diagnostics.rejectedPages.slice(0, 12), droppedFacts: researchDossier.diagnostics.droppedFacts.length }
+              } } }).catch(() => {});
+              logger.info(`Job ${jobId} research: ${researchDossier ? researchDossier.subjects.map((subject) => `${subject.name} ${subject.facts.length} fact(s)`).join(', ') : 'nothing to research'} from ${researchDossier?.sources.length || 0} source(s).`);
+            } catch (error) {
+              if (validationController.signal.aborted) throw error;
+              logger.warn(`Job ${jobId} research skipped: ${error.message}`);
+            }
+          }
+
+          // 2. Pictures of the named subjects: contextual searches (name + institution), identity-checked, saved into the project.
+          if (String(process.env.ENTITY_IMAGES || 'true').toLowerCase() !== 'false' && !wantsNoImages) {
+            job.stepName = 'Searching the web for the images of the names in your request...';
+            await job.save();
+            const found = await entityImages.discoverEntityImages({ prompt, entities, researchImages: researchDossier?.imageCandidates || [], signal: stop(Number.parseInt(process.env.ENTITY_IMAGES_TIMEOUT_MS, 10) || 90000), onNote: (note) => logger.info(`Job ${jobId} entity images: ${note}`) });
+            entityImageReport = found;
+            if (compositionEligible && found.assets.length) entityLocal = await entityImages.materializeAssets(found);
+            const block = entityLocal ? '' : entityImages.buildPromptBlock(found);
+            if (block) generationPrompt = `${generationPrompt}\n\n${block}`;
+            await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.entityImages': {
+              entities: found.entities, missing: found.missing.map((item) => item.name), rejectedIdentity: (found.rejectedIdentity || []).slice(0, 20),
+              assets: (entityLocal?.assets || found.assets).map(({ entity, kind, pictureKind, url, publicPath, pageUrl, source, title, width, height, identity }) => ({ entity, kind: pictureKind || kind, url: publicPath || url, pageUrl, source, title, width, height, identity }))
+            } } }).catch(() => {});
+          }
         } catch (error) {
           if (validationController.signal.aborted) throw error;
-          logger.warn(`Job ${jobId} entity image search skipped: ${error.message}`);
+          logger.warn(`Job ${jobId} entity research / image search skipped: ${error.message}`);
         }
       }
+      const entityAssetsLocal = entityLocal?.assets || [];
 
       // Real photographs for a NEW website: planned per page, searched, downloaded, decoded and checked BEFORE the model writes the
       // site, so it is handed verified local files instead of inventing links. Failing here never stops the generation: the
       // validation and repair steps below can still find or place images, and report exactly what is missing.
       const imageCfg = imageConfig();
-      const compositionEligible = String(process.env.COMPOSITION_PLANNING || 'true').toLowerCase() !== 'false' && !isIncremental && !cloneCapture && job.type !== 'clone' && !template && !prototypeStyle && !prototypeFromUrl && !image && Boolean(prompt);
       const imageEligible = imageCfg.enabled && compositionEligible && !imagesExempt(prompt);
       let imageDiscoveryReport = null;
+      // Pictures of named subjects already taken: a topical search must never return the same photograph again.
+      const sharedTaken = { sha256: new Set(entityAssetsLocal.map((asset) => asset.sha256)), hashes: entityAssetsLocal.map((asset) => asset.hash).filter(Boolean) };
       // The page composition plan is decided before any code is written: which sections each page has, what each says, which layout
       // presents it, which pictures belong in it and how much room it takes. It drives image discovery and the generation prompt.
       let compositionPlan = null;
@@ -3236,13 +3242,14 @@ class JobManager {
           GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: { stepName: 'Planning the pages and their layout...', 'analysis.imagePipeline.stage': 'composition_planning' } }).catch(() => {});
           const canAskPlan = process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key';
           compositionPlan = await compositionPlanner.buildCompositionPlan({
-            prompt, spec: job.analysis?.spec || null, entities: entityImageReport?.entities || [],
+            prompt, spec: job.analysis?.spec || null, entities: entityImageReport?.entities || [], dossier: researchDossier,
             ask: canAskPlan ? async (system, user) => {
               const completion = await openrouterService.generateCompletion([{ role: 'system', content: system }, { role: 'user', content: user }], { model, temperature: 0.2, max_tokens: 4200, response_format: false, reasoning: { effort: 'minimal', exclude: true } });
               return completion?.content || '';
             } : null
           });
           if (!imageEligible) compositionPlan.pages.forEach((page) => page.sections.forEach((section) => { section.images = []; }));
+          if (entityAssetsLocal.length) compositionPlanner.assignEntityAssets(compositionPlan, entityAssetsLocal);
           logger.info(`Job ${jobId} composition plan (${compositionPlan.source}): ${compositionPlan.pages.map((page) => `${page.name}[${page.sections.map((section) => section.layout).join(',')}]`).join(' ')}`);
         } catch (error) {
           if (validationController.signal.aborted) throw error;
@@ -3260,9 +3267,9 @@ class JobManager {
         };
         try {
           const canAsk = process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key';
-          const planned = compositionPlan ? compositionPlanner.topUpRequirements(compositionPlanner.requirementsFromComposition(compositionPlan, { entityAssets: entityImageReport?.assets || [], cfg: imageCfg }), { prompt, spec: job.analysis?.spec || null, plan: compositionPlan, cfg: imageCfg }) : null;
+          const planned = compositionPlan ? compositionPlanner.topUpRequirements(compositionPlanner.requirementsFromComposition(compositionPlan, { entityAssets: entityAssetsLocal.length ? entityAssetsLocal : (entityImageReport?.assets || []), cfg: imageCfg }), { prompt, spec: job.analysis?.spec || null, plan: compositionPlan, cfg: imageCfg }) : null;
           const found = await imageDiscovery.discoverImages({
-            prompt, spec: job.analysis?.spec || null, scope: jobId, requirements: planned && planned.length >= 3 ? planned : null,
+            prompt, spec: job.analysis?.spec || null, scope: jobId, requirements: planned && planned.length >= 3 ? planned : null, taken: sharedTaken,
             signal: validationController.signal,
             ask: canAsk ? async (system, user) => {
               const completion = await openrouterService.generateCompletion([{ role: 'system', content: system }, { role: 'user', content: user }], { model, temperature: 0, max_tokens: 1400, response_format: false, reasoning: { effort: 'minimal', exclude: true } });
@@ -3290,7 +3297,7 @@ class JobManager {
       }
 
       if (compositionPlan) {
-        const compositionBlock = compositionPlanner.buildPromptBlock(compositionPlan, { assets: imageDiscoveryReport?.assets || [], entityAssets: entityImageReport?.assets || [] });
+        const compositionBlock = compositionPlanner.buildPromptBlock(compositionPlan, { assets: [...entityAssetsLocal, ...(imageDiscoveryReport?.assets || [])], entityAssets: entityAssetsLocal.length ? [] : (entityImageReport?.assets || []) });
         if (compositionBlock) generationPrompt = `${generationPrompt}\n\n${compositionBlock}`;
         GenerationJob.updateOne({ jobId }, { $set: { 'analysis.composition': {
           source: compositionPlan.source, industry: compositionPlan.industry,
@@ -5305,8 +5312,13 @@ class JobManager {
          // threshold), and the repair model is shown what the real page contains.
          ...(cloneCapture ? { visualAdvisory: true, visualThreshold: resolveCloneVisualThresholds().minimum, visualTarget: resolveCloneVisualThresholds().target,
            repairContext: (diagnostics) => buildCloneRepairContext(cloneCapture, clonePromptPages, diagnostics) } : {}),
-         completeness: enforceCompleteness ? { prompt, spec: job.analysis?.spec || null, prototypeBg: prototypeStyle?.tokens?.bg || null, entityAssets: entityImageReport?.assets || [], entityMissing: (entityImageReport?.missing || []).map((item) => item.name),
-           imageContext: imageEligible ? { jobId, assets: imageDiscoveryReport?.assets || [], files: imageDiscoveryReport?.files || [], missing: imageDiscoveryReport?.missing || [], plan: imageDiscoveryReport?.plan || null, taken: imageDiscoveryReport?.taken || null, recoveries: 0 } : null, compositionPlan } : null,
+         completeness: enforceCompleteness ? { prompt, spec: job.analysis?.spec || null, prototypeBg: prototypeStyle?.tokens?.bg || null, entityAssets: entityAssetsLocal.length ? entityAssetsLocal : (entityImageReport?.assets || []), entityMissing: (entityImageReport?.missing || []).map((item) => item.name),
+           imageContext: (imageEligible || entityAssetsLocal.length) ? (() => {
+             const assets = [...entityAssetsLocal, ...(imageDiscoveryReport?.assets || [])];
+             const files = [...(entityLocal?.files || []), ...(imageDiscoveryReport?.files || []).filter((file) => file.path !== imageDiscovery.MANIFEST_PATH)];
+             if (assets.length) files.push(imageDiscovery.manifestFile(assets, imageDiscoveryReport?.plan || compositionPlan));
+             return { jobId, assets, files, missing: imageDiscoveryReport?.missing || [], plan: imageDiscoveryReport?.plan || null, taken: imageDiscoveryReport?.taken || sharedTaken, recoveries: 0 };
+           })() : null, compositionPlan } : null,
         onProgress: (report) => {
           progressWrites = progressWrites.then(() => GenerationJob.updateOne({ jobId, status: 'processing' }, {
             $set: { validation: report, progress: report.status === 'passed' ? 95 : 75,

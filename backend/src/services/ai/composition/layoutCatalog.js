@@ -64,7 +64,8 @@ const REVIEW = {
   imageDominates: 0.85,     // image height as a share of the viewport height
   cardHeightSpread: 1.7,
   maxFontSizes: 10,
-  blocking: ['layout-gap', 'layout-empty', 'layout-overflow-x']
+  narrowShare: 0.5,         // text column narrower than this share of the screen, on most sections
+  blocking: ['layout-gap', 'layout-empty', 'layout-overflow-x', 'layout-no-scroll']
 };
 
 const VIEWPORTS = { desktop: { name: 'desktop', width: 1440, height: 900 }, tablet: { name: 'tablet', width: 820, height: 1180 }, mobile: { name: 'mobile', width: 390, height: 844 } };

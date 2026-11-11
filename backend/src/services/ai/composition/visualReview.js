@@ -10,7 +10,7 @@ const sharp = require('sharp');
 const { REVIEW, VIEWPORTS } = require('./layoutCatalog');
 
 /* Runs inside the page. Everything it returns is plain data. */
-const PAGE_MEASURE = () => {
+const PAGE_MEASURE = async () => {
   const vw = window.innerWidth; const vh = window.innerHeight;
   const sy = window.scrollY;
   const rectOf = (el) => { const r = el.getBoundingClientRect(); return { top: r.top + sy, bottom: r.bottom + sy, left: r.left, right: r.right, width: r.width, height: r.height }; };
@@ -18,15 +18,15 @@ const PAGE_MEASURE = () => {
   const px = (value) => { const n = parseFloat(value); return Number.isFinite(n) ? n : 0; };
   const MEDIA = /^(IMG|SVG|VIDEO|CANVAS|PICTURE|IFRAME)$/i;
   const extentOf = (container) => {
-    let top = Infinity; let bottom = -Infinity; let chars = 0; let images = 0; let imageArea = 0; let controls = 0;
-    const take = (r) => { if (r.width <= 0 || r.height <= 0) return; top = Math.min(top, r.top); bottom = Math.max(bottom, r.bottom); };
+    let top = Infinity; let bottom = -Infinity; let left = Infinity; let right = -Infinity; let chars = 0; let images = 0; let imageArea = 0; let controls = 0;
+    const take = (r) => { if (r.width <= 0 || r.height <= 0) return; top = Math.min(top, r.top); bottom = Math.max(bottom, r.bottom); if (r.left !== undefined) { left = Math.min(left, r.left); right = Math.max(right, r.right ?? (r.left + r.width)); } };
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       if (node.nodeType === Node.TEXT_NODE) {
         const text = node.textContent.trim();
         if (!text || !node.parentElement || !shown(node.parentElement)) continue;
         const range = document.createRange(); range.selectNodeContents(node);
-        const r = range.getBoundingClientRect(); take({ top: r.top + sy, bottom: r.bottom + sy, width: r.width, height: r.height });
+        const r = range.getBoundingClientRect(); take({ top: r.top + sy, bottom: r.bottom + sy, left: r.left, right: r.right, width: r.width, height: r.height });
         chars += text.length;
         continue;
       }
@@ -36,7 +36,7 @@ const PAGE_MEASURE = () => {
       else if (style.backgroundImage !== 'none' && !/gradient/.test(style.backgroundImage) && node !== container) { const r = rectOf(node); take(r); images += 1; imageArea += r.width * r.height; }
       else if (/^(INPUT|BUTTON|SELECT|TEXTAREA)$/i.test(node.tagName)) { take(rectOf(node)); controls += 1; }
     }
-    return { top: Number.isFinite(top) ? top : null, bottom: Number.isFinite(bottom) ? bottom : null, chars, images, imageArea, controls };
+    return { top: Number.isFinite(top) ? top : null, bottom: Number.isFinite(bottom) ? bottom : null, left: Number.isFinite(left) ? left : null, right: Number.isFinite(right) ? right : null, chars, images, imageArea, controls };
   };
   const label = (el) => (el.querySelector('h1, h2, h3')?.textContent || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 70);
   const classOf = (el) => String(el.getAttribute('class') || '').split(/\s+/).slice(0, 14).join(' ');
@@ -106,7 +106,21 @@ const PAGE_MEASURE = () => {
     if (r.width > 0 && r.right > vw + 2 && !el.closest('[class*="overflow-x"], [class*="overflow-hidden"]')) overflowers.push({ tag: el.tagName.toLowerCase(), className: classOf(el), right: Math.round(r.right), text: (el.textContent || '').trim().slice(0, 40) });
   }
 
-  return { viewport: { width: vw, height: vh }, docHeight: document.documentElement.scrollHeight, scrollWidth: document.documentElement.scrollWidth, sections, emptyBlocks, paragraphs, images, rows, fontSizes: [...sizes].sort((a, b) => a - b), h1Count: root.querySelectorAll('h1').length, overflowers };
+  // Can the page really be scrolled to everything it shows? A fixed-height wrapper with overflow hidden clips content that the
+  // document (and so the browser's scrollbar) can never reach.
+  let lowest = 0;
+  for (const el of root.querySelectorAll('*')) { if (!shown(el)) continue; const style = getComputedStyle(el); if (style.position === 'fixed') continue; const r = el.getBoundingClientRect(); if (r.height > 0 && r.width > 0) lowest = Math.max(lowest, r.bottom + sy); }
+  const docHeight = document.documentElement.scrollHeight;
+  const target = Math.max(0, Math.min(600, docHeight - vh));
+  window.scrollTo(0, target);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const scrolled = window.scrollY;
+  window.scrollTo(0, 0);
+  const rootStyle = getComputedStyle(document.documentElement); const bodyStyle = getComputedStyle(document.body);
+  const scrollBlocked = (target > 100 && scrolled < target - 4) || lowest > docHeight + 160;
+  const clip = scrollBlocked ? { html: rootStyle.overflowY, body: bodyStyle.overflowY, lowest: Math.round(lowest), docHeight } : null;
+
+  return { scrollBlocked, clip, viewport: { width: vw, height: vh }, docHeight, scrollWidth: document.documentElement.scrollWidth, sections, emptyBlocks, paragraphs, images, rows, fontSizes: [...sizes].sort((a, b) => a - b), h1Count: root.querySelectorAll('h1').length, overflowers };
 };
 
 /* ------------------------------------------------------------------ evaluation (pure) ------------------------------------------------------------------ */
@@ -143,6 +157,11 @@ function evaluateLayout(measure, viewport = 'desktop', { pageName = '', route = 
   if (measure.scrollWidth > measure.viewport.width + 2 || measure.overflowers.length) {
     const who = measure.overflowers.slice(0, 3).map((item) => `<${item.tag}${item.className ? ` class="${item.className.slice(0, 50)}"` : ''}>${item.text ? ` "${item.text}"` : ''}`).join(', ');
     add('layout-overflow-x', `On the ${where} the page scrolls sideways (content is ${round(measure.scrollWidth)}px wide in a ${measure.viewport.width}px window${who ? `; offenders: ${who}` : ''}). Make those elements fit: max-w-full, flex-wrap, break-words, responsive grid columns, and no fixed widths wider than the screen.`, { heading: measure.overflowers[0]?.text || '' });
+  }
+
+  // Scrolling: everything the page shows must be reachable by scrolling.
+  if (measure.scrollBlocked) {
+    add('layout-no-scroll', `On the ${where} the page cannot be scrolled to all of its content${measure.clip ? ` (content reaches ${measure.clip.lowest}px but the scrollable height is ${measure.clip.docHeight}px; html overflow-y: ${measure.clip.html}, body overflow-y: ${measure.clip.body})` : ''}. Remove overflow-hidden, h-screen, fixed heights and 100vh limits from the app wrapper, html, body and #root so the page grows with its content and scrolls normally.`, {});
   }
 
   // Gaps between the content of neighbouring sections, overlaps, empty sections.
@@ -207,6 +226,18 @@ function evaluateLayout(measure, viewport = 'desktop', { pageName = '', route = 
       add('layout-card-heights', `On the ${where} ${row.count} cards in one row${row.heading ? ` in "${row.heading}"` : ''} have uneven heights (${round(row.min)}-${round(row.max)}px). Use grid with items-stretch, equal image frames (aspect ratio) and h-full cards so the row lines up.`, { heading: row.heading });
       break;
     }
+  }
+
+  // Use of the screen width: a page whose text sits in a narrow column with the rest of the width unused.
+  if (viewport === 'desktop') {
+    const real = body.filter((section) => section.content.chars >= 200 && section.content.left !== null);
+    const narrow = real.filter((section) => (section.content.right - section.content.left) / measure.viewport.width < REVIEW.narrowShare && !section.content.images);
+    if (real.length >= 3 && narrow.length / real.length >= 0.6) add('layout-narrow', `On the ${where} most sections keep their text in a column only ${round(median(narrow.map((section) => section.content.right - section.content.left)))}px wide on a ${measure.viewport.width}px screen, leaving the sides empty. Use the width: put the text beside a picture or a second column (grid lg:grid-cols-2), use the wide container (max-w-6xl) for cards, galleries and timelines, and keep only long paragraphs in a 68ch reading width.`, { heading: narrow[0].heading });
+  }
+  // A page that is far too short for what it should contain.
+  const totalChars = body.reduce((sum, section) => sum + section.content.chars, 0);
+  if (viewport === 'desktop' && !/contact|thank|404|not found|login|sign/i.test(`${pageName} ${route}`) && measure.docHeight < measure.viewport.height * 1.25 && body.length >= 1 && totalChars < 1100) {
+    add('layout-short-page', `On the ${where} the whole page is only ${round(measure.docHeight)}px tall with about ${totalChars} characters of text, so it reads as unfinished. Build it out with the sections planned for it, written from the researched facts (a biography, a dated timeline, achievements with their years, photographs with captions); do not pad it with filler.`, {});
   }
 
   // Density per section: too empty, text-heavy, image-heavy.

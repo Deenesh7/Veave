@@ -139,7 +139,7 @@ const pathOf = (src) => { try { return decodeURIComponent(new URL(src, 'http://p
  * @param render async (files, { routePath, inspect }) => measurement   (inspectRenderedPreview in production)
  * @returns issues in the completeness format ({ category, kind, path, message })
  */
-async function checkRenderedImages(files, { routes = ['/'], render, signal, cfg = imageConfig(), info = null } = {}) {
+async function renderedImageReport(files, { routes = ['/'], render, signal, cfg = imageConfig(), info = null } = {}) {
   const issues = [];
   const homeUnique = new Set();
   const siteUnique = new Set();
@@ -148,7 +148,7 @@ async function checkRenderedImages(files, { routes = ['/'], render, signal, cfg 
   for (const route of [...new Set(['/', ...routes])].slice(0, 10)) {
     signal?.throwIfAborted();
     try { results.push({ route, page: await render(files, { routePath: route, inspect: PAGE_INSPECTION }) }); }
-    catch (error) { if (signal?.aborted) throw error; return []; } // the preview could not render at all: that is reported by the build checks, not here
+    catch (error) { if (signal?.aborted) throw error; return { issues: [], home: null, site: null, byRoute: {}, skipped: error.message }; } // the preview could not render at all: that is reported by the build checks, not here
   }
   for (const { route, page } of results) {
     for (const image of page.images || []) {
@@ -177,10 +177,70 @@ async function checkRenderedImages(files, { routes = ['/'], render, signal, cfg 
   };
   const home = dedupe(homeUnique);
   const site = dedupe(siteUnique);
+  const byRoute = {};
+  for (const { route, page } of results) byRoute[route] = new Set((page.images || []).filter((image) => !image.hidden && image.naturalWidth > 0).map((image) => pathOf(image.src))).size;
   if (home < cfg.minHome || site < cfg.minSite) {
     issues.push({ category: 'completeness', kind: 'images', path: 'src/App.jsx', message: `When the site is opened in a browser only ${home} distinct image(s) render on the home page and ${site} across the checked pages; at least ${cfg.minHome} on the home page and ${cfg.minSite} across the site must render.` });
   }
-  return issues;
+  return { issues, home, site, byRoute };
 }
 
-module.exports = { inspectProjectImages, summarizeImages, referencesIn, resolveLocal, describeProblems, checkRenderedImages, PAGE_INSPECTION };
+/** Same check, issues only. */
+async function checkRenderedImages(files, options = {}) { return (await renderedImageReport(files, options)).issues; }
+
+/* ---------------------------------------------------------------- per-route counts and reconciliation ---------------------------------------------------------------- */
+
+/** Pictures each route's page really shows (static): the home route, every other route, and the whole site. */
+function countsByRoute(files, info) {
+  const completeness = require('../siteCompleteness');
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const app = byPath.get('src/App.jsx') || byPath.get('src/App.tsx') || byPath.get('src/App.js');
+  const out = { home: { count: 0, paths: [], file: null }, routes: {}, site: { count: 0, paths: [] } };
+  if (!app) return out;
+  const routes = require('../pageDistinctness').extractRoutes(files).filter((route) => route.path.startsWith('/') && !/[:*]/.test(route.path));
+  for (const route of [...new Map(routes.map((item) => [item.path, item])).values()]) {
+    const target = route.target && byPath.get(route.target);
+    if (!target) continue;
+    const stats = summarizeImages(completeness.reachable(target, byPath, 4), info);
+    out.routes[route.path] = { count: stats.count, paths: stats.paths, file: target.path, missing: stats.missing, invalid: stats.invalid };
+  }
+  const homeFile = completeness.findHomeFile(files, byPath, app, []);
+  const homeStats = summarizeImages(completeness.reachable(homeFile, byPath, 4), info);
+  out.home = { count: homeStats.count, paths: homeStats.paths, file: homeFile.path, missing: homeStats.missing, invalid: homeStats.invalid };
+  const siteStats = summarizeImages(completeness.reachable(app, byPath, 5), info);
+  out.site = { count: siteStats.count, paths: siteStats.paths, missing: siteStats.missing, invalid: siteStats.invalid, remote: siteStats.remote };
+  return out;
+}
+
+/**
+ * The reconciliation of what was downloaded, what the code references and what renders.
+ * @param assets   verified assets of the manifest ({ id, path, publicPath, route, page, sha256 })
+ * @param rendered optional { home, site, byRoute } from the browser check
+ */
+function reconcile(files, { assets = [], info, rendered = null, cfg = imageConfig() } = {}) {
+  const counts = countsByRoute(files, info);
+  const sources = files.filter((file) => file.encoding !== 'base64' && typeof file.content === 'string' && /\.(?:jsx?|tsx?|css|html|json)$/i.test(file.path || '') && file.path !== 'src/assets/image-manifest.json');
+  const text = sources.map((file) => file.content).join('\n');
+  const referenced = assets.filter((asset) => text.includes(asset.publicPath));
+  const unused = assets.filter((asset) => !text.includes(asset.publicPath));
+  const usage = new Map();
+  for (const [route, entry] of Object.entries(counts.routes)) for (const p of entry.paths) usage.set(p, [...(usage.get(p) || []), route]);
+  const duplicates = [...usage.entries()].filter(([, pages]) => pages.length > 1).map(([file, pages]) => ({ file, pages }));
+  const misplaced = [];
+  for (const asset of assets) {
+    const where = usage.get(asset.path) || [];
+    if (where.length && asset.route && !where.includes(asset.route)) misplaced.push({ id: asset.id, assigned: asset.route, usedOn: where });
+  }
+  const brokenReferences = counts.site.invalid || [];
+  const missingReferences = counts.site.missing || [];
+  return {
+    verifiedAssets: assets.length, referenced: referenced.map((asset) => asset.publicPath), unused: unused.map((asset) => ({ id: asset.id, publicPath: asset.publicPath, route: asset.route, section: asset.section, alt: asset.alt })),
+    missingReferences, brokenReferences, duplicates, misplaced,
+    staticCounts: { home: counts.home.count, site: counts.site.count, routes: Object.fromEntries(Object.entries(counts.routes).map(([route, entry]) => [route, entry.count])) },
+    rendered: rendered ? { home: rendered.home, site: rendered.site, byRoute: rendered.byRoute } : null,
+    required: { home: cfg.minHome, site: cfg.minSite },
+    homeFile: counts.home.file, counts
+  };
+}
+
+module.exports = { renderedImageReport, countsByRoute, reconcile, inspectProjectImages, summarizeImages, referencesIn, resolveLocal, describeProblems, checkRenderedImages, PAGE_INSPECTION };

@@ -289,70 +289,29 @@ async function replaceAsset(asset, { requirement = null, exclude = [], ...option
   return { ok: true, asset: { ...result.asset, path: asset.path, publicPath: asset.publicPath, replacedFrom: asset.sourceUrl }, file: { ...result.file, path: asset.path } };
 }
 
-/** More slots when the site needs further pictures after the first plan (pages with too few). */
-function extraRequirements({ plan, assets, count, prompt, spec }) {
+/**
+ * More slots when the site needs further pictures after the first plan. `targets` names the pages that are short
+ * ([{ page, route, count }]); without it the pages with the fewest pictures are used. Slot names continue the existing numbering.
+ */
+function extraRequirements({ plan, assets, count, prompt, spec, targets = null, exclude = null }) {
   const industry = detectIndustry(prompt, spec);
   const used = new Set([...(plan?.requirements || []).map((r) => r.query), ...assets.map((a) => a.query)]);
-  const pool = [...industry.gallery, ...industry.features, ...industry.service, `${industry.subject} detail`, `${industry.subject} customers`, `${industry.subject} workspace`, `${industry.subject} team at work`].filter((query) => !used.has(query));
+  const pool = [...industry.gallery, ...industry.features, ...industry.service, `${industry.subject} detail`, `${industry.subject} customers`, `${industry.subject} workspace`, `${industry.subject} team at work`, `${industry.subject} professional photograph`, `${industry.subject} lifestyle`].filter((query) => !used.has(query) && !(exclude && exclude.has(query)));
   const pages = (plan?.pages?.length ? plan.pages : [{ name: 'Home', route: '/' }]).filter((page) => !/contact/i.test(page.name));
   const perPage = new Map(pages.map((page) => [page.name, assets.filter((a) => a.page === page.name).length]));
+  const taken = new Set(assets.map((asset) => asset.id));
+  const nextId = (page) => { let n = 1; const base = slug(page.name); while (taken.has(`${base}-extra-${String(n).padStart(2, '0')}`)) n += 1; const id = `${base}-extra-${String(n).padStart(2, '0')}`; taken.add(id); return id; };
+  const wanted = targets && targets.length ? targets.flatMap((target) => Array.from({ length: target.count }, () => ({ name: target.page || 'Home', route: target.route || '/' }))) : null;
   const out = [];
-  for (let i = 0; i < count && i < pool.length; i += 1) {
-    const page = [...pages].sort((a, b) => (perPage.get(a.name) || 0) - (perPage.get(b.name) || 0))[0];
-    perPage.set(page.name, (perPage.get(page.name) || 0) + 1);
-    out.push({ slot: `${slug(page.name)}-extra-${String(Date.now() % 100000).padStart(5, '0')}-${i + 1}`, page: page.name, route: page.route, section: 'Gallery', category: 'gallery', query: pool[i], alternates: [], aspect: '4/3', hero: false, orientation: 'landscape', altHint: pool[i] });
+  const total = wanted ? wanted.length : count;
+  for (let i = 0; i < total && i < pool.length; i += 1) {
+    const page = wanted ? wanted[i] : [...pages].sort((a, b) => (perPage.get(a.name) || 0) - (perPage.get(b.name) || 0))[0];
+    if (!wanted) perPage.set(page.name, (perPage.get(page.name) || 0) + 1);
+    out.push({ slot: nextId(page), page: page.name, route: page.route, section: 'Gallery', category: 'gallery', query: pool[i], alternates: [], aspect: '4/3', hero: false, orientation: 'landscape', altHint: pool[i] });
   }
   return out;
 }
 
-
-const GALLERY_PATH = 'src/components/SiteGallery.jsx';
-
-/**
- * Last resort when the model did not place verified pictures that the project already has: adds one self-contained gallery
- * section (real, relevant, verified images with alt text, fixed-aspect frames and lazy loading) to the home page. Returns the new
- * files, or null when it cannot be done safely (no home page, no safe insertion point, component already present).
- */
-function placeSpareImages(files, spare, { max = 4 } = {}) {
-  if (!spare.length || files.some((file) => file.path === GALLERY_PATH)) return null;
-  const { extractRoutes } = require('../pageDistinctness');
-  const homePath = extractRoutes(files).find((route) => route.path === '/')?.target;
-  const home = homePath && files.find((file) => file.path === homePath && file.encoding !== 'base64');
-  if (!home) return null;
-  const picks = [...spare.filter((asset) => asset.route === '/'), ...spare.filter((asset) => asset.route !== '/')].slice(0, max);
-  const closing = ['</main>', '</>', '</div>'].map((tag) => ({ tag, at: home.content.lastIndexOf(tag) })).find((item) => item.at > 0);
-  if (!closing) return null;
-  const path = require('node:path');
-  let relative = path.posix.relative(path.posix.dirname(home.path), 'src/components/SiteGallery');
-  if (!relative.startsWith('.')) relative = `./${relative}`;
-  const importLine = `import SiteGallery from '${relative}';`;
-  const imports = [...home.content.matchAll(/^import[\s\S]*?from\s+['"][^'"]+['"];?[ \t]*$/gm)];
-  const last = imports[imports.length - 1];
-  let content = home.content.slice(0, closing.at) + '<SiteGallery />\n' + home.content.slice(closing.at);
-  content = last ? `${content.slice(0, last.index + last[0].length)}\n${importLine}${content.slice(last.index + last[0].length)}` : `${importLine}\n${content}`;
-  const data = JSON.stringify(picks.map((asset) => ({ src: asset.publicPath, alt: asset.alt, width: asset.width, height: asset.height })), null, 2);
-  const component = `// Verified, project-stored photographs for this site (see src/assets/image-manifest.json for sources and credits).
-const IMAGES = ${data};
-
-export default function SiteGallery() {
-  return (
-    <section className="py-16 sm:py-20" aria-label="Photo gallery">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6">
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {IMAGES.map((image) => (
-            <figure key={image.src} className="overflow-hidden rounded-2xl bg-neutral-100">
-              <img src={image.src} alt={image.alt} width={image.width} height={image.height} loading="lazy" decoding="async" className="aspect-[4/3] w-full object-cover" />
-            </figure>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-`;
-  return { files: [...files.filter((file) => file.path !== home.path), { ...home, content }, { path: GALLERY_PATH, content: component, language: 'javascript', encoding: 'utf8' }], placed: picks.map((asset) => asset.id) };
-}
-
 function clearCaches() { downloadCache.clear(); searchCache.clear(); inflight.clear(); }
 
-module.exports = { discoverImages, replaceAsset, placeSpareImages, extraRequirements, buildPromptBlock, spareAssets, mergeAssetFiles, pruneUnused, manifestFile, summarizeDiagnostics, reasonFor, fulfilSlot, clearCaches, STAGES, IMAGE_DIR, MANIFEST_PATH };
+module.exports = { discoverImages, replaceAsset, extraRequirements, buildPromptBlock, spareAssets, mergeAssetFiles, pruneUnused, manifestFile, summarizeDiagnostics, reasonFor, fulfilSlot, clearCaches, STAGES, IMAGE_DIR, MANIFEST_PATH };

@@ -41,6 +41,20 @@ function reachable(entry, byPath, depth = 2) {
   return [...seen].map((path) => byPath.get(path));
 }
 
+/**
+ * The file that renders the "/" route. The router is read first (a "/" or index <Route>, however its element is imported); only when
+ * that cannot be resolved is a page named like a home page used, and the app itself last. Guessing a page by its position is what
+ * made a site with pictures on its home route report none.
+ */
+function findHomeFile(files, byPath, app, pageFiles = []) {
+  try {
+    const routed = require('./pageDistinctness').extractRoutes(files).find((route) => route.path === '/' && route.target && byPath.has(route.target));
+    if (routed) return byPath.get(routed.target);
+  } catch { /* fall back to the naming heuristic */ }
+  const named = pageFiles.find((file) => /(?:^|\/)(?:home|index|landing|main|overview)\w*\.(?:jsx?|tsx?)$/i.test(file.path));
+  return named || app;
+}
+
 function visibleWords(source) {
   const jsxText = [...source.matchAll(/>([^<>{}]{3,})</g)].map((match) => match[1]);
   const strings = [...source.matchAll(/(['"`])((?:(?!\1)[^\\\n]|\\.){20,})\1/g)].map((match) => match[2]).filter((value) => /\s/.test(value) && !/^[\w./:#@-]+$/.test(value));
@@ -79,7 +93,7 @@ function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null
   const add = (kind, message, path = app.path) => issues.push({ category: 'completeness', kind, path, message });
   const singleScreen = SINGLE_SCREEN_REQUEST.test(prompt) && !/\b(website|web ?site|multi[- ]?page)\b/i.test(prompt);
 
-  const tree = reachable(app, byPath, 3);
+  const tree = reachable(app, byPath, 5);
   const treeSource = tree.map(textOf).join('\n');
 
   // 1. Navigation that is really rendered and links somewhere.
@@ -116,11 +130,9 @@ function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null
   }
 
   // 3. Page length: the home page and the components it is made of.
-  const home = (() => {
-    const routedHome = pageFiles.find((file) => /(?:^|\/)(?:home|index|landing|main|overview)\w*\.(?:jsx?|tsx?)$/i.test(file.path));
-    return routedHome || (pageFiles[0]) || app;
-  })();
-  const homeTree = reachable(home, byPath, 2);
+  const home = findHomeFile(files, byPath, app, pageFiles);
+  // Deep enough to reach pictures that live in shared components and data files (page -> section component -> card component -> data).
+  const homeTree = reachable(home, byPath, 4);
   const homeSource = homeTree.map(textOf).join('\n');
   const sections = (homeSource.match(/<section\b/gi) || []).length;
   const words = visibleWords(homeSource);
@@ -169,8 +181,20 @@ function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null
   if (Array.isArray(entityAssets) && entityAssets.length) {
     const { findUnusedAssets } = require('./entityImages');
     for (const asset of findUnusedAssets(files, entityAssets).slice(0, 6)) {
-      add('entity-images', `The verified picture of "${asset.entity}" (${asset.kind}, ${asset.width}x${asset.height}; ${asset.url}) is not used on the site. Place it where it belongs (${asset.kind === 'logo' ? 'navbar and footer' : (asset.entityType === 'person' ? 'hero, About or the Team/Speakers card with that name' : 'hero, About or a feature section about it')}) as <img src="${asset.url}" alt="${asset.entity}"> in a fixed-aspect frame with object-cover. Never replace it with another person's or brand's picture.`, home.path);
+      add('entity-images', `The verified picture of "${asset.entity}" (${asset.pictureKind || asset.kind}, ${asset.width}x${asset.height}; ${asset.publicPath || asset.url}) is not used on the site. Place it where it belongs (${(asset.pictureKind || asset.kind) === 'logo' ? 'navbar and footer' : (asset.entityType === 'person' ? 'hero, About or the Team/Speakers card with that name' : 'hero, About or a feature section about it')}) as <img src="${asset.url}" alt="${asset.entity}"> in a fixed-aspect frame with object-cover. Never replace it with another person's or brand's picture.`, home.path);
     }
+  }
+
+  // 5c. Natural copy: text that reads as a placeholder or an instruction is never acceptable on a finished site.
+  const PLACEHOLDER = /\b(to be (?:added|detailed|announced|updated|confirmed)|still to be detailed|a record still|build the story from|details?\s+(?:to follow|will (?:be )?(?:added|follow))|coming soon|lorem ipsum|placeholder (?:text|copy|content)|(?:content|text|description) (?:goes|will go) here|more (?:information|details) (?:soon|to come)|add (?:your|a|the) (?:description|text|content|story) here)\b/i;
+  for (const file of tree) {
+    const hit = PLACEHOLDER.exec(textOf(file).replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''));
+    if (hit) { add('content-placeholder', `${file.path} contains placeholder-style text ("${hit[0]}"). Replace it with real, specific copy written from the facts in the request (or the researched facts), or remove that block entirely. Never explain what is missing.`, file.path); break; }
+  }
+  // 5d. A named person's portrait is not repeated through the site.
+  for (const asset of (Array.isArray(entityAssets) ? entityAssets : []).filter((item) => item.publicPath && item.pictureKind === 'portrait')) {
+    const pages = tree.filter((file) => /^src\/pages\//.test(file.path) && textOf(file).includes(asset.publicPath));
+    if (pages.length > 2) add('entity-reuse', `The portrait of ${asset.entity} (${asset.publicPath}) is used on ${pages.length} pages (${pages.map((file) => file.path).join(', ')}). Use it on at most two pages (the home page and the biography or about page); give the others their own different pictures or none.`, pages[pages.length - 1].path);
   }
 
   // 6. The look of a reference website: do not hard-code the opposite theme over the reference's background.
@@ -188,4 +212,4 @@ function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null
 /** True when the request does not need photographs (an explicit "no images", or a tool/widget rather than a website). */
 const imagesExempt = (prompt = '') => NO_IMAGES_REQUEST.test(prompt) || (NON_VISUAL_APP.test(prompt) && !/\b(website|web ?site)\b/i.test(prompt));
 
-module.exports = { imagesExempt, checkCompleteness, SINGLE_SCREEN_REQUEST, visibleWords };
+module.exports = { reachable, findHomeFile, imagesExempt, checkCompleteness, SINGLE_SCREEN_REQUEST, visibleWords };
