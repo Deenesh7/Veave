@@ -61,7 +61,7 @@ export default function ScreenshotImportModal({ isOpen, onClose, onGenerated }) 
         image: imagePreview,
         prompt: prompt.trim() || 'Recreate screenshot layout with clean React and Tailwind',
         designSystem: 'Modern',
-        model: 'Auto'
+        model: 'Veave AI'
       });
 
       const data = res.data?.data || res.data;

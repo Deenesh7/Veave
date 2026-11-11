@@ -1,0 +1,192 @@
+{
+  "schemaVersion": 1,
+  "id": "studio-editorial-001",
+  "version": "1.0.0",
+  "name": "Ember Studio",
+  "status": "published",
+  "featured": true,
+  "popularity": 88,
+  "releasedAt": "2026-04-02",
+  "description": "A quiet, editorial site for an architecture or interiors studio: a calm introduction, a point-of-view page, a filterable gallery of selected spaces and a considered contact page.",
+  "category": "Portfolio",
+  "tags": [
+    "architecture",
+    "studio",
+    "interiors",
+    "editorial",
+    "gallery"
+  ],
+  "styleTags": [
+    "Light",
+    "Editorial",
+    "Warm",
+    "Serif"
+  ],
+  "access": {
+    "visibility": "public"
+  },
+  "previewImage": "preview.svg",
+  "designTokens": {
+    "mood": "Quiet Editorial",
+    "colors": {
+      "bg": "#F6F2EA",
+      "surface": "#FBF9F4",
+      "surface2": "#ECE6D9",
+      "line": "#E1DACB",
+      "fg": "#2B2823",
+      "muted": "#7A7366",
+      "brand": "#5E7B5F",
+      "onBrand": "#FFFFFF",
+      "accent": "#B5835A"
+    },
+    "radius": {
+      "card": "2px",
+      "button": "4px"
+    }
+  },
+  "typography": {
+    "headingFont": "ui-serif, Georgia, Cambria, 'Times New Roman', serif",
+    "bodyFont": "ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif",
+    "scale": "Hero 36 to 60px serif semibold, section titles 30 to 36px serif, body 16 to 18px sans, eyebrow labels 12px uppercase with wide tracking."
+  },
+  "layout": {
+    "summary": "Quiet static header, a restrained serif introduction above one wide image, a two-column gallery of spaces, generous white space",
+    "container": "max-w-5xl centred with 16/24/32px side padding",
+    "navigation": "static"
+  },
+  "spacing": {
+    "section": "py-16 sm:py-24",
+    "gap": "gap-10 (project grid)",
+    "scale": "4px base"
+  },
+  "responsive": {
+    "summary": "Single column on mobile with a hamburger menu; project grid goes 1, 2 and 3 columns at 640px and 1024px.",
+    "breakpoints": {
+      "sm": 640,
+      "md": 768,
+      "lg": 1024
+    }
+  },
+  "components": [
+    {
+      "name": "Navbar",
+      "path": "src/components/Navbar.jsx",
+      "role": "Static header with active link underline and a mobile menu, driven by src/data/site.js",
+      "shared": true
+    },
+    {
+      "name": "Footer",
+      "path": "src/components/Footer.jsx",
+      "role": "Footer with brand, link groups and email, driven by src/data/site.js",
+      "shared": true
+    },
+    {
+      "name": "Section",
+      "path": "src/components/Section.jsx",
+      "role": "Section wrapper, container and heading primitives",
+      "shared": true
+    },
+    {
+      "name": "ProjectCard",
+      "path": "src/components/ProjectCard.jsx",
+      "role": "Project thumbnail with title, category and summary",
+      "shared": false
+    },
+    {
+      "name": "FeatureCard",
+      "path": "src/components/FeatureCard.jsx",
+      "role": "Card with optional icon, title and text",
+      "shared": false
+    },
+    {
+      "name": "CTA",
+      "path": "src/components/CTA.jsx",
+      "role": "Closing call-to-action",
+      "shared": false
+    }
+  ],
+  "pages": [
+    {
+      "path": "/",
+      "file": "src/pages/Home.jsx",
+      "title": "Home",
+      "sections": [
+        "A quiet introduction",
+        "Selected spaces",
+        "Approach",
+        "Call to action"
+      ]
+    },
+    {
+      "path": "/studio",
+      "file": "src/pages/Studio.jsx",
+      "title": "Studio",
+      "sections": [
+        "Our point of view",
+        "Principles",
+        "People and materials"
+      ]
+    },
+    {
+      "path": "/projects",
+      "file": "src/pages/Projects.jsx",
+      "title": "Projects",
+      "sections": [
+        "Category filter",
+        "Selected spaces grid"
+      ]
+    },
+    {
+      "path": "/contact",
+      "file": "src/pages/Contact.jsx",
+      "title": "Contact",
+      "sections": [
+        "Start a conversation",
+        "Studio details",
+        "Validated inquiry form"
+      ]
+    }
+  ],
+  "features": [
+    "Responsive layout",
+    "Mobile navigation",
+    "Filterable project gallery",
+    "Contact form validation",
+    "Active link states",
+    "Client-side routing"
+  ],
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "lucide-react": "^0.400.0"
+  },
+  "scaffold": {
+    "dir": "files",
+    "themeFile": "src/index.css",
+    "requiredFiles": [
+      "package.json",
+      "index.html",
+      "src/main.jsx",
+      "src/App.jsx",
+      "src/index.css",
+      "src/data/site.js",
+      "tailwind.config.js"
+    ],
+    "protectedFiles": [
+      "package.json",
+      "vite.config.js",
+      "postcss.config.js"
+    ],
+    "sharedFiles": [
+      "src/components/Navbar.jsx",
+      "src/components/Footer.jsx",
+      "src/components/Section.jsx"
+    ],
+    "promptFiles": [
+      "src/App.jsx",
+      "src/data/site.js",
+      "src/index.css"
+    ]
+  }
+}

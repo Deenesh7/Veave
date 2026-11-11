@@ -257,9 +257,11 @@ exports.remove = async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 
 exports.providers = async (_req, res) => {
+  const connection = await require('../services/ai/openrouterService').checkConnection();
   return res.json({
     success: true,
     default: llmService.default,
-    configured: llmService.listConfigured()
+    configured: llmService.listConfigured(),
+    connection
   });
 };

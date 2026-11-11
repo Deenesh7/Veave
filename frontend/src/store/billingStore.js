@@ -164,6 +164,72 @@ export const useBillingStore = create((set, get) => ({
     }
   },
 
+  /** Buy extra credits (flat price per credit) through the same secure checkout. */
+  buyCredits: async (credits) => {
+    set({ isProcessingPayment: true, error: null, paymentSuccess: null });
+    try {
+      const orderRes = await billingService.createCreditOrder(credits);
+      const orderData = orderRes.data?.data;
+      if (!orderData) throw new Error('Failed to create payment order');
+
+      const currentUser = useAuthStore.getState().user;
+      const isScriptLoaded = await loadRazorpayScript();
+      if (!isScriptLoaded || !window.Razorpay) {
+        throw new Error('Could not load the payment checkout. Check your connection and try again.');
+      }
+
+      return await new Promise((resolve, reject) => {
+        const rzp = new window.Razorpay({
+          key: orderData.keyId,
+          amount: orderData.amount,
+          currency: orderData.currency || 'INR',
+          name: 'Veave AI',
+          description: `${credits} extra credits`,
+          order_id: orderData.orderId,
+          prefill: { name: currentUser?.name || '', email: currentUser?.email || '' },
+          theme: { color: '#18181b' },
+          modal: {
+            ondismiss: () => {
+              set({ isProcessingPayment: false });
+              resolve(null);
+            },
+          },
+          handler: async (response) => {
+            try {
+              const verifyRes = await billingService.verifyCreditPayment({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              });
+              const verified = verifyRes.data?.data;
+              if (verified?.user) useAuthStore.getState().setUser(verified.user);
+              await get().fetchOverview();
+              await get().fetchInvoices();
+              set({
+                isProcessingPayment: false,
+                paymentSuccess: { plan: `${credits} extra credits`, credits, invoice: verified?.payment },
+              });
+              resolve(verified);
+            } catch (verifyErr) {
+              const msg = verifyErr.response?.data?.error?.message || 'Payment verification failed';
+              set({ error: msg, isProcessingPayment: false });
+              reject(verifyErr);
+            }
+          },
+        });
+        rzp.on('payment.failed', (failResp) => {
+          set({ error: failResp.error?.description || 'Payment was unsuccessful', isProcessingPayment: false });
+          reject(new Error(failResp.error?.description));
+        });
+        rzp.open();
+      });
+    } catch (err) {
+      const message = err.response?.data?.error?.message || err.message || 'Payment initiation failed';
+      set({ error: message, isProcessingPayment: false });
+      throw err;
+    }
+  },
+
   fetchInvoices: async () => {
     try {
       const res = await billingService.getInvoices();

@@ -1,8 +1,9 @@
 import axios from 'axios';
+import { API_URL } from '../config';
 import { getKnownRevision, noteRevisionsFromResponseBody, projectIdForRevisionedWrite } from '../utils/projectRevisions';
 
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: API_URL,
   timeout: 120000,
   headers: { 'Content-Type': 'application/json' },
 });
@@ -44,7 +45,7 @@ api.interceptors.response.use(
       // Let the auth store drop its stale "logged in" state so screens stop retrying with a dead token.
       window.dispatchEvent(new Event('veave:unauthorized'));
       // Do not interrupt user browsing on workspace, dashboard, editor, or design studio pages
-      const publicPaths = ['/', '/dashboard', '/workspace', '/shared', '/files', '/templates', '/design-systems', '/documentation'];
+      const publicPaths = ['/', '/dashboard', '/shared', '/files', '/recent', '/design-systems', '/documentation'];
       const isPublicPath = 
         publicPaths.includes(window.location.pathname) || 
         window.location.pathname.startsWith('/editor');

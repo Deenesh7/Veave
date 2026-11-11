@@ -250,7 +250,7 @@ class PromptEngineService {
           }
         ], {
           temperature: 0.3,
-          model: options.model || 'Gemini Flash 3.8'
+          model: 'Veave AI'
         });
 
         if (completion?.content) {

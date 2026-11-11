@@ -42,4 +42,13 @@ const aiLimiter = rateLimit({
   message: { success: false, error: { message: 'Too many AI requests, please try again later.' } }
 });
 
-module.exports = { generalLimiter, authLimiter, aiLimiter };
+const uploadLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: isDev ? 1000 : 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => isDev || isLocalhost(req),
+  message: { success: false, error: { message: 'Too many uploads, please wait a few minutes and try again.' } }
+});
+
+module.exports = { generalLimiter, authLimiter, aiLimiter, uploadLimiter };

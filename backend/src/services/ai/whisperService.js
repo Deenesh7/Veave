@@ -98,39 +98,6 @@ class WhisperService {
     } catch (err) {
       logger.error(`Open-Source Whisper local transcription failed: ${err.message}`);
 
-      // Optional fallback: If user explicitly provided a cloud key, try it as fallback
-      const openAiKey = process.env.OPENAI_API_KEY?.trim();
-      if (openAiKey && openAiKey !== 'your_openai_api_key') {
-        try {
-          logger.info('Attempting cloud Whisper fallback since API key is configured...');
-          const formData = new FormData();
-          const file = new File([audioBuffer], originalname || 'audio.wav', {
-            type: mimetype || 'audio/wav'
-          });
-          formData.append('file', file);
-          formData.append('model', 'whisper-1');
-
-          const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${openAiKey}` },
-            body: formData
-          });
-
-          if (response.ok) {
-            const data = await response.json();
-            return {
-              success: true,
-              text: data.text ? data.text.trim() : '',
-              model: 'openai-cloud-whisper',
-              openSource: true,
-              apiKeyRequired: false
-            };
-          }
-        } catch (cloudErr) {
-          logger.warn(`Cloud fallback failed: ${cloudErr.message}`);
-        }
-      }
-
       throw new Error(`Open-Source Whisper error: ${err.message}`);
     }
   }

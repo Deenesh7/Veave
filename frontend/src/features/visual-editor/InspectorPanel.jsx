@@ -12,8 +12,7 @@ import {
   ChevronDown,
   ChevronUp,
   Code2,
-  ExternalLink,
-  Tag
+  ExternalLink
 } from 'lucide-react';
 import { useVisualEditorStore } from './visualEditorStore';
 import { useProjectStore } from '../../store/projectStore';
@@ -30,7 +29,6 @@ export function InspectorPanel({
   onApplyStyle,
   onApplyText,
   onApplyAttribute,
-  onInsertBadge,
   onDeleteElement,
   onDuplicateElement,
   onSelectParent,
@@ -49,7 +47,6 @@ export function InspectorPanel({
   } = useVisualEditorStore();
 
   const [copiedPath, setCopiedPath] = useState(false);
-  const [badgeMenuOpen, setBadgeMenuOpen] = useState(false);
 
   // Combine project files
   const allFiles = useMemo(() => {
@@ -179,53 +176,8 @@ export function InspectorPanel({
           </span>
         </div>
 
-        {/* Quick Node Actions: Add Badge, Select Parent, Duplicate, Delete */}
+        {/* Quick Node Actions: Select Parent, Duplicate, Delete */}
         <div className="flex items-center gap-1 relative">
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setBadgeMenuOpen(!badgeMenuOpen)}
-              className="p-1.5 rounded-lg text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 transition-colors cursor-pointer"
-              title="Add Badge to this element"
-            >
-              <Tag className="w-3.5 h-3.5" />
-            </button>
-
-            {badgeMenuOpen && (
-              <div
-                onClick={(e) => e.stopPropagation()}
-                className="absolute right-0 top-full mt-1.5 w-52 bg-white/95 backdrop-blur-md rounded-2xl border border-zinc-200 shadow-2xl ring-1 ring-black/5 p-2 z-50 animate-in fade-in zoom-in-95 duration-100"
-              >
-                <div className="px-2 py-1 text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-wider">
-                  Add Badge
-                </div>
-                <div className="space-y-1 mt-1">
-                  {[
-                    { text: 'NEW', color: 'emerald', bg: 'bg-emerald-500/15 text-emerald-600 border border-emerald-500/30' },
-                    { text: 'FEATURED', color: 'indigo', bg: 'bg-indigo-500/15 text-indigo-600 border border-indigo-500/30' },
-                    { text: 'HOT', color: 'amber', bg: 'bg-amber-500/15 text-amber-600 border border-amber-500/30' },
-                    { text: 'PRO', color: 'rose', bg: 'bg-rose-500/15 text-rose-600 border border-rose-500/30' },
-                    { text: 'LEADERBOARD', color: 'zinc', bg: 'bg-zinc-800 text-zinc-100 border border-zinc-700' }
-                  ].map((item) => (
-                    <button
-                      key={item.text}
-                      type="button"
-                      onClick={() => {
-                        if (onInsertBadge) onInsertBadge(item.color, item.text);
-                        setBadgeMenuOpen(false);
-                      }}
-                      className="w-full px-2.5 py-1.5 rounded-xl hover:bg-zinc-50 flex items-center justify-between text-xs text-zinc-700 font-medium transition-colors cursor-pointer"
-                    >
-                      <span className="capitalize">{item.text.toLowerCase()}</span>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${item.bg}`}>
-                        {item.text}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
           <button
             type="button"
             onClick={onSelectParent}

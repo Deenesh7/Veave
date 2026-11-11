@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('../src/config/loadEnv');
 const { captureWebsite } = require('../src/services/clone/websiteCaptureService');
 const { materializeLocalizedAssets, validateLocalizedAssetReferences } = require('../src/services/clone/assetLocalizationService');
 const jobManager = require('../src/services/ai/jobManager');

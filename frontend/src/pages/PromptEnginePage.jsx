@@ -27,11 +27,7 @@ const FRAMEWORKS = [
 ];
 
 const MODELS = [
-  { value: 'gemini-flash-3.8', label: 'Gemini Flash 3.8 (Default)' },
-  { value: 'auto',             label: 'Auto'   },
-  { value: 'gemini',           label: 'Gemini 1.5 Pro' },
-  { value: 'gpt',              label: 'GPT-4o'    },
-  { value: 'claude',           label: 'Claude 3.5 Sonnet' }
+  { value: 'veave-ai', label: 'Veave AI' }
 ];
 
 const EXAMPLES = [
@@ -46,7 +42,7 @@ export default function PromptEnginePage() {
   const [userPrompt, setUserPrompt]         = useState('');
   const [designSystem, setDesignSystem]     = useState('veave');
   const [framework, setFramework]           = useState('react');
-  const [model, setModel]                   = useState('gemini-flash-3.8');
+  const [model, setModel]                   = useState('veave-ai');
   const [referenceImage, setReferenceImage] = useState(null);
   const [imagePreview, setImagePreview]     = useState('');
   const [showAdvanced, setShowAdvanced]     = useState(false);

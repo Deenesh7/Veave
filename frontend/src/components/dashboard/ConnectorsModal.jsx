@@ -96,22 +96,10 @@ const INITIAL_CONNECTORS = [
     fields: [
       { key: 'apiKey', label: 'Resend API Key', placeholder: 're_...' }
     ]
-  },
-  {
-    id: 'openai',
-    name: 'Custom AI Models (BYOK)',
-    category: 'AI & Inference',
-    description: 'Bring your own OpenAI or Anthropic API key for high-rate quota inference.',
-    icon: Sparkles,
-    iconBg: 'bg-zinc-50 text-zinc-600',
-    connected: false,
-    fields: [
-      { key: 'apiKey', label: 'API Key', placeholder: 'sk-...' }
-    ]
   }
 ];
 
-const CATEGORIES = ['All', 'Databases & Storage', 'Deployments', 'Payments', 'Design Systems', 'Developer Tools', 'Communications', 'AI & Inference'];
+const CATEGORIES = ['All', 'Databases & Storage', 'Deployments', 'Payments', 'Design Systems', 'Developer Tools', 'Communications'];
 
 const CONNECTOR_ICONS = {
   supabase: Database,
@@ -120,7 +108,6 @@ const CONNECTOR_ICONS = {
   github: Github,
   figma: Figma,
   resend: Mail,
-  openai: Sparkles,
 };
 
 function getConnectorIcon(conn) {

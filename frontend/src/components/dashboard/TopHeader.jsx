@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { UserPlus, Sparkles, Menu, X } from 'lucide-react';
+import { UserPlus, Menu, X } from 'lucide-react';
 import WorkspaceSelector from './WorkspaceSelector';
 import { ProfileMenu } from '../profile/ProfileMenu';
 import NotificationBell from '../../features/collaboration/NotificationBell';
@@ -51,7 +51,7 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
 
   return (
     <>
-      <header className="h-14 bg-white border-b border-[#E2E5E8] fixed top-0 left-0 right-0 z-40 px-4 sm:px-6 flex items-center justify-between select-none">
+      <header className="h-14 bg-[#F7F4EE] border-b border-[#E2DCCF] fixed top-0 left-0 right-0 z-40 px-4 sm:px-6 flex items-center justify-between select-none">
         {/* Left Side */}
         <div className="flex items-center gap-2 sm:gap-3">
           {/* Mobile menu trigger */}
@@ -65,12 +65,7 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
 
           {/* Veave Logo & Brand */}
           <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#52525B] to-zinc-600 flex items-center justify-center text-white shadow-xs">
-              <Sparkles className="w-4 h-4 fill-white text-white" />
-            </div>
-            <span className="font-bold text-base tracking-tight text-[#111827]">
-              Veave
-            </span>
+            <img src="/veave-logo.png" alt="Veave" className="w-11 h-11 object-contain" />
           </div>
 
           {/* Separator */}

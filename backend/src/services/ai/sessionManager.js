@@ -76,6 +76,32 @@ async function syncProjectFilesTable(projectId, userId, files = []) {
   }
 }
 
+// Saving a project moves every file's text into object storage and leaves `content: ''` on the document. The client
+// replaces its open project with whatever undo/redo/restore return, so that response must carry the real source
+// (binary assets stay as metadata), exactly like opening the project does. Returning the raw saved document blanked
+// every file, and the preview then failed with "Script error".
+function editorViewOf(project) {
+  return require('../project/projectService').toEditorView(project);
+}
+
+// Puts a checkpoint's non-file state back on the project. A checkpoint recorded without a validation report must CLEAR the
+// project's validation: leaving the newer version's report (previewUrl / sourceHash) makes the preview keep showing the
+// version we just moved away from, so switching between lineage checkpoints looks like it does nothing.
+function applyCheckpointState(project, checkpoint) {
+  project.validation = checkpoint.validation || null;
+  if (checkpoint.dependencies) project.dependencies = checkpoint.dependencies;
+  const tokens = checkpoint.designTokens;
+  if (tokens && Object.keys(tokens).length > 0) {
+    project.settings = project.settings || {};
+    project.settings.theme = {
+      ...(project.settings.theme || {}),
+      primary: tokens.primary || project.settings.theme?.primary,
+      background: tokens.bg || project.settings.theme?.background,
+      radius: tokens.radius || project.settings.theme?.radius
+    };
+  }
+}
+
 class SessionManager {
   constructor() {
     this.TTL_MS = SESSION_TTL_MS;
@@ -451,21 +477,7 @@ class SessionManager {
 
     // Restore verified state cleanly without running slow full runner validation
     project.files = restoreWithBinaryAssets(targetCp.filesSnapshot, project.files);
-    if (targetCp.validation) {
-      project.validation = targetCp.validation;
-    }
-    if (targetCp.dependencies) {
-      project.dependencies = targetCp.dependencies;
-    }
-    if (targetCp.designTokens && Object.keys(targetCp.designTokens).length > 0) {
-      project.settings = project.settings || {};
-      project.settings.theme = {
-        ...(project.settings.theme || {}),
-        primary: targetCp.designTokens.primary || project.settings.theme?.primary,
-        background: targetCp.designTokens.bg || project.settings.theme?.background,
-        radius: targetCp.designTokens.radius || project.settings.theme?.radius
-      };
-    }
+    applyCheckpointState(project, targetCp);
 
     await project.save();
     require('../search/projectIndexHooks').invalidate(project._id); // undo/redo/restore changed the saved files
@@ -489,7 +501,7 @@ class SessionManager {
 
     return {
       success: true,
-      project,
+      project: await editorViewOf(project),
       conversation: this.formatSessionResponse(session),
       restoredGeneration: {
         generationId: targetCp.checkpointId,
@@ -523,21 +535,7 @@ class SessionManager {
     if (!project) throw new Error('Project not found');
 
     project.files = restoreWithBinaryAssets(targetCp.filesSnapshot, project.files);
-    if (targetCp.validation) {
-      project.validation = targetCp.validation;
-    }
-    if (targetCp.dependencies) {
-      project.dependencies = targetCp.dependencies;
-    }
-    if (targetCp.designTokens && Object.keys(targetCp.designTokens).length > 0) {
-      project.settings = project.settings || {};
-      project.settings.theme = {
-        ...(project.settings.theme || {}),
-        primary: targetCp.designTokens.primary || project.settings.theme?.primary,
-        background: targetCp.designTokens.bg || project.settings.theme?.background,
-        radius: targetCp.designTokens.radius || project.settings.theme?.radius
-      };
-    }
+    applyCheckpointState(project, targetCp);
 
     await project.save();
     require('../search/projectIndexHooks').invalidate(project._id); // undo/redo/restore changed the saved files
@@ -561,7 +559,7 @@ class SessionManager {
 
     return {
       success: true,
-      project,
+      project: await editorViewOf(project),
       conversation: this.formatSessionResponse(session),
       restoredGeneration: {
         generationId: targetCp.checkpointId,
@@ -598,8 +596,7 @@ class SessionManager {
     if (!project) throw new Error('Project not found');
 
     project.files = restoreWithBinaryAssets(targetCp.filesSnapshot, project.files);
-    if (targetCp.validation) project.validation = targetCp.validation;
-    if (targetCp.dependencies) project.dependencies = targetCp.dependencies;
+    applyCheckpointState(project, targetCp);
     await project.save();
     require('../search/projectIndexHooks').invalidate(project._id); // undo/redo/restore changed the saved files
     await syncProjectFilesTable(project._id, userId, project.files);
@@ -621,7 +618,7 @@ class SessionManager {
 
     return {
       success: true,
-      project,
+      project: await editorViewOf(project),
       conversation: this.formatSessionResponse(session),
       restoredGeneration: {
         generationId: targetCp.checkpointId,

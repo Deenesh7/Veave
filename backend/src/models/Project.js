@@ -15,6 +15,8 @@ const projectSchema = new mongoose.Schema({
   dependencies: { type: [String], default: ['react', 'react-dom'] },
   validation: { type: mongoose.Schema.Types.Mixed, default: null },
   provenance: { type: mongoose.Schema.Types.Mixed, default: null },
+  // Reusable template this project was generated from ({ id, version }); null for projects not started from a template.
+  template: { type: mongoose.Schema.Types.Mixed, default: null },
   settings: {
     framework: { type: String, default: 'react' },
     styling: { type: String, default: 'tailwindcss' },
@@ -34,6 +36,10 @@ const projectSchema = new mongoose.Schema({
   revision: { type: Number, default: 0 },
   lastEditedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { timestamps: true });
+
+// The project list (Recent, Files, sidebar) filters by owner + status and sorts newest first: one compound index
+// serves the whole query, so it no longer scans and sorts every project in memory.
+projectSchema.index({ userId: 1, status: 1, updatedAt: -1 });
 
 projectSchema.post('init', function rememberLoadedRevision() {
   if (this.isSelected('revision')) this.$locals.loadedRevision = this.revision || 0;

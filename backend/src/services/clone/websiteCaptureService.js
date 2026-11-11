@@ -24,13 +24,14 @@ function normalizeAssetType(contentType, url = '') {
   }
   return type;
 }
-// A clone captures at most this many pages (12 by default; CLONE_ROUTE_LIMIT raises or lowers it). The crawl keeps going
-// past pages that fail until this many pages were captured successfully, or the site has no more.
-const CLONE_ROUTE_LIMIT = Math.max(1, Math.min(60, Number.parseInt(process.env.CLONE_ROUTE_LIMIT, 10) || 12));
-const ROUTE_HARD_CAP = CLONE_ROUTE_LIMIT;
+// A clone captures this many pages by default (CLONE_ROUTE_LIMIT, 40). A request may ask for more, up to the hard cap
+// (CLONE_ROUTE_HARD_CAP, 150). The crawl keeps going past pages that fail until the limit of pages was captured
+// successfully, or the site has no more. Whatever was discovered but not captured is reported, never dropped silently.
+const ROUTE_HARD_CAP = Math.max(1, Math.min(500, Number.parseInt(process.env.CLONE_ROUTE_HARD_CAP, 10) || 150));
+const CLONE_ROUTE_LIMIT = Math.max(1, Math.min(ROUTE_HARD_CAP, Number.parseInt(process.env.CLONE_ROUTE_LIMIT, 10) || 40));
 const DEFAULT_MAX_ROUTES = CLONE_ROUTE_LIMIT;
 // Extra candidates queued beyond the limit so pages that fail (404, timeout, redirect off-site) can be replaced.
-const RESERVE_ROUTES = 12;
+const RESERVE_ROUTES = Math.max(0, Number.parseInt(process.env.CLONE_ROUTE_RESERVE, 10) || 20);
 
 function resolveRouteLimit(requested) {
   const value = Number.parseInt(requested, 10);
@@ -104,6 +105,8 @@ async function validatePublicUrl(value, lookup = dns.lookup) {
 function normalizeRoute(url, origin) {
   try {
     const parsed = new URL(url, origin);
+    // A site that links or redirects between http and https is still the same site: keep the entry origin's scheme.
+    if (parsed.origin !== origin && parsed.host === new URL(origin).host && ['http:', 'https:'].includes(parsed.protocol)) parsed.protocol = new URL(origin).protocol;
     if (parsed.origin !== origin || !['http:', 'https:'].includes(parsed.protocol)) return null;
     if (/\.(?:pdf|docx?|xlsx?|pptx?|zip|rar|7z|jpe?g|png|webp|gif|svg|ico|avif|mp4|webm|mp3|wav)(?:$|\/)/i.test(parsed.pathname)) return null;
     parsed.hash = '';
@@ -133,8 +136,43 @@ function linkPriority(link = {}) {
   if (link.inBreadcrumb) return 4;
   if (link.inCard) return 5;
   if (link.inPagination) return 7;
-  if (link.fromSitemap) return 8;
+  if (link.fromSitemap) return 6; // the sitemap lists real pages, so they rank with ordinary links, ahead of pagination
   return 6;
+}
+
+// Disallow rules of the `User-agent: *` group in robots.txt. Returned as path prefixes (with * and $ wildcards honoured
+// by isRobotsDisallowed); an Allow rule that is at least as specific wins, as in the robots.txt standard.
+function parseRobots(text = '') {
+  const rules = { disallow: [], allow: [] };
+  let applies = false;
+  let groupHasRules = false;
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*$/, '').trim();
+    const match = line.match(/^([a-z-]+)\s*:\s*(.*)$/i);
+    if (!match) continue;
+    const field = match[1].toLowerCase();
+    const value = match[2].trim();
+    if (field === 'user-agent') {
+      if (groupHasRules) { applies = false; groupHasRules = false; }
+      if (value === '*') applies = true;
+    } else if (field === 'disallow' || field === 'allow') {
+      groupHasRules = true;
+      if (applies && value) rules[field].push(value);
+    }
+  }
+  return rules;
+}
+function robotsPatternToRegExp(pattern) {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${escaped.endsWith('\\$') ? escaped.slice(0, -2) + '$' : escaped}`);
+}
+function isRobotsDisallowed(rules, route) {
+  if (!rules || !rules.disallow.length) return false;
+  let pathAndQuery;
+  try { const url = new URL(route); pathAndQuery = `${url.pathname}${url.search}`; } catch { return false; }
+  const longest = (list) => list.reduce((best, pattern) => (robotsPatternToRegExp(pattern).test(pathAndQuery) ? Math.max(best, pattern.length) : best), -1);
+  const disallowed = longest(rules.disallow);
+  return disallowed >= 0 && longest(rules.allow) < disallowed;
 }
 
 async function discoverSitemapLinks(page, origin, validateUrl = validatePublicUrl) {
@@ -186,10 +224,20 @@ async function discoverSitemapLinks(page, origin, validateUrl = validatePublicUr
 // large listing cannot crowd out the rest of the site within the page budget.
 function sectionKey(normalizedUrl) {
   const parts = new URL(normalizedUrl).pathname.split('/').filter(Boolean);
-  return parts.length >= 2 ? parts[0].toLowerCase() : null;
+  if (parts.length < 2) return null;
+  // /catalogue/category/<x> and /catalogue/<book> are different kinds of pages: when the second segment is a plain word
+  // (not an id or slug with digits) and something follows it, it is part of the section so listings and details do not
+  // compete for one shared cap.
+  const second = parts[1].toLowerCase();
+  const groupsPages = parts.length >= 3 && /^[a-z-]{2,24}$/.test(second);
+  return groupsPages ? `${parts[0].toLowerCase()}/${second}` : parts[0].toLowerCase();
 }
-function sectionCap(limit) { return Math.max(5, Math.ceil(limit * 0.15)); }
-function prioritizeDiscoveredRoutes(discovered = [], origin, maxRoutes = DEFAULT_DISCOVERY_BATCH) {
+// Deep pages of one section are crawled breadth-first first; the rest of that section is deferred (not dropped) and is
+// crawled once the rest of the site is done and the page budget allows.
+function sectionCap(limit) { return Math.max(8, Math.ceil(limit * 0.25)); }
+// `overflow`, when given, receives every route that was discovered but did not make the queue ({ route, reason }), so the
+// caller can crawl it later or report it as unexplored instead of losing it.
+function prioritizeDiscoveredRoutes(discovered = [], origin, maxRoutes = DEFAULT_DISCOVERY_BATCH, overflow = null) {
   const routeLimit = Math.max(1, maxRoutes);
   const excluded = /\b(?:logout|signout|delete|remove|cart|checkout)\b/i;
   const ordered = discovered.map((link, index) => ({ ...link, _index: index }))
@@ -198,14 +246,21 @@ function prioritizeDiscoveredRoutes(discovered = [], origin, maxRoutes = DEFAULT
   const seen = new Set();
   const sectionCounts = new Map();
   for (const link of ordered) {
-    if (routes.length >= routeLimit) break;
     const normalized = normalizeRoute(link.href, origin);
     if (!normalized) continue;
-    const section = sectionKey(normalized);
-    if (section && (sectionCounts.get(section) || 0) >= sectionCap(routeLimit)) continue;
     const parsed = new URL(normalized);
     const identity = `${parsed.pathname}${parsed.search}`;
     if (seen.has(identity) || excluded.test(`${link.text || ''} ${parsed.pathname}`)) continue;
+    if (routes.length >= routeLimit) {
+      if (overflow) { seen.add(identity); overflow.push({ route: normalized, reason: 'page-budget', priority: linkPriority(link), text: link.text }); }
+      else break;
+      continue;
+    }
+    const section = sectionKey(normalized);
+    if (section && (sectionCounts.get(section) || 0) >= sectionCap(routeLimit)) {
+      if (overflow) { seen.add(identity); overflow.push({ route: normalized, reason: 'section-cap', priority: linkPriority(link), text: link.text }); }
+      continue;
+    }
     seen.add(identity);
     if (section) sectionCounts.set(section, (sectionCounts.get(section) || 0) + 1);
     routes.push(normalized);
@@ -299,6 +354,8 @@ function selectCapturedAssets(candidates = [], visibleImages = []) {
         selector: image.selector || null,
         source: image.source || 'html',
         alt: image.alt || '',
+        title: image.title || '',
+        srcset: image.srcset || '',
         rect: image.rect || null,
         style: image.style || null
       });
@@ -639,7 +696,9 @@ async function extractSourcePage(page) {
     const describeAsset = (element, source) => ({
       section: sectionOf(element),
       element: { tag: element.tagName.toLowerCase(), id: element.id || '', classes: String(element.className || '').slice(0, 160) },
-      selector: selectorOf(element), source, rect: rectOf(element), style: assetStyleOf(element)
+      selector: selectorOf(element), source, rect: rectOf(element), style: assetStyleOf(element),
+      title: element.getAttribute('title') || '',
+      srcset: String(element.srcset || element.getAttribute('data-srcset') || '').slice(0, 600)
     });
     const assetReferences = [];
     for (const img of [...document.images].filter(visible).slice(0, 5000)) {
@@ -1241,9 +1300,30 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes } = {}) {
     })));
     const sitemapLinks = await discoverSitemapLinks(page, origin);
     const allInitialLinks = [...discovered, ...sitemapLinks];
-    const queueCapacity = crawlLimit + RESERVE_ROUTES;
-    const discoveredRoutes = prioritizeDiscoveredRoutes(allInitialLinks, origin, queueCapacity);
-    const routeQueue = [normalizeRoute(canonicalUrl.href, origin), ...discoveredRoutes.filter((route) => route !== normalizeRoute(canonicalUrl.href, origin))].slice(0, queueCapacity);
+    let queueCapacity = crawlLimit + RESERVE_ROUTES;
+    // robots.txt Disallow rules (User-agent: *) are respected: such routes are not crawled, only reported.
+    let robotsRules = null;
+    try {
+      const robotsText = await page.evaluate(async (target) => {
+        const response = await fetch(target, { redirect: 'error', credentials: 'omit' });
+        return response.ok ? response.text() : '';
+      }, new URL('/robots.txt', origin).href);
+      robotsRules = parseRobots(robotsText);
+    } catch { /* robots.txt is optional */ }
+    const blockedByRobots = new Map();
+    const isBlockedByRobots = (route) => {
+      if (!isRobotsDisallowed(robotsRules, route)) return false;
+      blockedByRobots.set(route, { route, reason: 'robots-disallowed' });
+      return true;
+    };
+    // Discovered but not queued (budget or section cap). They are crawled later if budget remains, else reported.
+    const deferredRoutes = new Map();
+    const initialOverflow = [];
+    const discoveredRoutes = prioritizeDiscoveredRoutes(allInitialLinks.filter((link) => { const n = normalizeRoute(link.href, origin); return !n || !isBlockedByRobots(n); }), origin, queueCapacity, initialOverflow);
+    for (const item of initialOverflow) deferredRoutes.set(item.route, item);
+    const fullRouteQueue = [normalizeRoute(canonicalUrl.href, origin), ...discoveredRoutes.filter((route) => route !== normalizeRoute(canonicalUrl.href, origin))];
+    const routeQueue = fullRouteQueue.slice(0, queueCapacity);
+    for (const route of fullRouteQueue.slice(queueCapacity)) deferredRoutes.set(route, { route, reason: 'page-budget', priority: 6 });
     const queuedRoutes = new Set(routeQueue);
     const visitedRoutes = new Set();
     const failedRoutes = new Set();
@@ -1303,7 +1383,7 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes } = {}) {
         return;
       }
       claimedFinalRoutes.set(finalRoute, routeIndex);
-      if (new URL(workerPage.url()).origin !== origin) {
+      if (new URL(workerPage.url()).host !== new URL(origin).host) {
         const unavailable = new URL(route);
         pagesByIndex[routeIndex] = {
           url: route,
@@ -1449,11 +1529,19 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes } = {}) {
       const newlyDiscovered = [...analysis.links, ...scriptedLinks].map((link, index) => ({ ...link, _index: index }))
         .sort((a, b) => linkPriority(a) - linkPriority(b) || a._index - b._index);
       for (const link of newlyDiscovered) {
-        if (routeQueue.length >= queueCapacity) break;
         const normalized = normalizeRoute(link.href, origin);
-        const section = normalized ? sectionKey(normalized) : null;
-        if (section && routeQueue.filter((queued) => sectionKey(queued) === section).length >= sectionCap(queueCapacity)) continue;
         if (!normalized || queuedRoutes.has(normalized) || /\b(?:logout|signout|delete|remove|cart|checkout)\b/i.test(`${link.text} ${normalized}`)) continue;
+        if (isBlockedByRobots(normalized)) continue;
+        const section = sectionKey(normalized);
+        if (routeQueue.length >= queueCapacity) {
+          if (!deferredRoutes.has(normalized)) deferredRoutes.set(normalized, { route: normalized, reason: 'page-budget', priority: linkPriority(link), text: link.text, source: routePath });
+          continue;
+        }
+        if (section && routeQueue.filter((queued) => sectionKey(queued) === section).length >= sectionCap(queueCapacity)) {
+          if (!deferredRoutes.has(normalized)) deferredRoutes.set(normalized, { route: normalized, reason: 'section-cap', priority: linkPriority(link), text: link.text, source: routePath });
+          continue;
+        }
+        deferredRoutes.delete(normalized);
         queuedRoutes.add(normalized);
         routeQueue.push(normalized);
         discoveryMetadata.set(normalized, { source: routePath, priority: linkPriority(link), text: link.text });
@@ -1542,32 +1630,78 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes } = {}) {
     let nextRouteIndex = 1;
     const capturedCount = () => pagesByIndex.filter((item) => item?.captureStatus === 'captured').length;
     const crawlConcurrency = Math.max(1, Number.parseInt(process.env.CLONE_CRAWL_CONCURRENCY, 10) || 1);
-    const workerCount = Math.min(crawlConcurrency, Math.max(0, Math.min(routeQueue.length, queueCapacity) - 1));
-    if (workerCount > 0) {
-      const extraHolders = await Promise.all(
-        Array.from({ length: Math.max(0, workerCount - 1) }, async () => ({ page: attachCaptureListeners(await context.newPage()) }))
-      );
-      try {
-        // Keep crawling until `crawlLimit` pages were CAPTURED (failed pages do not count and are replaced from the
-        // reserve) or the site has nothing left to try. In-flight pages count towards the limit so workers never
-        // overshoot, but a worker waits for them: if one fails, its slot is handed to the next candidate.
-        nextRouteIndex = await crawlUntilCaptured({
-          holders: [mainHolder, ...extraHolders],
-          queue: routeQueue,
-          startIndex: nextRouteIndex,
-          limit: crawlLimit,
-          capturedCount,
-          crawlOne: crawlRouteSafely,
-          expired: () => Date.now() - crawlStartedAt > MAX_CRAWL_DURATION_MS,
-          signal
-        });
-      } finally {
-        await Promise.allSettled(extraHolders.map((holder) => holder.page.close()));
+    const crawlExpired = () => Date.now() - crawlStartedAt > MAX_CRAWL_DURATION_MS;
+    // Adaptive expansion: when the queue runs dry before the page budget is used, routes that were deferred (page budget
+    // or section cap during discovery) are queued and crawled, so large sections are not silently lost.
+    for (let round = 0; round < 100; round += 1) {
+      const workerCount = Math.min(crawlConcurrency, Math.max(0, routeQueue.length - nextRouteIndex));
+      if (workerCount > 0) {
+        const extraHolders = await Promise.all(
+          Array.from({ length: Math.max(0, workerCount - 1) }, async () => ({ page: attachCaptureListeners(await context.newPage()) }))
+        );
+        try {
+          // Keep crawling until `crawlLimit` pages were CAPTURED (failed pages do not count and are replaced from the
+          // reserve) or the site has nothing left to try. In-flight pages count towards the limit so workers never
+          // overshoot, but a worker waits for them: if one fails, its slot is handed to the next candidate.
+          nextRouteIndex = await crawlUntilCaptured({
+            holders: [mainHolder, ...extraHolders],
+            queue: routeQueue,
+            startIndex: nextRouteIndex,
+            limit: crawlLimit,
+            capturedCount,
+            crawlOne: crawlRouteSafely,
+            expired: crawlExpired,
+            signal
+          });
+        } finally {
+          await Promise.allSettled(extraHolders.map((holder) => holder.page.close()));
+        }
+      }
+      signal?.throwIfAborted();
+      const wanted = crawlLimit - capturedCount();
+      // Bounded effort: pages that keep failing must not pull in the whole site. Deferred routes stay listed as unexplored.
+      const attemptCeiling = crawlLimit * 2 + RESERVE_ROUTES;
+      if (crawlExpired() || wanted <= 0 || deferredRoutes.size === 0 || routeQueue.length >= attemptCeiling) break;
+      const batch = [...deferredRoutes.values()]
+        .filter((item) => !queuedRoutes.has(item.route))
+        .sort((a, b) => (a.priority ?? 6) - (b.priority ?? 6))
+        .slice(0, Math.min(wanted + RESERVE_ROUTES, attemptCeiling - routeQueue.length));
+      if (!batch.length) break;
+      queueCapacity += batch.length;
+      for (const item of batch) {
+        deferredRoutes.delete(item.route);
+        queuedRoutes.add(item.route);
+        routeQueue.push(item.route);
+        discoveryMetadata.set(item.route, { source: item.source || 'deferred', priority: item.priority ?? 6, text: item.text });
       }
     }
     page = mainHolder.page;
     if (!pageUsable(page)) page = attachCaptureListeners(await context.newPage());
     const pages = markDuplicatePages(pagesByIndex.filter(Boolean), origin);
+    // Honest crawl report: everything that was found but is not in the captured set, with the reason. Nothing is claimed
+    // as "fully crawled" unless this list is empty and no page failed.
+    const buildCrawlReport = (finalPages) => {
+      const capturedRoutes = new Set(finalPages.filter((item) => item.captureStatus === 'captured').map((item) => normalizeRoute(item.url, origin) || item.url));
+      const stoppedByTime = crawlExpired();
+      const unexplored = [];
+      for (const item of deferredRoutes.values()) unexplored.push({ route: item.route, reason: item.reason, foundOn: item.source || 'homepage' });
+      for (const item of blockedByRobots.values()) unexplored.push({ route: item.route, reason: item.reason });
+      for (const route of routeQueue.slice(nextRouteIndex)) {
+        if (!capturedRoutes.has(route) && !visitedRoutes.has(route)) unexplored.push({ route, reason: stoppedByTime ? 'time-budget' : 'page-budget' });
+      }
+      const failed = finalPages.filter((item) => item.captureStatus !== 'captured').map((item) => ({ route: item.url, reason: item.captureStatus, detail: item.error || item.failureReason || undefined }));
+      const discoveredTotal = new Set([...queuedRoutes, ...deferredRoutes.keys(), ...blockedByRobots.keys()]).size;
+      return {
+        discoveredRoutes: discoveredTotal,
+        capturedRoutes: capturedRoutes.size,
+        unexploredCount: unexplored.length,
+        unexplored: unexplored.slice(0, 500),
+        failedCount: failed.length,
+        failed: failed.slice(0, 200),
+        robotsDisallowedCount: blockedByRobots.size,
+        complete: unexplored.length === 0 && failed.length === 0 && !stoppedByTime
+      };
+    };
     const routeScreenshots = screenshotsByIndex.filter(Boolean);
 
     await page.setViewportSize({ width: 390, height: 844 }).catch(() => {});
@@ -1692,7 +1826,8 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes } = {}) {
       assets,
       assetQueue,
       coverage: {
-        discoveredInternalPages: queuedRoutes.size,
+        discoveredInternalPages: new Set([...queuedRoutes, ...deferredRoutes.keys(), ...blockedByRobots.keys()]).size,
+        crawlReport: buildCrawlReport(pages),
         attemptedPages: pages.length,
         capturedPages: pages.filter((item) => item.captureStatus === 'captured').length,
         unavailablePages: pages.filter((item) => item.captureStatus !== 'captured').length,
@@ -1700,7 +1835,7 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes } = {}) {
         pagesScrollTimedOut: pages.filter((item) => item.scrollStatus?.timedOut).length,
         pagesScrollHeightCapped: pages.filter((item) => item.scrollStatus?.cappedByHeight).length,
         stoppedByPageBudget: pages.filter((item) => item.captureStatus === 'captured').length >= crawlLimit,
-        siteExhausted: pages.filter((item) => item.captureStatus === 'captured').length < crawlLimit && nextRouteIndex >= routeQueue.length,
+        siteExhausted: pages.filter((item) => item.captureStatus === 'captured').length < crawlLimit && nextRouteIndex >= routeQueue.length && deferredRoutes.size === 0,
         stoppedByTimeBudget: Date.now() - crawlStartedAt > MAX_CRAWL_DURATION_MS,
         crawlLimit: Number.isFinite(crawlLimit) ? crawlLimit : null,
         durationMs: Date.now() - crawlStartedAt
@@ -1741,7 +1876,8 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes } = {}) {
       pagesScrollTimedOut: finalPages.filter((item) => item.scrollStatus?.timedOut).length,
       pagesScrollHeightCapped: finalPages.filter((item) => item.scrollStatus?.cappedByHeight).length,
       stoppedByPageBudget: capturedFinal.length >= crawlLimit,
-      siteExhausted: capturedFinal.length < crawlLimit && nextRouteIndex >= routeQueue.length
+      siteExhausted: capturedFinal.length < crawlLimit && nextRouteIndex >= routeQueue.length && deferredRoutes.size === 0,
+      crawlReport: buildCrawlReport(finalPages)
     };
     cleaned.siteMap = buildSiteMap(finalPages);
     cleaned.urlRegistry = { ...raw.urlRegistry, clonedURLs: capturedFinal.map((item) => item.url) };
@@ -1810,4 +1946,4 @@ async function snapshotLivePage(sourceUrl, { signal, timeoutMs = 60000 } = {}) {
   }
 }
 
-module.exports = { normalizeAssetType, markDuplicatePages, dedupePlacements, fetchReferencedAssets, isFragmentArtifact, crawlUntilCaptured, CLONE_ROUTE_LIMIT, snapshotLivePage, captureLinkedDocuments, extractStructuredData, resolveRouteLimit, captureWebsite, captureViewportScreenshot, analyzeRenderedPage, extractSourcePage, prefetchDiscoveredAssets, validatePublicUrl, isPrivateAddress, normalizeRoute, prioritizeDiscoveredRoutes, selectCapturedAssets, navigateForCapture, classifyPage, linkPriority, canonicalAssetIdentity, isTrackingAssetUrl, buildSiteMap, discoverSitemapLinks };
+module.exports = { parseRobots, isRobotsDisallowed, normalizeAssetType, markDuplicatePages, dedupePlacements, fetchReferencedAssets, isFragmentArtifact, crawlUntilCaptured, CLONE_ROUTE_LIMIT, snapshotLivePage, captureLinkedDocuments, extractStructuredData, resolveRouteLimit, captureWebsite, captureViewportScreenshot, analyzeRenderedPage, extractSourcePage, prefetchDiscoveredAssets, validatePublicUrl, isPrivateAddress, normalizeRoute, prioritizeDiscoveredRoutes, selectCapturedAssets, navigateForCapture, classifyPage, linkPriority, canonicalAssetIdentity, isTrackingAssetUrl, buildSiteMap, discoverSitemapLinks };

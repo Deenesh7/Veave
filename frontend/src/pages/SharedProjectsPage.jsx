@@ -48,7 +48,7 @@ export default function SharedProjectsPage() {
           <button
             key={t.id}
             type="button"
-            onClick={() => (t.id === 'mine' ? navigate('/') : setTab(t.id))}
+            onClick={() => (t.id === 'mine' ? navigate('/recent') : setTab(t.id))}
             className={`px-3 py-2 text-xs font-semibold border-b-2 -mb-px transition-colors ${tab === t.id ? 'border-zinc-900 text-[#111827]' : 'border-transparent text-zinc-500 hover:text-zinc-800'}`}
           >
             {t.label}

@@ -1,16 +1,18 @@
 import React, { useState } from 'react';
-import { Outlet } from 'react-router-dom';
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Outlet, useLocation } from 'react-router-dom';
 import TopHeader from './TopHeader';
 import Sidebar from './Sidebar';
+import { useTemplateStudioStore } from '../../store/templateStudioStore';
 import PersistentGenerationIndicator from './PersistentGenerationIndicator';
 
 export default function AppLayout() {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  // The Template Studio fills the whole workspace card edge to edge.
+  const fullBleed = useLocation().pathname.startsWith('/template-studio');
+  const sidebarHidden = useTemplateStudioStore((s) => s.appSidebarHidden);
 
   return (
-    <div className="min-h-screen text-[#111827] font-sans antialiased flex flex-col">
+    <div className="min-h-screen bg-[#F7F4EE] text-[#2B2823] font-sans antialiased flex flex-col">
       {/* Fixed Top Header */}
       <TopHeader
         mobileMenuOpen={mobileMenuOpen}
@@ -21,41 +23,23 @@ export default function AppLayout() {
       <div className="flex-1 flex pt-14 relative">
         {/* Fixed Left Sidebar (~260px wide) */}
         <Sidebar
-          collapsed={sidebarCollapsed}
+          collapsed={sidebarHidden}
           mobileMenuOpen={mobileMenuOpen}
           onCloseMobileMenu={() => setMobileMenuOpen(false)}
         />
 
         {/* Central Workspace Canvas */}
-        <main
-          className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ease-in-out ${
-            sidebarCollapsed ? 'md:pl-0' : 'md:pl-[260px]'
-          }`}
-        >
-          {/* Workspace Top Toolbar: Sidebar Collapse Button */}
-          <div className="px-4 sm:px-8 pt-4 pb-1 flex items-center justify-between">
-            <button
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              className="hidden md:flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs text-zinc-500 hover:text-[#111827] hover:bg-zinc-200/60 border border-transparent hover:border-[#E2E5E8] transition-colors"
-            >
-              {sidebarCollapsed ? (
-                <>
-                  <PanelLeftOpen className="w-4 h-4 text-[#52525B]" />
-                  <span className="font-medium text-[11px]">Show sidebar</span>
-                </>
-              ) : (
-                <>
-                  <PanelLeftClose className="w-4 h-4" />
-                  <span className="font-medium text-[11px]">Collapse</span>
-                </>
-              )}
-            </button>
-          </div>
+        <main className={`flex-1 flex flex-col min-w-0 transition-[padding] duration-300 ${sidebarHidden ? 'md:pl-[64px]' : 'md:pl-[260px]'} ${fullBleed ? 'h-[calc(100vh-3.5rem)]' : ''}`}>
+          {/* Workspace panel: white, rounded, 16px in from the sidebar, header and window edges.
+              Its inner padding is reduced by the same 16px + 1px border so the content keeps its position. */}
+          <div className={`flex-1 flex flex-col min-w-0 min-h-0 m-4 bg-[#FBF9F4] border border-[#E2DCCF] rounded-[20px] shadow-[0_1px_3px_rgba(0,0,0,0.04)] ${fullBleed ? 'overflow-hidden' : ''}`}>
+          {/* Top spacing above the page content (keeps every page exactly where it was) */}
+          {!fullBleed && <div className="h-1 md:h-[30px] shrink-0" aria-hidden="true" />}
 
           {/* Dynamic Route Content */}
-          <div className="flex-1 px-4 sm:px-8 pb-16 max-w-7xl w-full mx-auto">
+          <div className={fullBleed ? 'flex-1 min-h-0 w-full' : 'flex-1 px-4 pb-16 max-w-7xl w-full mx-auto'}>
             <Outlet />
+          </div>
           </div>
         </main>
       </div>

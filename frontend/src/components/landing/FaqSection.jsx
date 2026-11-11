@@ -7,31 +7,27 @@ export default function FaqSection() {
   const faqs = [
     {
       q: 'What technology stack is used in the generated code?',
-      a: 'All components are created using clean React 18, standard JavaScript (ES6+), and modern Tailwind CSS. Code is formatted for Vite/Next.js and uses popular accessible libraries like Lucide icons, ensuring zero proprietary dependencies.',
+      a: 'Projects are generated as React with Tailwind CSS and built with Vite. Icons come from Lucide.',
     },
     {
       q: 'Can I download the code and run it on my local machine?',
-      a: 'Yes, with a single click you can download a complete ZIP archive with package.json, Tailwind config, and source files. You can run `npm install` and `npm run dev` to start developing immediately.',
+      a: 'Yes. Export your project as a ZIP that includes package.json, the Vite and Tailwind configuration, and your source files. Run `npm install` and `npm run dev` to start.',
     },
     {
-      q: 'Can I connect my existing design system and brand tokens?',
-      a: 'Absolutely. You can import custom colors, typography scales, border radii, and spacing variables. The AI agent strictly adheres to your design system constraints across all generated screens.',
+      q: 'Can I use my own brand colors and fonts?',
+      a: 'The Design Systems page lets you create color palettes and upload custom fonts, so generated screens follow your brand.',
     },
     {
-      q: 'Do I own the rights to the created code and assets?',
-      a: 'Yes. You own 100% of all generated code, components, and project structures. There are zero licensing restrictions or royalties, and you are free to use them commercially.',
-    },
-    {
-      q: 'How does live iterative editing work?',
-      a: 'You can converse directly with the AI in natural language to refine components, or jump into the built-in Monaco code editor to adjust code directly. Changes reflect in real time on the live hot-reloaded canvas.',
+      q: 'How does editing work?',
+      a: 'Chat with the AI agent to change your project, select elements in the visual editor, or edit files in the built-in Monaco code editor. The live preview shows the result.',
     },
   ];
 
   return (
-    <section className="w-full py-20 sm:py-28 bg-[#F8F9FA] border-t border-[#DDE2E5]">
+    <section id="faq" className="w-full py-20 sm:py-28 bg-[#F8F9FA] border-t border-[#DDE2E5]">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Header */}
-        <div className="text-center mb-16">
+        <div data-stagger className="text-center mb-16">
           <span className="inline-block text-[11px] font-bold uppercase tracking-wider text-zinc-900 font-mono mb-3 bg-zinc-100 px-3 py-1 rounded-full border border-zinc-200">
             Got Questions?
           </span>
@@ -39,12 +35,12 @@ export default function FaqSection() {
             Frequently Asked Questions
           </h2>
           <p className="text-base text-zinc-500">
-            Everything you need to know about building, exporting, and owning your software.
+            Everything you need to know about building and exporting with Veave.
           </p>
         </div>
 
         {/* FAQ Accordion List */}
-        <div className="space-y-4">
+        <div data-stagger="alt" className="space-y-4">
           {faqs.map((faq, i) => {
             const isOpen = openIdx === i;
             return (

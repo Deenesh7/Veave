@@ -1,458 +1,443 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Shuffle, 
-  SkipBack, 
-  SkipForward, 
-  Pause, 
-  Play, 
-  Volume2, 
-  Heart, 
-  Sparkles, 
-  ArrowRight, 
-  Lock, 
-  Check, 
-  ShieldCheck, 
-  Search,
-  Sliders
-} from 'lucide-react';
+import React, { useRef, useLayoutEffect } from 'react';
+import gsap from 'gsap';
+import { Sparkles, ArrowRight, Check, Globe, MessageSquare, Image as ImageIcon, Github, Figma, Users } from 'lucide-react';
 
 /**
- * Visual illustration for Card 1 (Large):
- * Highly animated Audio-player / product UI mockup in a modern black and grey palette.
+ * Animated "AI at work" illustrations for the landing page capability cards.
+ * Each one loops a short GSAP timeline that plays only while the card is on screen.
+ * With reduced motion the final, fully built state is shown and nothing animates.
  */
+
+const prefersReducedMotion = () =>
+  typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// Builds a looping timeline inside a scoped GSAP context, and pauses it while the card is off screen.
+function useIllustration(build) {
+  const ref = useRef(null);
+  useLayoutEffect(() => {
+    if (prefersReducedMotion()) return undefined;
+    let observer;
+    const ctx = gsap.context(() => {
+      const q = gsap.utils.selector(ref);
+      const tl = build(q);
+      tl.pause();
+      observer = new IntersectionObserver(
+        ([entry]) => (entry.isIntersecting ? tl.play() : tl.pause()),
+        { threshold: 0.25 }
+      );
+      observer.observe(ref.current);
+    }, ref);
+    return () => {
+      if (observer) observer.disconnect();
+      ctx.revert();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return ref;
+}
+
+// Types `text` into the first element matching `selector`.
+function typeInto(tl, q, selector, text, duration, position) {
+  const state = { n: 0 };
+  tl.set(state, { n: 0 }, position);
+  tl.to(
+    state,
+    {
+      n: text.length,
+      duration,
+      ease: 'none',
+      onUpdate: () => {
+        const el = q(selector)[0];
+        if (el) el.textContent = text.slice(0, Math.round(state.n));
+      },
+    },
+    position
+  );
+}
+
+const frame = 'relative w-full h-full flex items-center justify-center p-3 sm:p-4 select-none overflow-hidden';
+
+/* ------------------------------------------------------------------ */
+/* Card 1: a prompt is typed and the AI builds a page from it          */
+/* ------------------------------------------------------------------ */
+const PROMPT_TEXT = 'Build a landing page for my coffee shop';
+
 export function AudioPlayerIllustration() {
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [seconds, setSeconds] = useState(134); // 02:14
+  const ref = useIllustration((q) => {
+    const tl = gsap.timeline({ repeat: -1, repeatDelay: 0.4 });
+    tl.set(q('.ai-block'), { opacity: 0, y: 16 }, 0)
+      .set(q('.ai-line'), { scaleX: 0, transformOrigin: 'left center' }, 0)
+      .set(q('.ai-status'), { opacity: 0 }, 0)
+      .set(q('.ai-scan'), { opacity: 0, top: '0%' }, 0)
+      .set(q('.ai-caret'), { opacity: 1 }, 0)
+      .call(() => { const el = q('.ai-typed')[0]; if (el) el.textContent = ''; }, null, 0);
 
-  useEffect(() => {
-    if (!isPlaying) return;
-    const interval = setInterval(() => {
-      setSeconds((prev) => (prev >= 270 ? 0 : prev + 1));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [isPlaying]);
-
-  const formatTime = (secs) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
-
-  const progressPercent = Math.min(100, Math.max(0, (seconds / 270) * 100));
-
-  return (
-    <div className="relative w-full h-full bg-gradient-to-br from-zinc-100/90 via-zinc-50 to-zinc-200/60 flex items-center justify-center p-4 sm:p-6 select-none overflow-hidden">
-      {/* Dynamic ambient pulsing background glow in black/grey */}
-      <div className={`absolute -top-12 -right-12 w-48 h-48 bg-zinc-400/15 rounded-full blur-3xl pointer-events-none transition-opacity duration-700 ${isPlaying ? 'opacity-100 animate-pulse-slow' : 'opacity-40'}`} />
-      <div className={`absolute -bottom-12 -left-12 w-48 h-48 bg-zinc-500/10 rounded-full blur-3xl pointer-events-none transition-opacity duration-700 ${isPlaying ? 'opacity-100' : 'opacity-30'}`} />
-
-      {/* Floating Audio Player UI Card */}
-      <div className="relative w-full max-w-sm bg-white/95 backdrop-blur-md rounded-2xl border border-zinc-200/90 shadow-[0_10px_30px_rgba(0,0,0,0.06)] p-4 sm:p-5 flex flex-col gap-3.5 transition-all duration-300 group-hover:scale-[1.015]">
-        
-        {/* Top Info Bar: Media Thumbnail & Track Info */}
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            {/* Animated Media Thumbnail */}
-            <div className="relative shrink-0">
-              {/* Outer pulsing ring when playing */}
-              <div className={`absolute -inset-1 rounded-2xl bg-zinc-900 opacity-20 blur-xs transition-opacity duration-500 ${isPlaying ? 'opacity-30 animate-pulse' : 'opacity-0'}`} />
-              
-              <div className="relative w-12 h-12 rounded-xl bg-gradient-to-tr from-zinc-950 via-zinc-800 to-zinc-600 p-0.5 shadow-md flex items-center justify-center overflow-hidden">
-                {/* 5-Bar Dancing Equalizer in Thumbnail */}
-                <div className="flex items-end justify-center gap-[3px] h-6 w-full px-2">
-                  <span className={`w-1 bg-white rounded-full transition-all duration-200 ${isPlaying ? 'animate-wave-1' : 'h-1.5'}`} />
-                  <span className={`w-1 bg-white rounded-full transition-all duration-200 ${isPlaying ? 'animate-wave-2' : 'h-3'}`} />
-                  <span className={`w-1 bg-white rounded-full transition-all duration-200 ${isPlaying ? 'animate-wave-3' : 'h-2'}`} />
-                  <span className={`w-1 bg-white rounded-full transition-all duration-200 ${isPlaying ? 'animate-wave-4' : 'h-4'}`} />
-                  <span className={`w-1 bg-white rounded-full transition-all duration-200 ${isPlaying ? 'animate-wave-5' : 'h-1.5'}`} />
-                </div>
-              </div>
-            </div>
-
-            {/* Track Info */}
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <p className="text-xs sm:text-sm font-bold text-zinc-900 truncate">
-                  Ambient Flow v2.4
-                </p>
-                <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border transition-colors ${
-                  isPlaying 
-                    ? 'bg-zinc-900 text-white border-zinc-900' 
-                    : 'bg-zinc-100 text-zinc-600 border-zinc-200'
-                }`}>
-                  {isPlaying ? 'PLAYING' : 'PAUSED'}
-                </span>
-              </div>
-              <p className="text-[11px] text-zinc-500 truncate mt-0.5">
-                Synthetic Beats · Stereo 48kHz
-              </p>
-            </div>
-          </div>
-
-          {/* Action Heart Icon */}
-          <button 
-            className="text-zinc-400 hover:text-zinc-900 transition-colors p-1 active:scale-90" 
-            aria-label="Like track"
-          >
-            <Heart className="w-4 h-4 fill-zinc-900/10 text-zinc-700 transition-transform hover:scale-110" />
-          </button>
-        </div>
-
-        {/* Live Interactive Progress Bar & Timestamps */}
-        <div className="space-y-1.5">
-          <div className="relative w-full h-1.5 bg-zinc-200 rounded-full overflow-hidden">
-            {/* Progress Fill */}
-            <div 
-              className="absolute left-0 top-0 bottom-0 bg-zinc-900 rounded-full transition-all duration-500 ease-linear"
-              style={{ width: `${progressPercent}%` }}
-            />
-            
-            {/* Scanning Shimmer Light when playing */}
-            {isPlaying && (
-              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/50 to-transparent w-20 animate-audio-shimmer pointer-events-none" />
-            )}
-
-            {/* Thumb Dot */}
-            <div 
-              className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white border-2 border-zinc-900 rounded-full shadow-sm transition-all duration-500 ease-linear"
-              style={{ left: `calc(${progressPercent}% - 6px)` }}
-            />
-          </div>
-
-          {/* Dynamic Timestamps */}
-          <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500">
-            <span className="text-zinc-900 font-semibold">{formatTime(seconds)}</span>
-            <span>04:30</span>
-          </div>
-        </div>
-
-        {/* Controls Row */}
-        <div className="flex items-center justify-between pt-1">
-          <button 
-            className="text-zinc-800 hover:text-black transition-colors p-1" 
-            title="Shuffle active"
-          >
-            <Shuffle className="w-3.5 h-3.5" />
-          </button>
-
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={() => setSeconds((s) => Math.max(0, s - 15))}
-              className="text-zinc-600 hover:text-zinc-950 transition-colors p-1 active:scale-90"
-              title="Back 15s"
-            >
-              <SkipBack className="w-4 h-4 fill-zinc-600" />
-            </button>
-
-            {/* Large Circular Interactive Play/Pause Button in Black */}
-            <button 
-              onClick={() => setIsPlaying(!isPlaying)}
-              className={`relative w-9 h-9 rounded-full bg-zinc-900 hover:bg-black text-white flex items-center justify-center shadow-md shadow-zinc-900/20 transition-all active:scale-90 ${
-                isPlaying ? 'ring-4 ring-zinc-900/15' : ''
-              }`}
-              title={isPlaying ? 'Pause' : 'Play'}
-              aria-label={isPlaying ? 'Pause' : 'Play'}
-            >
-              {isPlaying ? (
-                <Pause className="w-4 h-4 fill-white text-white" />
-              ) : (
-                <Play className="w-4 h-4 fill-white text-white translate-x-0.5" />
-              )}
-            </button>
-
-            <button 
-              onClick={() => setSeconds((s) => Math.min(270, s + 15))}
-              className="text-zinc-600 hover:text-zinc-950 transition-colors p-1 active:scale-90"
-              title="Forward 15s"
-            >
-              <SkipForward className="w-4 h-4 fill-zinc-600" />
-            </button>
-          </div>
-
-          <button className="text-zinc-500 hover:text-zinc-900 transition-colors p-1" title="Volume">
-            <Volume2 className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Visual illustration for Card 2 (Large):
- * Two floating UI panels: "TOKENS" and "YOUR APP",
- * with a monochrome black/grey theme.
- */
-export function DesignSystemIllustration() {
-  const [activeColor, setActiveColor] = useState('#09090B');
+    typeInto(tl, q, '.ai-typed', PROMPT_TEXT, 1.7, 0.3);
+    tl.to(q('.ai-send'), { scale: 1.25, duration: 0.15, yoyo: true, repeat: 1 }, '>')
+      .to(q('.ai-status'), { opacity: 1, duration: 0.3 }, '<0.1')
+      .to(q('.ai-scan'), { opacity: 1, duration: 0.2 }, '<')
+      .to(q('.ai-scan'), { top: '100%', duration: 2.6, ease: 'power1.inOut' }, '<')
+      .to(q('.ai-block.ai-nav'), { opacity: 1, y: 0, duration: 0.5, ease: 'power3.out' }, '<0.2')
+      .to(q('.ai-line'), { scaleX: 1, duration: 0.6, stagger: 0.25, ease: 'power3.out' }, '<0.45')
+      .to(q('.ai-block.ai-btn'), { opacity: 1, y: 0, duration: 0.5, ease: 'back.out(2)' }, '>-0.2')
+      .to(q('.ai-block.ai-card'), { opacity: 1, y: 0, duration: 0.55, stagger: 0.18, ease: 'power3.out' }, '<0.2')
+      .to(q('.ai-scan'), { opacity: 0, duration: 0.3 }, '>')
+      .to(q('.ai-status'), { opacity: 0, duration: 0.3 }, '<')
+      .to(q('.ai-caret'), { opacity: 0, duration: 0.2 }, '<')
+      .to(q('.ai-block, .ai-line'), { opacity: 0, duration: 0.45 }, '+=2.2');
+    return tl;
+  });
 
   return (
-    <div className="relative w-full h-full bg-gradient-to-br from-zinc-50 via-zinc-100/70 to-zinc-200/30 flex items-center justify-center p-3 sm:p-5 select-none overflow-hidden">
-      {/* Animated Connector line (SVG) in Grey/Black */}
-      <svg 
-        className="absolute inset-0 w-full h-full pointer-events-none hidden sm:block" 
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <path
-          d="M 180 140 C 240 140, 250 120, 310 120"
-          fill="none"
-          stroke="#71717A"
-          strokeWidth="2"
-          strokeDasharray="4 4"
-          className="animate-dash-flow opacity-70"
-        />
-        <circle cx="245" cy="130" r="4" fill="#18181B" className="animate-ping opacity-60" />
-        <circle cx="245" cy="130" r="3" fill="#18181B" />
-      </svg>
-
-      <div className="flex items-center gap-3 sm:gap-5 w-full max-w-md justify-center relative z-10">
-        {/* Left Panel: TOKENS */}
-        <div className="w-[48%] bg-white rounded-xl border border-zinc-200 shadow-md p-3 flex flex-col gap-2.5 transition-transform duration-300 group-hover:-translate-x-1">
-          {/* Header */}
-          <div className="flex items-center justify-between pb-1 border-b border-zinc-100">
-            <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-zinc-500 flex items-center gap-1">
-              <Sliders className="w-2.5 h-2.5 text-zinc-500" />
-              TOKENS
-            </span>
-            <span className="w-1.5 h-1.5 rounded-full bg-zinc-900 animate-pulse" />
-          </div>
-
-          {/* Color Swatches (Black/Grey scale) */}
-          <div>
-            <span className="text-[9px] text-zinc-400 font-mono block mb-1">Color Tokens</span>
-            <div className="flex items-center gap-1.5">
-              <button 
-                onClick={() => setActiveColor('#09090B')}
-                className={`w-5 h-5 rounded-md bg-zinc-950 shadow-xs transition-transform ${activeColor === '#09090B' ? 'ring-2 ring-zinc-950 scale-110' : 'opacity-75'}`} 
-                title="#09090B (Pitch Black)" 
-              />
-              <button 
-                onClick={() => setActiveColor('#27272A')}
-                className={`w-5 h-5 rounded-md bg-zinc-800 shadow-xs transition-transform ${activeColor === '#27272A' ? 'ring-2 ring-zinc-800 scale-110' : 'opacity-75'}`} 
-                title="#27272A (Dark Zinc)" 
-              />
-              <button 
-                onClick={() => setActiveColor('#52525B')}
-                className={`w-5 h-5 rounded-md bg-zinc-600 shadow-xs transition-transform ${activeColor === '#52525B' ? 'ring-2 ring-zinc-600 scale-110' : 'opacity-75'}`} 
-                title="#52525B (Mid Grey)" 
-              />
-              <button 
-                onClick={() => setActiveColor('#71717A')}
-                className={`w-5 h-5 rounded-md bg-zinc-500 shadow-xs transition-transform ${activeColor === '#71717A' ? 'ring-2 ring-zinc-500 scale-110' : 'opacity-75'}`} 
-                title="#71717A (Light Grey)" 
-              />
-            </div>
-          </div>
-
-          {/* Typography Token */}
-          <div>
-            <span className="text-[9px] text-zinc-400 font-mono block mb-1">Typography</span>
-            <div className="bg-zinc-50 rounded border border-zinc-100 p-1.5 flex flex-col gap-0.5">
-              <div className="h-1.5 w-16 bg-zinc-900 rounded-full" />
-              <div className="h-1 w-11 bg-zinc-400 rounded-full" />
-            </div>
-          </div>
-
-          {/* Spacing Tokens */}
-          <div>
-            <span className="text-[9px] text-zinc-400 font-mono block mb-1">Spacing</span>
-            <div className="flex items-center gap-1 font-mono text-[8px] text-zinc-600">
-              <span className="px-1 py-0.5 bg-zinc-100 rounded">4</span>
-              <span className="px-1 py-0.5 bg-zinc-100 rounded">8</span>
-              <span className="px-1 py-0.5 bg-zinc-900 text-white font-semibold rounded">16</span>
-              <span className="px-1 py-0.5 bg-zinc-100 rounded">24</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Panel: YOUR APP */}
-        <div className="w-[52%] bg-white rounded-xl border border-zinc-300 shadow-lg p-3 flex flex-col gap-2.5 transition-transform duration-300 group-hover:translate-x-1">
-          {/* Header */}
-          <div className="flex items-center justify-between pb-1 border-b border-zinc-100">
-            <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-zinc-900 flex items-center gap-1">
-              YOUR APP
-            </span>
-            <span className="text-[9px] font-mono text-zinc-700 font-semibold flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-zinc-900 animate-pulse" />
-              Live Synced
-            </span>
-          </div>
-
-          {/* Input field mockup */}
-          <div className="w-full bg-zinc-50 rounded-lg border border-zinc-200 px-2 py-1 flex items-center gap-1.5">
-            <Search className="w-3 h-3 text-zinc-400 shrink-0" />
-            <span className="text-[10px] text-zinc-400 truncate">Search components...</span>
-          </div>
-
-          {/* Dynamic Button matching active token color */}
-          <button 
-            style={{ backgroundColor: activeColor }}
-            className="w-full py-1.5 px-3 text-white text-[11px] font-semibold rounded-lg shadow-sm flex items-center justify-center gap-1.5 transition-all duration-300 hover:brightness-125 active:scale-95"
-          >
-            <span>Confirm Action</span>
-            <Check className="w-3 h-3" />
-          </button>
-
-          {/* Content Block Preview */}
-          <div className="bg-zinc-50 rounded-lg p-1.5 border border-zinc-100 flex items-center gap-2">
-            <div className="w-5 h-5 rounded bg-zinc-200 text-zinc-800 flex items-center justify-center shrink-0">
-              <Sparkles className="w-3 h-3 animate-spin" style={{ animationDuration: '6s' }} />
-            </div>
-            <div className="flex-1 space-y-1">
-              <div className="h-1.5 w-14 bg-zinc-800 rounded-full" />
-              <div className="h-1 w-20 bg-zinc-300 rounded-full" />
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Visual illustration for Card 3:
- * White UI card containing a bold black button that dynamically grows and shrinks in sync
- * with the AI prompt: "Make it slightly bigger".
- */
-export function RapidPrototypingIllustration() {
-  return (
-    <div className="relative w-full h-full bg-gradient-to-b from-zinc-50 to-zinc-100/60 flex items-center justify-center p-4 select-none">
-      <div className="w-full max-w-[240px] bg-white rounded-xl border border-[#DDE2E5] shadow-sm p-4 flex flex-col items-center gap-3.5 transition-all duration-300">
-        {/* Dynamic growing button in black/grey */}
-        <div className="w-full flex items-center justify-center py-1">
-          <button className="animate-button-growth py-2.5 px-5 bg-zinc-900 hover:bg-black text-white text-xs font-semibold rounded-lg shadow-sm flex items-center justify-center gap-1.5 transition-all">
-            <span>Get Started</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        {/* AI Prompt Input Bar with blinking cursor */}
-        <div className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-2.5 py-1.5 flex items-center gap-2 shadow-xs">
-          <Sparkles className="w-3.5 h-3.5 text-zinc-800 shrink-0 animate-pulse" />
-          <div className="flex items-center text-[11px] text-zinc-800 font-medium truncate">
-            <span>Make it slightly bigger</span>
-            <span className="inline-block w-1 h-3 bg-zinc-900 ml-1 animate-pulse" />
-          </div>
-          <span className="ml-auto text-[9px] bg-zinc-200 text-zinc-600 px-1 py-0.5 rounded font-mono shrink-0">
-            ↵
+    <div className={`${frame} bg-gradient-to-br from-zinc-100/90 via-zinc-50 to-zinc-200/60`}>
+      <div ref={ref} className="relative w-full max-w-sm flex flex-col gap-2">
+        {/* Prompt bar */}
+        <div className="bg-white rounded-xl border border-zinc-200 shadow-xs px-3 py-2 flex items-center gap-2">
+          <Sparkles className="w-3.5 h-3.5 text-zinc-900 shrink-0" />
+          <span className="text-xs text-zinc-700 truncate min-h-[1rem]">
+            <span className="ai-typed">{PROMPT_TEXT}</span>
+            <span className="ai-caret inline-block w-px h-3 bg-zinc-900 ml-0.5 align-middle animate-pulse" />
+          </span>
+          <span className="ai-send ml-auto w-5 h-5 rounded-md bg-zinc-900 text-white flex items-center justify-center shrink-0">
+            <ArrowRight className="w-3 h-3" />
           </span>
         </div>
+
+        {/* Page being built */}
+        <div className="relative bg-white rounded-2xl border border-zinc-200 shadow-[0_10px_30px_rgba(0,0,0,0.06)] p-3 flex flex-col gap-2 overflow-hidden">
+          <div className="ai-status absolute top-2 right-2 z-20 flex items-center gap-1.5 text-[9px] font-mono text-zinc-600 bg-white/90 border border-zinc-200 rounded-full px-2 py-0.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-zinc-900 animate-pulse" />
+            Generating...
+          </div>
+          <div className="ai-scan absolute left-0 right-0 h-10 -mt-10 bg-gradient-to-b from-transparent via-zinc-300/40 to-transparent pointer-events-none z-10" />
+
+          <div className="ai-block ai-nav flex items-center justify-between">
+            <div className="h-2 w-16 bg-zinc-900 rounded-full" />
+            <div className="flex gap-2">
+              <div className="h-1.5 w-8 bg-zinc-300 rounded-full" />
+              <div className="h-1.5 w-8 bg-zinc-300 rounded-full" />
+              <div className="h-1.5 w-8 bg-zinc-300 rounded-full" />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="ai-line h-3 w-3/4 bg-zinc-900 rounded-full" />
+            <div className="ai-line h-3 w-1/2 bg-zinc-400 rounded-full" />
+            <div className="ai-line h-1.5 w-2/3 bg-zinc-200 rounded-full mt-1.5" />
+          </div>
+
+          <div className="ai-block ai-btn h-6 w-24 rounded-full bg-zinc-900 text-white text-[10px] font-semibold flex items-center justify-center">
+            Get Started
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="ai-block ai-card rounded-lg border border-zinc-200 p-1.5 space-y-1">
+                <div className="h-5 rounded bg-zinc-100" />
+                <div className="h-1.5 w-3/4 bg-zinc-300 rounded-full" />
+                <div className="h-1 w-1/2 bg-zinc-200 rounded-full" />
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-/**
- * Visual illustration for Card 4:
- * Collaborative design canvas in monochrome black & grey style.
- */
+/* ------------------------------------------------------------------ */
+/* Card 2: pick brand colours and fonts, the preview restyles itself   */
+/* ------------------------------------------------------------------ */
+const DS_COLORS = ['#18181B', '#0F766E', '#B45309'];
+const DS_FONTS = [
+  { label: 'Sans', family: 'Inter, ui-sans-serif, system-ui, sans-serif' },
+  { label: 'Serif', family: 'Georgia, "Times New Roman", serif' },
+  { label: 'Mono', family: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+];
+
+export function DesignSystemIllustration() {
+  const ref = useIllustration((q) => {
+    const tl = gsap.timeline({ repeat: -1 });
+    DS_COLORS.forEach((color, i) => {
+      tl.add(`step${i}`, i === 0 ? 0 : '>')
+        .to(q('.ds-sw'), { scale: (idx) => (idx === i ? 1.3 : 1), duration: 0.35, ease: 'back.out(2)' }, `step${i}`)
+        .to(q('.ds-font'), {
+          backgroundColor: (idx) => (idx === i ? '#18181B' : '#FFFFFF'),
+          color: (idx) => (idx === i ? '#FFFFFF' : '#52525B'),
+          duration: 0.3,
+        }, `step${i}`)
+        // The app preview restyles itself with the chosen brand colour and font
+        .to(q('.ds-accent-bg'), { backgroundColor: color, duration: 0.5 }, `step${i}+=0.15`)
+        .to(q('.ds-accent-text'), { color, duration: 0.5 }, `step${i}+=0.15`)
+        .to(q('.ds-accent-border'), { borderColor: color, duration: 0.5 }, `step${i}+=0.15`)
+        .set(q('.ds-font-target'), { fontFamily: DS_FONTS[i].family }, `step${i}+=0.2`)
+        .fromTo(q('.ds-app'), { scale: 0.98 }, { scale: 1, duration: 0.45, ease: 'back.out(2.5)' }, `step${i}+=0.2`)
+        .to({}, { duration: 1.4 });
+    });
+    return tl;
+  });
+
+  return (
+    <div className={`${frame} bg-gradient-to-br from-zinc-50 via-zinc-100/70 to-zinc-200/30`}>
+      <div ref={ref} className="flex items-center gap-3 sm:gap-5 w-full max-w-md justify-center">
+        {/* Left: design tokens being chosen */}
+        <div className="w-[44%] bg-white rounded-xl border border-zinc-200 shadow-md p-3 flex flex-col gap-3">
+          <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-zinc-500">Design system</span>
+          <div>
+            <span className="text-[9px] text-zinc-400 font-mono block mb-1.5">Brand color</span>
+            <div className="flex items-center gap-2">
+              {DS_COLORS.map((c) => (
+                <span key={c} className="ds-sw w-5 h-5 rounded-full border-2 border-white shadow ring-1 ring-zinc-200" style={{ backgroundColor: c }} />
+              ))}
+            </div>
+          </div>
+          <div>
+            <span className="text-[9px] text-zinc-400 font-mono block mb-1.5">Font</span>
+            <div className="flex items-center gap-1">
+              {DS_FONTS.map((f, i) => (
+                <span
+                  key={f.label}
+                  className="ds-font text-[9px] font-semibold px-1.5 py-0.5 rounded border border-zinc-200"
+                  style={{ backgroundColor: i === 0 ? '#18181B' : '#FFFFFF', color: i === 0 ? '#FFFFFF' : '#52525B' }}
+                >
+                  {f.label}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Right: the generated app follows the tokens */}
+        <div className="ds-app w-[56%] bg-white rounded-xl border border-zinc-300 shadow-lg p-3 flex flex-col gap-2.5">
+          <div className="flex items-center justify-between pb-1 border-b border-zinc-100">
+            <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-zinc-900">Your site</span>
+            <span className="text-[9px] font-mono text-zinc-600 font-semibold flex items-center gap-1">
+              <span className="ds-accent-bg w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: DS_COLORS[0] }} />
+              Live preview
+            </span>
+          </div>
+          <div className="ds-font-target text-[13px] font-bold text-zinc-900 leading-tight" style={{ fontFamily: DS_FONTS[0].family }}>
+            Fresh coffee, <span className="ds-accent-text" style={{ color: DS_COLORS[0] }}>roasted daily</span>
+          </div>
+          <div className="h-1.5 w-full bg-zinc-100 rounded-full" />
+          <div className="h-1.5 w-2/3 bg-zinc-100 rounded-full" />
+          <div className="flex items-center gap-2 pt-0.5">
+            <span className="ds-accent-bg ds-font-target text-[10px] font-semibold text-white px-3 py-1.5 rounded-lg" style={{ backgroundColor: DS_COLORS[0], fontFamily: DS_FONTS[0].family }}>
+              Order now
+            </span>
+            <span className="ds-accent-border text-[10px] font-semibold text-zinc-700 px-3 py-1.5 rounded-lg border" style={{ borderColor: DS_COLORS[0] }}>
+              Menu
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Card 3: five ways to start, each one generates a page               */
+/* ------------------------------------------------------------------ */
+const SOURCES = [
+  { label: 'Prompt', Icon: MessageSquare },
+  { label: 'Screenshot', Icon: ImageIcon },
+  { label: 'Website', Icon: Globe },
+  { label: 'GitHub', Icon: Github },
+  { label: 'Figma', Icon: Figma },
+];
+
+export function RapidPrototypingIllustration() {
+  const ref = useIllustration((q) => {
+    const tl = gsap.timeline({ repeat: -1 });
+    tl.set(q('.src-block'), { opacity: 0, y: 10 }, 0).set(q('.src-bar'), { scaleX: 0, transformOrigin: 'left center' }, 0);
+    SOURCES.forEach((_, i) => {
+      tl.add(`src${i}`, '>')
+        .to(q('.src-chip'), {
+          backgroundColor: (idx) => (idx === i ? '#18181B' : '#FFFFFF'),
+          color: (idx) => (idx === i ? '#FFFFFF' : '#52525B'),
+          scale: (idx) => (idx === i ? 1.06 : 1),
+          duration: 0.3,
+        }, `src${i}`)
+        .set(q('.src-bar'), { scaleX: 0 }, `src${i}`)
+        .to(q('.src-label'), { opacity: 1, duration: 0.2 }, `src${i}`)
+        .to(q('.src-bar'), { scaleX: 1, duration: 0.9, ease: 'power1.inOut' }, `src${i}+=0.15`)
+        .to(q('.src-block'), { opacity: 1, y: 0, duration: 0.4, stagger: 0.1, ease: 'power3.out' }, `src${i}+=0.5`)
+        .to(q('.src-block'), { opacity: 0, duration: 0.3 }, `src${i}+=2.1`)
+        .to(q('.src-label'), { opacity: 0, duration: 0.2 }, `src${i}+=2.1`);
+    });
+    return tl;
+  });
+
+  return (
+    <div className={`${frame} bg-gradient-to-br from-zinc-50 to-zinc-100`}>
+      <div ref={ref} className="w-full max-w-xs flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-1">
+          {SOURCES.map(({ label, Icon }) => (
+            <span
+              key={label}
+              className="src-chip flex flex-col items-center gap-0.5 px-1.5 py-1 rounded-lg border border-zinc-200 bg-white text-zinc-600 text-[8px] font-semibold shadow-xs"
+            >
+              <Icon className="w-3.5 h-3.5" />
+              {label}
+            </span>
+          ))}
+        </div>
+
+        <div className="src-label flex items-center gap-1.5 text-[10px] font-mono text-zinc-500" style={{ opacity: 0 }}>
+          <Sparkles className="w-3 h-3 text-zinc-900" />
+          Generating from your source...
+        </div>
+        <div className="h-1 w-full bg-zinc-200 rounded-full overflow-hidden">
+          <div className="src-bar h-full w-full bg-zinc-900 rounded-full" />
+        </div>
+
+        <div className="bg-white rounded-xl border border-zinc-200 shadow-md p-2 space-y-1.5">
+          <div className="src-block flex items-center justify-between">
+            <div className="h-2 w-12 bg-zinc-900 rounded-full" />
+            <div className="h-1.5 w-16 bg-zinc-200 rounded-full" />
+          </div>
+          <div className="src-block h-7 rounded-lg bg-zinc-100" />
+          <div className="grid grid-cols-3 gap-1.5">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="src-block h-6 rounded-md border border-zinc-200 bg-zinc-50" />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Card 4: a group fills up with teammates and a project is shared     */
+/* ------------------------------------------------------------------ */
+const MEMBERS = [
+  { initial: 'O', role: 'Owner' },
+  { initial: 'A', role: 'Admin' },
+  { initial: 'M', role: 'Member' },
+];
+
 export function CollaborationIllustration() {
+  const ref = useIllustration((q) => {
+    const tl = gsap.timeline({ repeat: -1 });
+    tl.set(q('.co-row'), { opacity: 0, x: -24 }, 0)
+      .set(q('.co-avatar'), { scale: 0 }, 0)
+      .set(q('.co-toast'), { opacity: 0, y: 12, scale: 0.9 }, 0)
+      .set(q('.co-share'), { opacity: 0, y: 8 }, 0)
+      .to(q('.co-row'), { opacity: 1, x: 0, duration: 0.5, stagger: 0.55, ease: 'power3.out' }, 0.3)
+      .to(q('.co-avatar'), { scale: 1, duration: 0.45, stagger: 0.55, ease: 'back.out(3)' }, 0.4)
+      .to(q('.co-toast'), { opacity: 1, y: 0, scale: 1, duration: 0.45, ease: 'back.out(2)' }, 2.1)
+      .to(q('.co-share'), { opacity: 1, y: 0, duration: 0.5, ease: 'power3.out' }, 2.9)
+      .to(q('.co-role-member'), { backgroundColor: '#18181B', color: '#FFFFFF', duration: 0.3 }, 3.3)
+      .to(q('.co-role-member .co-role-text'), { opacity: 0, duration: 0.15 }, 3.3)
+      .call(() => { const el = q('.co-role-text')[2]; if (el) el.textContent = 'Editor'; }, null, 3.45)
+      .to(q('.co-role-member .co-role-text'), { opacity: 1, duration: 0.2 }, 3.45)
+      .call(() => { const el = q('.co-role-text')[2]; if (el) el.textContent = 'Member'; }, null, 0)
+      .to(q('.co-row, .co-toast, .co-share'), { opacity: 0, duration: 0.4 }, 5.4)
+      .to({}, { duration: 0.2 });
+    return tl;
+  });
+
   return (
-    <div className="relative w-full h-full bg-zinc-50 flex items-center justify-center p-4 select-none overflow-hidden">
-      {/* Dot matrix canvas background */}
-      <div 
-        className="absolute inset-0 opacity-40" 
-        style={{
-          backgroundImage: 'radial-gradient(#a1a1aa 1px, transparent 1px)',
-          backgroundSize: '12px 12px'
-        }}
-      />
-
-      {/* Selected UI Card inside Canvas */}
-      <div className="relative w-44 bg-white rounded-lg border-2 border-zinc-900 shadow-md p-2.5 flex flex-col gap-2 z-10 transition-transform duration-300">
-        {/* Corner Selection Handles */}
-        <div className="w-2 h-2 bg-white border border-zinc-900 rounded-[1px] absolute -top-1 -left-1" />
-        <div className="w-2 h-2 bg-white border border-zinc-900 rounded-[1px] absolute -top-1 -right-1" />
-        <div className="w-2 h-2 bg-white border border-zinc-900 rounded-[1px] absolute -bottom-1 -left-1" />
-        <div className="w-2 h-2 bg-white border border-zinc-900 rounded-[1px] absolute -bottom-1 -right-1" />
-
-        {/* UI Mock elements */}
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded-full bg-zinc-900 text-white text-[10px] font-bold flex items-center justify-center">
-            UI
+    <div className={`${frame} bg-gradient-to-br from-zinc-50 to-zinc-100`}>
+      <div ref={ref} className="relative w-full max-w-[16rem] flex flex-col gap-2">
+        <div className="bg-white rounded-xl border border-zinc-200 shadow-md p-2.5 flex flex-col gap-1.5">
+          <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider font-bold text-zinc-500">
+            <Users className="w-3 h-3" /> Group
           </div>
-          <div className="space-y-1 flex-1">
-            <div className="h-1.5 w-16 bg-zinc-900 rounded-full" />
-            <div className="h-1 w-10 bg-zinc-300 rounded-full" />
-          </div>
+          {MEMBERS.map((m) => (
+            <div key={m.role} className="co-row flex items-center gap-2">
+              <div className="co-avatar w-5 h-5 rounded-full bg-zinc-900 text-white text-[10px] font-bold flex items-center justify-center">
+                {m.initial}
+              </div>
+              <div className="h-1.5 flex-1 bg-zinc-200 rounded-full" />
+              <span className={`${m.role === 'Member' ? 'co-role-member' : ''} text-[9px] font-mono font-bold text-zinc-600 bg-zinc-100 px-1.5 py-0.5 rounded`}>
+                <span className="co-role-text">{m.role}</span>
+              </span>
+            </div>
+          ))}
         </div>
-        <div className="h-5 w-full bg-zinc-100 rounded flex items-center px-2">
-          <div className="h-1 w-14 bg-zinc-700 rounded-full" />
+
+        <div className="co-toast self-start flex items-center gap-1.5 bg-white border border-zinc-200 rounded-full shadow-sm pl-2 pr-3 py-0.5 text-[10px] font-semibold text-zinc-700">
+          <Check className="w-3 h-3 text-zinc-900" /> Invitation accepted
         </div>
-      </div>
 
-      {/* Animated Collaborator Cursor 1: Alex (Pitch Black) */}
-      <div className="animate-cursor-alex absolute top-5 right-8 z-20 flex flex-col items-start pointer-events-none">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="text-zinc-950 drop-shadow-md">
-          <path d="M0 0L6 14L8.5 8.5L14 6L0 0Z" fill="currentColor" stroke="white" strokeWidth="1" />
-        </svg>
-        <span className="bg-zinc-950 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-md shadow-sm -mt-0.5 ml-2">
-          Alex (Design)
-        </span>
-      </div>
-
-      {/* Animated Collaborator Cursor 2: Sarah (Charcoal Grey) */}
-      <div className="animate-cursor-sarah absolute bottom-5 left-8 z-20 flex flex-col items-start pointer-events-none">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="text-zinc-600 drop-shadow-md">
-          <path d="M0 0L6 14L8.5 8.5L14 6L0 0Z" fill="currentColor" stroke="white" strokeWidth="1" />
-        </svg>
-        <span className="bg-zinc-700 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-md shadow-sm -mt-0.5 ml-2">
-          Sarah (Dev)
-        </span>
+        <div className="co-share bg-zinc-900 text-white rounded-lg px-3 py-1.5 text-[10px] font-semibold flex items-center justify-between">
+          <span>Project shared with group</span>
+          <span className="font-mono text-zinc-300">Editor</span>
+        </div>
       </div>
     </div>
   );
 }
 
-/**
- * Visual illustration for Card 5:
- * Enterprise security lock in black & grey theme with radiating radar rings.
- */
+/* ------------------------------------------------------------------ */
+/* Card 5: build steps tick off, then the site goes live on a domain   */
+/* ------------------------------------------------------------------ */
+const PUBLISH_DOMAIN = 'yourdomain.com';
+const PUBLISH_STEPS = ['Building project', 'Connecting domain', 'Going live'];
+
 export function SecurityIllustration() {
+  const ref = useIllustration((q) => {
+    const tl = gsap.timeline({ repeat: -1 });
+    tl.set(q('.pb-step'), { opacity: 0.35 }, 0)
+      .set(q('.pb-check'), { scale: 0, opacity: 0 }, 0)
+      .set(q('.pb-site'), { opacity: 0, y: 12 }, 0)
+      .set(q('.pb-badge'), { opacity: 0, scale: 0.6 }, 0)
+      .set(q('.pb-ring'), { opacity: 0, scale: 0.6 }, 0)
+      .set(q('.pb-steps'), { opacity: 1 }, 0)
+      .call(() => { const el = q('.pb-url')[0]; if (el) el.textContent = ''; }, null, 0);
+
+    typeInto(tl, q, '.pb-url', PUBLISH_DOMAIN, 1.1, 0.3);
+    PUBLISH_STEPS.forEach((_, i) => {
+      const at = 1.5 + i * 0.7;
+      tl.to(q('.pb-step')[i], { opacity: 1, duration: 0.2 }, at)
+        .to(q('.pb-check')[i], { scale: 1, opacity: 1, duration: 0.35, ease: 'back.out(3)' }, at + 0.35);
+    });
+    tl.to(q('.pb-steps'), { opacity: 0, duration: 0.3 }, 3.8)
+      .to(q('.pb-site'), { opacity: 1, y: 0, duration: 0.55, ease: 'power3.out' }, 4.0)
+      .to(q('.pb-badge'), { opacity: 1, scale: 1, duration: 0.45, ease: 'back.out(3)' }, 4.4)
+      .fromTo(q('.pb-ring'), { opacity: 0.7, scale: 0.6 }, { opacity: 0, scale: 1.6, duration: 0.9, ease: 'power2.out' }, 4.4)
+      .to(q('.pb-site, .pb-badge'), { opacity: 0, duration: 0.4 }, 6.8);
+    return tl;
+  });
+
   return (
-    <div className="relative w-full h-full bg-gradient-to-b from-zinc-50 to-zinc-100/60 flex items-center justify-center p-4 select-none overflow-hidden">
-      {/* Animated Concentric Radar Pulse Rings in Grey */}
-      <div className="animate-radar-1 w-36 h-36 border border-zinc-400/40 rounded-full absolute pointer-events-none" />
-      <div className="animate-radar-2 w-48 h-48 border border-zinc-300/30 rounded-full absolute pointer-events-none" />
+    <div className={`${frame} bg-gradient-to-b from-zinc-50 to-zinc-100/60`}>
+      <div ref={ref} className="w-full max-w-[16rem] bg-white rounded-xl border border-zinc-200 shadow-md overflow-hidden">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-100 bg-zinc-50">
+          <Globe className="w-3 h-3 text-zinc-500 shrink-0" />
+          <span className="text-[10px] font-mono text-zinc-600 truncate min-h-[0.9rem]">
+            <span className="pb-url">{PUBLISH_DOMAIN}</span>
+          </span>
+        </div>
 
-      {/* SVG Connection Lines in Grey */}
-      <svg className="absolute inset-0 w-full h-full pointer-events-none">
-        <line x1="50%" y1="50%" x2="22%" y2="28%" stroke="#A1A1AA" strokeWidth="1.25" strokeDasharray="3 3" />
-        <line x1="50%" y1="50%" x2="78%" y2="28%" stroke="#A1A1AA" strokeWidth="1.25" strokeDasharray="3 3" />
-        <line x1="50%" y1="50%" x2="22%" y2="72%" stroke="#A1A1AA" strokeWidth="1.25" strokeDasharray="3 3" />
-        <line x1="50%" y1="50%" x2="78%" y2="72%" stroke="#A1A1AA" strokeWidth="1.25" strokeDasharray="3 3" />
-      </svg>
+        <div className="relative p-3 h-[7.5rem]">
+          {/* Publish steps */}
+          <div className="pb-steps absolute inset-0 p-3 flex flex-col justify-center gap-2.5">
+            {PUBLISH_STEPS.map((label) => (
+              <div key={label} className="pb-step flex items-center gap-2 text-[10px] font-medium text-zinc-700">
+                <span className="w-4 h-4 rounded-full border border-zinc-300 flex items-center justify-center shrink-0">
+                  <Check className="pb-check w-2.5 h-2.5 text-zinc-900" />
+                </span>
+                {label}
+              </div>
+            ))}
+          </div>
 
-      {/* Surrounding Security Nodes */}
-      <div className="absolute top-4 left-4 z-10">
-        <span className="bg-white border border-zinc-200 text-zinc-800 text-[9px] font-mono font-bold px-2 py-0.5 rounded-full shadow-xs flex items-center gap-1">
-          <ShieldCheck className="w-2.5 h-2.5 text-zinc-900" />
-          SOC 2
-        </span>
-      </div>
-
-      <div className="absolute top-4 right-4 z-10">
-        <span className="bg-white border border-zinc-200 text-zinc-800 text-[9px] font-mono font-bold px-2 py-0.5 rounded-full shadow-xs">
-          AES-256
-        </span>
-      </div>
-
-      <div className="absolute bottom-4 left-4 z-10">
-        <span className="bg-white border border-zinc-200 text-zinc-800 text-[9px] font-mono font-bold px-2 py-0.5 rounded-full shadow-xs">
-          GDPR
-        </span>
-      </div>
-
-      <div className="absolute bottom-4 right-4 z-10">
-        <span className="bg-zinc-900 text-white text-[9px] font-mono font-bold px-2 py-0.5 rounded-full shadow-xs flex items-center gap-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          99.99%
-        </span>
-      </div>
-
-      {/* Centered Modern Lock Icon Container */}
-      <div className="relative z-10 w-16 h-16 bg-white rounded-2xl border border-zinc-300 shadow-[0_4px_18px_rgba(0,0,0,0.06)] flex items-center justify-center transition-transform duration-300 group-hover:scale-105">
-        <Lock className="w-7 h-7 text-zinc-900 stroke-[1.8]" />
+          {/* Live site */}
+          <div className="pb-site absolute inset-0 p-3 flex flex-col justify-center gap-2">
+            <div className="h-2.5 w-2/3 bg-zinc-900 rounded-full" />
+            <div className="h-1.5 w-full bg-zinc-200 rounded-full" />
+            <div className="h-1.5 w-4/5 bg-zinc-200 rounded-full" />
+            <div className="relative self-start mt-1">
+              <span className="pb-ring absolute inset-0 rounded-full border border-zinc-900" />
+              <span className="pb-badge relative inline-flex items-center gap-1 text-[9px] font-mono font-bold bg-zinc-900 text-white px-2 py-0.5 rounded-full">
+                <Check className="w-2.5 h-2.5" /> Published
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

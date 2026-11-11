@@ -35,9 +35,21 @@ function limitsFor(name) {
 // 1 credit = 20,000 tokens (so 50 credits = 1,000,000 tokens, 250 = 5M, 750 = 15M).
 const TOKENS_PER_CREDIT = 20_000;
 
+// Paid plans can top up with extra credits at a flat price per credit.
+const CREDIT_PRICE_INR = 12;
+const MIN_CREDIT_PURCHASE = 10;
+const MAX_CREDIT_PURCHASE = 5000;
+const canBuyExtraCredits = (name) => limitsFor(name).price > 0;
+
+// AI photo enhancement (image-to-image) is billed per successful photo, not per token: the model returns an image, not text.
+const imageEnhanceCredits = () => {
+  const value = Number.parseInt(process.env.IMAGE_ENHANCE_CREDITS, 10);
+  return Number.isInteger(value) && value >= 0 ? value : 2;
+};
+
 // Credits a generation costs: its tokens divided by 20,000, rounded up, at least 1.
 function creditsForTokens(totalTokens) {
   return Math.max(1, Math.ceil((Number(totalTokens) || 0) / TOKENS_PER_CREDIT));
 }
 
-module.exports = { TOKENS_PER_CREDIT, creditsForTokens, PLAN_LIMITS, resolvePlanName, limitsFor };
+module.exports = { imageEnhanceCredits, CREDIT_PRICE_INR, MIN_CREDIT_PURCHASE, MAX_CREDIT_PURCHASE, canBuyExtraCredits, TOKENS_PER_CREDIT, creditsForTokens, PLAN_LIMITS, resolvePlanName, limitsFor };

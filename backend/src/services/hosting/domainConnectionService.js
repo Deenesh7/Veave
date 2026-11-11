@@ -1,7 +1,6 @@
 // API-level operations for connecting a custom domain: validate, start/retry/inspect the durable workflow, disconnect.
 // The long-running work lives in domainOrchestrator; everything here is quick and re-checks authorisation on every call.
 const DomainConnection = require('../../models/DomainConnection');
-const DomainOrder = require('../../models/DomainOrder');
 const PublishedSite = require('../../models/PublishedSite');
 const Project = require('../../models/Project');
 const { AppError, NotFoundError, ValidationError } = require('../../utils/errors');
@@ -10,7 +9,6 @@ const { normalizeHostname, classifyHostname, servedHostnames } = require('./doma
 const verification = require('./domainVerification');
 const planner = require('./dnsPlanner');
 const orchestrator = require('./domainOrchestrator');
-const godaddy = require('./godaddyService');
 const { invalidateSite } = require('./staticServer');
 
 const conflict = (message) => new AppError(message, 409);
@@ -73,8 +71,7 @@ function publicView(connection) {
     status: doc.stage === 'active' ? 'verified' : 'pending',
     verifiedAt: doc.verification?.verifiedAt || null,
     lastCheckError: doc.lastError || null,
-    records: doc.actionRequired?.records || [],
-    goDaddyAvailable: godaddy.isEnabled()
+    records: doc.actionRequired?.records || []
   };
   return view;
 }
@@ -101,10 +98,6 @@ async function check(userId, hostnameInput, { providers = require('./dnsProvider
     reason: taken ? 'This domain is already connected to a project.' : null,
     dns: { provider: provider.id, providerLabel: provider.label, automatic: Boolean(access.authorized) }
   };
-}
-
-async function isPurchasedBy(userId, apex) {
-  return Boolean(await DomainOrder.exists({ userId, domain: apex, kind: 'registration', status: 'registered' }));
 }
 
 /**
@@ -160,11 +153,10 @@ async function connect({ projectId, userId, hostname: input, includeWww = true, 
     await disconnect({ projectId, userId });
   }
 
-  const purchased = await isPurchasedBy(userId, target.apex);
   const connection = new DomainConnection({
     userId, projectId, siteId: site._id, hostname: target.hostname, apex: target.apex, kind: target.kind,
     includeWww: wantWww, canonical: effectiveCanonical, hostnames,
-    verification: { method: purchased ? 'purchase-order' : 'dns-txt', nonce: verification.newNonce(), expiresAt: new Date(Date.now() + domainConfig().verifyTtlMs) },
+    verification: { method: 'dns-txt', nonce: verification.newNonce(), expiresAt: new Date(Date.now() + domainConfig().verifyTtlMs) },
     dns: { confirmReplace: Boolean(confirmReplace) },
     history: [{ at: new Date(), stage: 'validating_request', level: 'info', message: `Connecting ${target.hostname}` }]
   });

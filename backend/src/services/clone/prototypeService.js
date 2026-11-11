@@ -8,11 +8,20 @@ const { validatePublicUrl } = require('./websiteCaptureService');
 const KEYWORDS = /\b(prototype|template|reference|inspired?|inspiration|like|similar to|based on|model(?:led)? (?:on|after))\b/i;
 
 function detectPrototypeUrl(payload = {}) {
-  const explicit = payload?.prototype?.url;
+  // `prototypeSite` is what the app sends; `prototype` is the older name (axios drops a property called `prototype`).
+  const site = payload?.prototypeSite || payload?.prototype;
+  if (site?.none === true) return null; // the user removed the link found in their prompt
+  const explicit = site?.url;
   if (typeof explicit === 'string' && /^https?:\/\//i.test(explicit.trim())) return explicit.trim();
   const prompt = String(payload?.prompt || '');
-  const match = prompt.match(/https?:\/\/[^\s<>"')\]]+/i);
-  return match && KEYWORDS.test(prompt) ? match[0].replace(/[.,;:!?]+$/, '') : null;
+  // A website link anywhere in the prompt is taken as the prototype automatically (no keyword needed). Links to
+  // files (images, documents, archives) are content, not websites, so they are skipped.
+  const FILE_LINK = /\.(?:png|jpe?g|gif|webp|svg|ico|avif|bmp|pdf|docx?|xlsx?|pptx?|zip|rar|mp4|mov|mp3|wav|json|csv|txt)(?:[?#].*)?$/i;
+  for (const raw of prompt.match(/https?:\/\/[^\s<>"')\]]+/gi) || []) {
+    const link = raw.replace(/[.,;:!?]+$/, '');
+    if (!FILE_LINK.test(link)) return link;
+  }
+  return null;
 }
 
 const googleFonts = require('./googleFonts');
@@ -237,6 +246,19 @@ async function captureInspiration(sourceUrl, { signal, timeoutMs = 45000, maxHei
       const fontStacks = { h1: fam(h1), h2: fam(document.querySelector('h2')), body: fam(body), button: fam(firstBtn), nav: fam(document.querySelector('nav a')) };
       const footer = document.querySelector('footer');
       const nav = [...document.querySelectorAll('header a, nav a')].filter(visible).map((a) => (a.textContent || '').trim()).filter((t) => t && t.length < 28);
+      // The pages this site links to from its navigation (same site only): the page queue for the new website.
+      const navPages = (() => {
+        const seen = new Set(); const out = [];
+        [...document.querySelectorAll('header a[href], nav a[href]')].filter(visible).forEach((a) => {
+          let u; try { u = new URL(a.getAttribute('href'), location.href); } catch { return; }
+          const label = (a.textContent || '').replace(/\s+/g, ' ').trim();
+          if (u.origin !== location.origin || !label || label.length > 28 || /^(log ?in|sign ?(in|up)|get started|contact sales|cart|search)$/i.test(label)) return;
+          const path = u.pathname.replace(/\/+$/, '') || '/';
+          if (seen.has(path) || /\.[a-z0-9]{2,5}$/i.test(path)) return;
+          seen.add(path); out.push({ path, label: path === '/' ? 'Home' : label });
+        });
+        return out.slice(0, 8);
+      })();
       // Real HTML/CSS signals: stylesheet design tokens, gradients, shadows, motion and a trimmed markup skeleton.
       const cssVars = new Map(); const keyframes = new Set(); const fontFaces = new Set(); const mediaQueries = new Set();
       for (const sheet of [...document.styleSheets]) {
@@ -270,7 +292,7 @@ async function captureInspiration(sourceUrl, { signal, timeoutMs = 45000, maxHei
         skeleton
       };
       return {
-        code, title: document.title, nav: [...new Set(nav)].slice(0, 12),
+        code, title: document.title, nav: [...new Set(nav)].slice(0, 12), navPages,
         fonts: { heading: h1 ? color(h1, 'fontFamily').split(',')[0].replace(/["']/g, '') : '', body: color(body, 'fontFamily').split(',')[0].replace(/["']/g, ''), h1Size: h1 ? color(h1, 'fontSize') : '' },
         palette, pageBackground: hex(color(body, 'backgroundColor')) || htmlBg || '#ffffff',
         buttonStyle: firstBtn ? `bg ${hex(color(firstBtn, 'backgroundColor'))}, text ${hex(color(firstBtn, 'color'))}, radius ${color(firstBtn, 'borderRadius')}` : '',
@@ -291,7 +313,7 @@ async function captureInspiration(sourceUrl, { signal, timeoutMs = 45000, maxHei
       resolvedFonts.body = snapshot.fontStacks?.body === headingStack ? resolvedFonts.heading : await resolveFontDynamic(snapshot.fontStacks?.body, { catalogue, context, pageMeasure });
     } catch { resolvedFonts = {}; }
     const style = deriveStyle(snapshot, resolvedFonts);
-    return { brief: briefFromSnapshot(snapshot, url.href, style), image, style };
+    return { brief: briefFromSnapshot(snapshot, url.href, style), image, style, pages: snapshot.navPages || [], siteTitle: snapshot.title || '' };
   } finally {
     await browser.close().catch(() => {});
   }

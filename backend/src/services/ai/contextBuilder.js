@@ -1,5 +1,7 @@
 const { UI_GENERATION_SYSTEM_PROMPT } = require('./prompts/systemPrompt');
+const { GSAP_EDIT_RULES } = require('./prompts/gsapRules');
 const logger = require('../../utils/logger');
+const templateService = require('../templates/templateService');
 
 class ContextBuilder {
   /**
@@ -23,7 +25,8 @@ class ContextBuilder {
 CONTINUOUS STATEFUL GENERATION:
 You are initiating a new project prototype. You establish the visual architecture, component hierarchy, design tokens, and functional foundation that will be iterated on in subsequent stateful turns.
 STRICT COLOR USAGE: Do NOT automatically use blue, purple, indigo, violet, or blue-purple gradients in generated UI designs. The AI must use blue or purple ONLY when the user explicitly requests those colors or when the user's existing design system/brand configuration specifically defines them (Priority 1: User intent, Priority 2: Configured design system such as Primary Theme Palette in shades of blue and purple, Priority 3: Existing component styling, Priority 4: Default neutral design choices).
-INTERACTIVE UI & RUNTIME SAFETY: Every interactive element (navbar links, dropdowns, buttons, tabs, sidebars, modals, forms, search controls, cards, tooltips, toggles, breadcrumbs, pagination) must be functional. All event handlers, functions, and state must exist, have defensive null/undefined checks, and never crash the application.`;
+INTERACTIVE UI & RUNTIME SAFETY: Every interactive element (navbar links, dropdowns, buttons, tabs, sidebars, modals, forms, search controls, cards, tooltips, toggles, breadcrumbs, pagination) must be functional. All event handlers, functions, and state must exist, have defensive null/undefined checks, and never crash the application.
+IMAGES ARE REQUIRED FOR WEBSITES: a website is never created without images (unless the user explicitly asks for none). Include a hero image, and images in feature, service, team, news, product or gallery cards on every page: at least 3 on the home page and at least 6 across the site. Use <img src="https://..."> with real, working, public image links you are certain exist (they are downloaded into the project and stored there), with meaningful alt text, a fixed-aspect frame and object-cover. Never replace images with gradients or empty boxes, never invent stock-photo ids, and never reuse one image everywhere.`;
     }
 
     return `${UI_GENERATION_SYSTEM_PROMPT}
@@ -45,7 +48,10 @@ You are modifying an existing project in an active conversation.
 10. ADD CONTENT & SURGICAL MODIFICATION WITHOUT LOSING ANYTHING:
    - If the user prompt asks to ADD content, sections, or features (e.g., 'add research details', 'add courses', 'add achievements'): seamlessly integrate the requested additions into the existing application structure without removing or truncating existing sections.
    - If the user prompt asks to MODIFY or CHANGE something: change ONLY what was mentioned in the user prompt.
-   - All other existing components, domain data, and interactive behaviors must remain untouched.`;
+   - All other existing components, domain data, and interactive behaviors must remain untouched.
+11. LIGHT / DARK / THEME CHANGES: if the project defines theme variables in :root of src/index.css (--bg, --surface, --fg, --line, --muted, --brand), change those variables. If components instead hard-code colours (bg-zinc-950, text-white and similar), a theme request must be applied to EVERY file that has them, and the colours should be moved to those variables so it works from one place next time. Never change only one page for a site-wide theme request.
+
+${GSAP_EDIT_RULES}`;
   }
 
   /**
@@ -127,7 +133,7 @@ You are modifying an existing project in an active conversation.
   }
 
   /**
-   * Assemble full contextual request for Gemini or OpenRouter model
+   * Assemble full contextual request for the OpenRouter model (GPT-6 Luna)
    */
   assembleContextualPrompt({
     project,
@@ -135,7 +141,9 @@ You are modifying an existing project in an active conversation.
     userPrompt,
     designTokens = {},
     commandDirective = '',
-    allowPartialContext = false
+    allowPartialContext = false,
+    // { template, tokens, tokenSource, overridden } when the user started from a template (see templateService).
+    templateContext = null
   }) {
     const isModification = !!(project && project.files && project.files.length > 0);
     const existingCode = this.formatExistingProjectCode(project, { allowPartial: allowPartialContext });
@@ -148,10 +156,19 @@ You are modifying an existing project in an active conversation.
       olderSummaryBlock = `\nPRIOR DESIGN DECISIONS SUMMARY:\n${conversation.contextSummary}\n`;
     }
 
+    const templateBlock = templateContext?.template
+      ? `\n${templateService.buildPromptContext(templateContext.template, templateContext)}\n`
+      : '';
+    const outputInstruction = templateBlock
+      ? 'Customise the SELECTED TEMPLATE for the user request. The template files already exist in the project: return file operations (patch or modify for existing files, create for new pages and components) that apply the requested brand, content, pages and features while preserving the template design. Do not re-create files that need no change and do not regenerate the template from scratch. Every local import must resolve and every link must point to a registered route.'
+      : isModification
+        ? 'Return only the targeted minimal patch or modified files. Do not regenerate unaffected code.'
+        : 'Return a modular multi-file React application. Keep src/App.jsx small and limited to providers, routing, shared layout composition, and top-level state. Put major pages in src/pages/ and logically independent UI in src/components/.';
+
     const promptText = `
 === CURRENT USER REQUEST (TOP PRIORITY) ===
 "${userPrompt}"
-${commandDirective ? `\nCOMMAND DIRECTIVE:\n${commandDirective}\n` : ''}
+${commandDirective ? `\nCOMMAND DIRECTIVE:\n${commandDirective}\n` : ''}${templateBlock}
 === EXISTING PROJECT STATE & GENERATED CODE ===
 ${existingCode.summary}
 
@@ -177,13 +194,15 @@ ${olderSummaryBlock}
 === INSTRUCTIONS FOR OUTPUT ===
 Apply the requested changes to the ACTIVE SOURCE CODE.
 Preserve existing state, structure, layout, styles, and components that are not affected by this instruction.
-${isModification ? 'Return only the targeted minimal patch or modified files. Do not regenerate unaffected code.' : 'Return a modular multi-file React application. Keep src/App.jsx small and limited to providers, routing, shared layout composition, and top-level state. Put major pages in src/pages/ and logically independent UI in src/components/.'}
+${outputInstruction}
 The generated app will be built with its real package.json, then tested in Chromium on desktop and mobile.
 Use bundled/local assets and system fonts; no CDN script imports or remote font links. External APIs require explicit local mocks or integration configuration and cannot be claimed verified otherwise.
 Use real working event handlers and preserve existing installed dependencies, configuration and design tokens.
 `;
 
-    const systemPrompt = this.buildSystemPrompt({ isModification });
+    const systemPrompt = this.buildSystemPrompt({ isModification }) + (templateBlock
+      ? '\n\nTEMPLATE MODE: the project starts from an approved template whose files, design tokens and component structure are given in the request. Follow the template\'s design system, keep its shared components and locked files intact, and make targeted changes. The template block overrides any generic layout preference above, except for explicit user design requests.'
+      : '');
 
     const messages = [
       { role: 'system', content: systemPrompt },
@@ -196,6 +215,7 @@ Use real working event handlers and preserve existing installed dependencies, co
       promptText,
       messages,
       isModification,
+      templateApplied: Boolean(templateBlock),
       parentGenerationId: conversation?.activeGenerationId || null
     };
   }

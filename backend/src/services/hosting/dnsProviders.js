@@ -1,8 +1,7 @@
 // Who runs DNS for a domain, and can Veave change it? Automatic changes are only attempted where the platform really has
-// authority (a zone inside Veave's own GoDaddy account, e.g. a domain bought through Veave). Everything else is manual:
+// authority (an adapter is registered for that zone). With none registered, everything is manual:
 // the user gets the exact records to add. Veave never asks for, stores or uses customers' registrar credentials.
 const dns = require('node:dns');
-const godaddy = require('./godaddyService');
 const { resolverList, makeResolver } = require('./domainVerification');
 
 const PROVIDERS = [
@@ -30,30 +29,12 @@ async function detectProvider(zone, { resolver = null } = {}) {
   return { id: hit?.id || 'unknown', label: hit?.label || 'your DNS provider', nameservers, found: nameservers.length > 0 };
 }
 
-/** The GoDaddy adapter: usable only when the zone is in Veave's own account. */
-function goDaddyAdapter() {
-  return {
-    id: 'godaddy',
-    async isAuthorized(zone) {
-      if (!godaddy.isEnabled()) return { ok: false, reason: 'The GoDaddy integration is not configured on this server.' };
-      try {
-        return (await godaddy.ownsDomain(zone))
-          ? { ok: true }
-          : { ok: false, reason: 'This domain is not in the GoDaddy account connected to Veave, so Veave cannot change its DNS.' };
-      } catch (error) { return { ok: false, reason: `GoDaddy could not be reached: ${error.message}`, transient: true }; }
-    },
-    listRecords: (zone) => godaddy.listDnsRecords(zone),
-    setRecord: (zone, record) => godaddy.setDnsRecord(zone, record),
-    deleteRecord: (zone, record) => godaddy.deleteDnsRecord(zone, record)
-  };
-}
-
 /**
  * Picks the adapter that may change this zone, or explains why none can. An adapter is only used when the zone's
- * nameservers really belong to its provider (changing GoDaddy's copy of a zone that is served elsewhere would do nothing).
+ * nameservers really belong to its provider (changing a copy of a zone that is served elsewhere would do nothing).
  */
 async function resolveAdapter(zone, { provider, adapters = null } = {}) {
-  const list = adapters || [goDaddyAdapter()];
+  const list = adapters || []; // no provider adapter is built in: DNS changes are manual unless one is injected
   let reason = null;
   for (const adapter of list) {
     if (provider?.found && provider.id !== adapter.id) { reason = `The domain's DNS is hosted at ${provider.label}, not ${adapter.id}.`; continue; }
@@ -63,9 +44,9 @@ async function resolveAdapter(zone, { provider, adapters = null } = {}) {
     reason = auth.reason;
   }
   const where = provider?.id && provider.id !== 'unknown' ? provider.label : 'your DNS provider';
-  return { adapter: null, authorized: false, reason: provider?.found && provider.id !== 'godaddy' && !adapters
+  return { adapter: null, authorized: false, reason: provider?.found && !adapters
     ? `Veave has no authorised access to ${where}. Add the records below at ${where}.`
     : (reason || `Add the records below at ${where}.`) };
 }
 
-module.exports = { detectProvider, resolveAdapter, goDaddyAdapter, PROVIDERS };
+module.exports = { detectProvider, resolveAdapter, PROVIDERS };

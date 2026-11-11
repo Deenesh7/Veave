@@ -15,7 +15,7 @@ export const promptEngineService = {
       fd.append('userPrompt',   payload.userPrompt || '');
       fd.append('framework',    payload.framework || 'react');
       fd.append('designSystem', payload.designSystem || 'veave');
-      fd.append('model',        payload.model || 'auto');
+      fd.append('model',        'Veave AI');
       if (payload.projectId)      fd.append('projectId', payload.projectId);
       if (payload.projectContext) fd.append('projectContext',
         typeof payload.projectContext === 'string'

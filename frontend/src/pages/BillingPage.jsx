@@ -78,11 +78,13 @@ export default function BillingPage() {
     fetchInvoices,
     changePlan,
     startCheckout,
+    buyCredits,
     clearPaymentSuccess,
     clearError,
   } = useBillingStore();
 
   const [activeActionPlan, setActiveActionPlan] = useState(null);
+  const [creditQty, setCreditQty] = useState(50);
 
   useEffect(() => {
     // Billing is private: without a token every request would 401, so send the user to log in instead.
@@ -133,6 +135,22 @@ export default function BillingPage() {
       // Error handled by store
     } finally {
       setActiveActionPlan(null);
+    }
+  };
+
+  const creditInfo = overview?.credits || {};
+  const pricePerCredit = creditInfo.pricePerCredit ?? 12;
+  const minCredits = creditInfo.minPurchase ?? 10;
+  const maxCredits = creditInfo.maxPurchase ?? 5000;
+  const qtyNum = Math.floor(Number(creditQty));
+  const qtyValid = Number.isInteger(qtyNum) && qtyNum >= minCredits && qtyNum <= maxCredits;
+
+  const handleBuyCredits = async () => {
+    if (!qtyValid || isProcessingPayment) return;
+    try {
+      await buyCredits(qtyNum);
+    } catch {
+      // error is surfaced through the store's error banner
     }
   };
 
@@ -287,7 +305,7 @@ export default function BillingPage() {
           <div className="flex items-start gap-3">
             <CheckCircle2 className="w-5 h-5 text-emerald-600 mt-0.5 shrink-0" />
             <div>
-              <p className="font-bold text-emerald-900">Payment Successful! Upgraded to {paymentSuccess.plan}</p>
+              <p className="font-bold text-emerald-900">{paymentSuccess.credits ? `Payment Successful! ${paymentSuccess.credits} credits added` : `Payment Successful! Upgraded to ${paymentSuccess.plan}`}</p>
               <p className="text-xs text-emerald-700 mt-0.5">
                 {paymentSuccess.invoice?.invoiceNumber
                   ? `Invoice #${paymentSuccess.invoice.invoiceNumber} has been generated. Your limits have been updated.`
@@ -456,6 +474,57 @@ export default function BillingPage() {
           );
         })}
       </div>
+
+      {/* Buy Extra Credits */}
+      {overview && (
+        <div className="bg-white rounded-2xl border border-[#E2E5E8] shadow-sm p-6 flex flex-col md:flex-row md:items-center justify-between gap-5">
+          <div>
+            <h2 className="text-sm font-bold text-[#111827]">Buy Extra Credits</h2>
+            <p className="text-xs text-zinc-500 mt-1">
+              ₹{pricePerCredit} per credit. Added instantly to your balance and your monthly token limit grows with them.
+            </p>
+            {!creditInfo.canBuy && (
+              <p className="text-xs text-amber-600 font-medium mt-2">Extra credits are available on Plus and Pro plans. Upgrade to buy more.</p>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex gap-1.5">
+              {[50, 100, 500].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  disabled={!creditInfo.canBuy}
+                  onClick={() => setCreditQty(n)}
+                  className={`px-3 py-2 rounded-lg text-xs font-bold border transition-all disabled:opacity-50 ${
+                    qtyNum === n ? 'bg-[#1e2023] text-white border-[#1e2023]' : 'bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <input
+              type="number"
+              min={minCredits}
+              max={maxCredits}
+              step={1}
+              value={creditQty}
+              disabled={!creditInfo.canBuy}
+              onChange={(e) => setCreditQty(e.target.value)}
+              className="w-24 px-3 py-2 rounded-lg border border-zinc-200 text-sm font-semibold text-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-300 disabled:opacity-50"
+              aria-label="Number of credits"
+            />
+            <button
+              type="button"
+              disabled={!creditInfo.canBuy || !qtyValid || isProcessingPayment}
+              onClick={handleBuyCredits}
+              className="px-4 py-2.5 rounded-lg bg-[#1e2023] hover:bg-black text-white text-xs font-bold transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {isProcessingPayment ? 'Processing...' : qtyValid ? `Buy ${qtyNum} credits for ₹${(qtyNum * pricePerCredit).toLocaleString('en-IN')}` : `Enter ${minCredits}-${maxCredits} credits`}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Trust & Security Note */}
       <div className="flex flex-wrap items-center justify-center gap-6 py-4 px-6 rounded-xl bg-zinc-50 border border-zinc-200 text-xs text-zinc-500">

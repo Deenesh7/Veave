@@ -61,7 +61,7 @@ class AgentService {
     await conversation.save();
     
     if (usage && userId) {
-      await this._trackUsage(userId, projectId, 'anthropic/claude-sonnet-4', usage);
+      await this._trackUsage(userId, projectId, 'openai/gpt-6-luna', usage);
     }
 
     return { message: parsed.message, actions, files: updatedFiles };

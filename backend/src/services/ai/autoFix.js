@@ -30,6 +30,7 @@ const KNOWN_PACKAGES = {
   'react-router-dom': '^6.26.0',
   'framer-motion': '^11.5.4',
   'lucide-react': '^0.400.0',
+  'gsap': '^3.12.5',
   'clsx': '^2.1.1',
   'axios': '^1.7.7',
   'recharts': '^2.12.7',

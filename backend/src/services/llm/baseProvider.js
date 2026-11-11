@@ -1,7 +1,7 @@
 /**
  * VEAVE LLM Provider — abstract base
  *
- * All concrete providers (OpenAI, Anthropic, Gemini, OpenRouter, …)
+ * All concrete providers (OpenRouter)
  * must extend this class so the Prompt Engine remains provider-agnostic.
  *
  *   generateText({ system, user, temperature, maxTokens, image })

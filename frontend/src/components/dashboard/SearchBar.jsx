@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, FileCode, LayoutTemplate, Palette, BookOpen, ArrowRight, X, Folder } from 'lucide-react';
+import { Search, FileCode, Palette, BookOpen, ArrowRight, X, Folder } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useProjectStore } from '../../store/projectStore';
 
@@ -23,8 +23,8 @@ export default function SearchBar() {
 
   // Dynamic items list: Real projects + workspace page links
   const systemItems = [
-    { title: 'Templates Library', category: 'Page', path: '/templates', icon: LayoutTemplate },
     { title: 'Design Systems & Tokens', category: 'Page', path: '/design-systems', icon: Palette },
+    { title: 'Recent Projects', category: 'Page', path: '/recent', icon: Folder },
     { title: 'Workspace Files', category: 'Page', path: '/files', icon: Folder },
     { title: 'Documentation & API Guides', category: 'Page', path: '/documentation', icon: BookOpen },
   ];

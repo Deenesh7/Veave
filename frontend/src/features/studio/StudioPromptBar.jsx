@@ -21,14 +21,32 @@ import SkillsModal from '../../components/dashboard/SkillsModal';
 export function StudioPromptBar({
   onSubmit,
   isGenerating,
-  onStop
+  onStop,
+  mentionRequest = null,
+  selectedElement = null
 }) {
   const [promptText, setPromptText] = useState('');
   // Cloned projects can pull anything the clone missed from the real website; the server's AI decides when, from the request itself.
-  const [model, setModel] = useState('Gemini Flash 3.8');
+  const [model, setModel] = useState('Veave AI');
   const [isListening, setIsListening] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const textareaRef = useRef(null);
+  const lastMentionRef = useRef('');
+
+  // Clicking an element in Visual Edit writes a mention such as [<h1> "Welcome"] at the start of the prompt.
+  // A newer click replaces the previous mention (keeping whatever the user typed after it).
+  useEffect(() => {
+    if (!mentionRequest) return;
+    const next = mentionRequest.text || '';
+    setPromptText((current) => {
+      const previous = lastMentionRef.current;
+      const rest = previous && current.startsWith(previous) ? current.slice(previous.length) : current;
+      lastMentionRef.current = next;
+      return next + rest;
+    });
+    if (next) textareaRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mentionRequest?.id]);
   const whisperRecorderRef = useRef(null);
   const speechRecRef = useRef(null);
 
@@ -235,7 +253,7 @@ export function StudioPromptBar({
           value={promptText}
           onChange={(e) => setPromptText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Describe what to change... (Shift + Enter for new line)"
+          placeholder={selectedElement ? `Change the selected ${String(selectedElement.role || 'element').toLowerCase()}... e.g. "make it blue"` : 'Describe what to change... (Shift + Enter for new line)'}
           rows={1}
           className="w-full min-h-[38px] max-h-40 bg-transparent text-xs sm:text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none resize-none leading-relaxed px-1 overflow-y-auto scrollbar-thin"
         />
@@ -256,7 +274,7 @@ export function StudioPromptBar({
           {/* Right: Mic, Stop, Send */}
           <div className="flex items-center gap-1.5 shrink-0">
 
-              {/* Voice-to-Text Microphone Button (OpenAI Whisper) */}
+              {/* Voice-to-Text Microphone Button (voice transcription) */}
               <button
                 type="button"
                 disabled={isTranscribing}
@@ -270,10 +288,10 @@ export function StudioPromptBar({
                 }`}
                 title={
                   isTranscribing
-                    ? 'Transcribing with OpenAI Whisper...'
+                    ? 'Transcribing with voice transcription...'
                     : isListening
                     ? 'Click to stop and transcribe voice message'
-                    : 'Record voice message (OpenAI Whisper)'
+                    : 'Record voice message (voice transcription)'
                 }
               >
                 {isTranscribing ? (

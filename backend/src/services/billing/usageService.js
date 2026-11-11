@@ -3,7 +3,7 @@ const Project = require('../../models/Project');
 const User = require('../../models/User');
 const AIUsage = require('../../models/AIUsage');
 const { AppError } = require('../../utils/errors');
-const { limitsFor, resolvePlanName, creditsForTokens } = require('./plans');
+const { limitsFor, resolvePlanName, creditsForTokens, TOKENS_PER_CREDIT } = require('./plans');
 
 class PlanLimitError extends AppError {
   constructor(message) {
@@ -101,8 +101,9 @@ async function assertCanUseAI(userId) {
     { $group: { _id: null, tokens: { $sum: '$totalTokens' } } },
   ]);
   const used = agg?.tokens || 0;
-  if (used >= limits.monthlyTokens) {
-    throw new PlanLimitError(`You have used ${used.toLocaleString()} of ${limits.monthlyTokens.toLocaleString()} monthly tokens on ${name}. Upgrade your plan to keep generating.`);
+  const tokenCap = limits.monthlyTokens + (user.subscription?.bonusCredits || 0) * TOKENS_PER_CREDIT;
+  if (used >= tokenCap) {
+    throw new PlanLimitError(`You have used ${used.toLocaleString()} of ${tokenCap.toLocaleString()} monthly tokens on ${name}. Upgrade your plan to keep generating.`);
   }
 }
 
@@ -119,4 +120,20 @@ async function chargeCredits(userId, totalTokens) {
   );
 }
 
-module.exports = { chargeCredits, getProjectUsage, assertCanCreate, assertCanUseAI, PlanLimitError, formatBytes };
+// Throws PlanLimitError unless the account can pay `credits` more credits (used before starting a paid AI task that has a fixed price).
+async function assertCanSpendCredits(userId, credits) {
+  if (!userId || !credits) return;
+  await assertCanUseAI(userId);
+  const user = await User.findById(userId).select('plan credits subscription creditsExempt').lean();
+  if (!user || user.creditsExempt) return;
+  const left = user.subscription?.creditsRemaining ?? user.credits ?? limitsFor(resolvePlanName(user.plan)).credits;
+  if (left < credits) throw new PlanLimitError(`This needs ${credits} credits and you have ${left}. Buy more credits or upgrade your plan.`);
+}
+
+// Deducts a fixed number of credits (never below zero) for a finished task that is priced per item.
+async function chargeFixedCredits(userId, credits) {
+  if (!credits) return User.findById(userId);
+  return chargeCredits(userId, credits * TOKENS_PER_CREDIT);
+}
+
+module.exports = { assertCanSpendCredits, chargeFixedCredits, chargeCredits, getProjectUsage, assertCanCreate, assertCanUseAI, PlanLimitError, formatBytes };

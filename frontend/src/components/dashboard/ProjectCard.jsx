@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Globe, MoreVertical, ExternalLink, Trash2, Copy, Sparkles, Code2, Share2 } from 'lucide-react';
-import ProjectPreview from './ProjectPreview';
 import { formatDate } from '../../utils/helpers';
 import { ShareModal } from '../../features/share/ShareModal';
 
@@ -76,52 +75,23 @@ export default function ProjectCard({ project, viewMode = 'grid', onDelete }) {
     );
   }
 
-  // Grid View Layout (Default)
+  // Grid View Layout (Default): compact info card, no preview thumbnail
+  const creator = project?.owner?.name || project?.creator?.name || project?.createdByName || '';
+  const visitUrl = project?.publicUrl || project?.publishedUrl || '';
+
   return (
     <div
       onClick={handleOpenEditor}
-      className="group bg-white rounded-[14px] border border-[#E2E5E8] overflow-hidden hover:border-zinc-300 hover:shadow-[0_8px_24px_rgba(0,0,0,0.06)] hover:-translate-y-1 transition-all duration-200 cursor-pointer flex flex-col"
+      className="group h-[225px] bg-white rounded-3xl border border-[#E5E7EB] p-5 flex flex-col shadow-[0_1px_3px_rgba(0,0,0,0.05)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.07)] hover:border-zinc-300 transition-all duration-200 cursor-pointer"
     >
-      {/* Visual Thumbnail at Top */}
-      <div className="w-full h-44 sm:h-48 border-b border-[#E2E5E8] overflow-hidden relative">
-        <div className="w-full h-full transition-transform duration-300 group-hover:scale-[1.02]">
-          <ProjectPreview project={project} />
-        </div>
-
-        {/* Quick Overlay Action on Hover */}
-        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-3">
-          <button
-            onClick={handleOpenVisualEdit}
-            className="px-3.5 py-1.5 rounded-xl bg-white/95 hover:bg-white text-xs font-bold text-zinc-900 shadow-md flex items-center gap-1.5 hover:scale-105 transition-all cursor-pointer"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-zinc-600" />
-            <span>Visual Edit</span>
-          </button>
-          <button
-            onClick={handleOpenEditor}
-            className="px-3.5 py-1.5 rounded-xl bg-zinc-900/90 hover:bg-zinc-900 text-xs font-bold text-white shadow-md flex items-center gap-1.5 hover:scale-105 transition-all cursor-pointer"
-          >
-            <Code2 className="w-3.5 h-3.5 text-zinc-300" />
-            <span>Studio</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Card Footer Details */}
-      <div className="p-3.5 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5 flex-1 min-w-0">
-          <div className="w-7 h-7 rounded-lg bg-zinc-50 text-[#52525B] border border-zinc-200/60 flex items-center justify-center shrink-0">
-            <Code2 className="w-3.5 h-3.5" />
-          </div>
-
-          <div className="min-w-0">
-            <h4 className="text-xs sm:text-sm font-semibold text-[#111827] truncate group-hover:text-[#52525B] transition-colors leading-snug">
-              {name}
-            </h4>
-            <p className="text-[11px] text-[#64748B] truncate mt-0.5 font-mono">
-              {updated}
-            </p>
-          </div>
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3 min-w-0">
+        <div className="min-w-0 flex-1">
+          <h4 title={name} className="text-[17px] font-bold text-[#171717] truncate leading-snug">
+            {name}
+          </h4>
+          {id && <p title={String(id)} className="text-[12px] text-[#737373] truncate mt-0.5 font-mono">ID: {String(id).slice(-5)}</p>}
+          {creator && <p className="text-[12px] text-[#737373] truncate">{creator}</p>}
         </div>
 
         {/* Context Options Button */}
@@ -131,7 +101,8 @@ export default function ProjectCard({ project, viewMode = 'grid', onDelete }) {
               e.stopPropagation();
               setMenuOpen(!menuOpen);
             }}
-            className="p-1 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
+            aria-label="Project actions"
+            className="p-1 -mr-1 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
           >
             <MoreVertical className="w-4 h-4" />
           </button>
@@ -187,6 +158,34 @@ export default function ProjectCard({ project, viewMode = 'grid', onDelete }) {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Footer */}
+      <div className="mt-auto border-t border-[#E5E7EB] pt-3 flex items-center gap-1.5">
+        {visitUrl && (
+          <a
+            href={visitUrl}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="h-8 px-2.5 inline-flex items-center gap-1 whitespace-nowrap shrink-0 rounded-xl bg-white border border-[#E5E7EB] text-xs font-semibold text-[#171717] hover:bg-zinc-50 transition-colors"
+          >
+            Visit <ExternalLink className="w-3.5 h-3.5" />
+          </a>
+        )}
+        <button
+          onClick={handleOpenVisualEdit}
+          title="Visual Edit"
+          className={`h-8 ${visitUrl ? "px-2" : "px-3"} inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded-xl bg-white border border-[#E5E7EB] text-xs font-semibold text-[#171717] hover:bg-zinc-50 transition-colors`}
+        >
+          <Sparkles className="w-3.5 h-3.5 text-zinc-500" /> {visitUrl ? <span className="sr-only">Visual Edit</span> : 'Visual Edit'}
+        </button>
+        <button
+          onClick={handleOpenEditor}
+          className="ml-auto h-8 px-3.5 shrink-0 rounded-xl bg-black text-white text-xs font-semibold hover:bg-zinc-800 transition-colors"
+        >
+          Edit
+        </button>
       </div>
 
       {/* Share Modal */}

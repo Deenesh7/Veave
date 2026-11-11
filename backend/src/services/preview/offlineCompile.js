@@ -15,19 +15,21 @@ function loadTransformer() {
   return transformerPromise;
 }
 
-async function compileTailwind(content) {
+async function compileTailwind(content, theme = null) {
   if (!cssCompiler) {
     const postcss = require(resolveFrom('postcss'));
     const tailwindcss = require(resolveFrom('tailwindcss'));
-    cssCompiler = async (raw) => {
+    // `theme` is the project's own tailwind.config.js theme, so custom colours (bg-surface, text-fg, ...) exist here too.
+    cssCompiler = async (raw, projectTheme) => {
       const result = await postcss([tailwindcss({
         content: [{ raw, extension: 'html' }],
+        theme: projectTheme || {},
         corePlugins: { preflight: true }
       })]).process('@tailwind base; @tailwind components; @tailwind utilities;', { from: undefined });
       return result.css;
     };
   }
-  return cssCompiler(content);
+  return cssCompiler(content, theme);
 }
 
 // Tailwind only needs the class names that occur in the document. Scanning the embedded base64 asset shim
@@ -48,9 +50,9 @@ function tailwindScanInput(html) {
  * @param {boolean|string} [options.sourceMaps] 'inline' keeps stack traces mappable; false is smaller and faster
  */
 async function compileOffline(files, { headMarkup = '', assetBase = '', sourceMaps = 'inline' } = {}) {
-  const { buildPreviewHTML } = await loadTransformer();
+  const { buildPreviewHTML, extractTailwindConfig } = await loadTransformer();
   let html = buildPreviewHTML(files, [], assetBase ? { assetBase } : {});
-  const css = await compileTailwind(tailwindScanInput(html));
+  const css = await compileTailwind(tailwindScanInput(html), extractTailwindConfig?.(files)?.theme || null);
   html = html.replace(/\s*<link rel="preconnect" href="https:\/\/cdn\.tailwindcss\.com"[^>]*>/i, ''); // the CDN is unused once CSS is precompiled
   html = html.replace(/\s*<script src="https:\/\/cdn\.tailwindcss\.com"><\/script>/i, () => `<style>${css}</style>`);
   html = html.replace(/\s*<script src="https:\/\/unpkg\.com\/@babel\/standalone@[^"']+"><\/script>/i, '');

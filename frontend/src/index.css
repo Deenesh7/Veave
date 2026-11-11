@@ -13,11 +13,11 @@
 
 html {
   scroll-behavior: smooth;
-  background-color: #ffffff;
+  background-color: #F7F4EE;
 }
 
 body {
-  @apply text-zinc-900 antialiased canvas-grid-pattern;
+  @apply text-[#2B2823] antialiased canvas-grid-pattern;
   font-family: var(--theme-font-body, 'Inter', sans-serif);
   background-color: transparent;
 }
@@ -86,30 +86,10 @@ h1, h2, h3, h4, h5, h6 {
   background-color: transparent;
 }
 
-.canvas-grid-pattern::before {
-  content: "";
-  position: fixed;
-  inset: -80px;
-  background-image: url('/grid-bg.png');
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  filter: grayscale(1) brightness(3);
-  mix-blend-mode: difference;
-  opacity: 0.8;
-  z-index: -1;
-  pointer-events: none;
-  animation: grid-drift 14s ease-in-out infinite alternate;
-  will-change: transform;
-}
-
 .dark .canvas-grid-pattern {
   background-color: #09090B;
 }
 
-.dark .canvas-grid-pattern::before {
-  filter: grayscale(1) opacity(0.2);
-}
 
 /* ==========================================================================
    Custom SaaS UI Micro-Interactions & Animations
@@ -205,4 +185,26 @@ h1, h2, h3, h4, h5, h6 {
 }
 .animate-dash-flow {
   animation: flow-line 1.2s linear infinite;
+}
+
+/* Homepage heading: letters roll out one by one, then the next sentence rolls in letter by letter */
+@keyframes roll-letter-out {
+  from { transform: rotateX(0deg) translateY(0); opacity: 1; }
+  to   { transform: rotateX(-90deg) translateY(-0.35em); opacity: 0; }
+}
+@keyframes roll-letter-in {
+  from { transform: rotateX(90deg) translateY(0.35em); opacity: 0; }
+  to   { transform: rotateX(0deg) translateY(0); opacity: 1; }
+}
+.roll-letter {
+  display: inline-block;
+  backface-visibility: hidden;
+  animation-duration: 380ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  animation-fill-mode: both;
+}
+.roll-letter-out { animation-name: roll-letter-out; }
+.roll-letter-in { animation-name: roll-letter-in; }
+@media (prefers-reduced-motion: reduce) {
+  .roll-letter { animation: none !important; opacity: 1 !important; transform: none !important; }
 }

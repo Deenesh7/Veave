@@ -27,7 +27,7 @@ export default function CloneWebsiteModal({ isOpen, onClose }) {
         sourceUrl: parsed.href,
         prompt: instructions.trim() || 'Recreate this website faithfully as a modular, responsive React application. Preserve its routes, visual assets, design system, and visible interactions.',
         designSystem: 'Source website',
-        model: 'GPT-6 Luna'
+        model: 'Veave AI'
       });
       onClose();
     } catch (err) {

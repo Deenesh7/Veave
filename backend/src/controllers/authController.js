@@ -159,12 +159,18 @@ exports.refreshToken = async (req, res, next) => {
  * GET /api/auth/google
  * Redirects browser to Google's consent screen
  */
-exports.googleAuthInit = (req, res, next) => {
+exports.googleAuthInit = (req, res) => {
+  const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
   try {
-    const authUrl = oauthService.getGoogleAuthUrl();
-    res.redirect(authUrl);
+    // A browser is navigating here, so a problem has to be shown on the login page, not as a JSON error.
+    const problem = oauthService.googleConfigProblem();
+    if (problem) {
+      console.error(`Google sign-in is not configured: ${problem}`);
+      return res.redirect(`${clientUrl}/login?error=${encodeURIComponent(problem)}`);
+    }
+    return res.redirect(oauthService.getGoogleAuthUrl());
   } catch (error) {
-    next(error);
+    return res.redirect(`${clientUrl}/login?error=${encodeURIComponent(error.message || 'Google sign-in failed to start')}`);
   }
 };
 
@@ -247,12 +253,17 @@ exports.googleAuthVerify = async (req, res, next) => {
  * GET /api/auth/apple
  * Redirects browser to Apple Sign-In
  */
-exports.appleAuthInit = (req, res, next) => {
+exports.appleAuthInit = (req, res) => {
+  const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
   try {
-    const authUrl = oauthService.getAppleAuthUrl();
-    res.redirect(authUrl);
+    const problem = oauthService.appleConfigProblem();
+    if (problem) {
+      console.error(`Apple sign-in is not configured: ${problem}`);
+      return res.redirect(`${clientUrl}/login?error=${encodeURIComponent(problem)}`);
+    }
+    return res.redirect(oauthService.getAppleAuthUrl());
   } catch (error) {
-    next(error);
+    return res.redirect(`${clientUrl}/login?error=${encodeURIComponent(error.message || 'Apple sign-in failed to start')}`);
   }
 };
 

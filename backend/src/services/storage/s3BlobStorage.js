@@ -26,7 +26,14 @@ function contentTypeForPath(filePath = '') {
     svg: 'image/svg+xml', ico: 'image/x-icon', avif: 'image/avif', woff: 'font/woff',
     woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', pdf: 'application/pdf',
     js: 'text/javascript', jsx: 'text/javascript', ts: 'text/typescript', tsx: 'text/typescript',
-    css: 'text/css', html: 'text/html', json: 'application/json', md: 'text/markdown', txt: 'text/plain'
+    css: 'text/css', html: 'text/html', json: 'application/json', md: 'text/markdown', txt: 'text/plain',
+    // Files attached to an edit and linked from a word: the stored object must carry its real type.
+    doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    odt: 'application/vnd.oasis.opendocument.text', ods: 'application/vnd.oasis.opendocument.spreadsheet', odp: 'application/vnd.oasis.opendocument.presentation',
+    rtf: 'application/rtf', epub: 'application/epub+zip', zip: 'application/zip', rar: 'application/vnd.rar', '7z': 'application/x-7z-compressed',
+    mp3: 'audio/mpeg', wav: 'audio/wav', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', csv: 'text/csv', xml: 'application/xml'
   })[extension] || 'application/octet-stream';
 }
 
@@ -117,4 +124,4 @@ function setClientForTests(value) {
   client = value;
 }
 
-module.exports = { isConfigured, dehydrateFiles, hydrateFile, hydrateFiles, contentTypeForPath, setClientForTests };
+module.exports = { isConfigured, uploadFile, dehydrateFiles, hydrateFile, hydrateFiles, contentTypeForPath, setClientForTests };

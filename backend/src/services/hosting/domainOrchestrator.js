@@ -34,7 +34,7 @@ const defaultDeps = () => ({
   probes: liveProbes.defaultProbes,
   verification,
   providers,
-  adapters: null, // tests inject fake DNS providers; production uses the GoDaddy adapter
+  adapters: null, // tests inject fake DNS providers; production has none, so DNS is changed manually
   startPublish: (args) => require('./deploymentService').startPublish(args),
   readActiveIndex: async (site) => {
     const html = await fs.readFile(path.join(storage.versionDir(site._id, site.activeVersion), 'index.html'));
@@ -118,7 +118,6 @@ const handlers = {
 
   async pending_verification(c, deps) {
     const cfg = domainConfig();
-    if (c.verification.method === 'purchase-order') { moveTo(c, 'verified', deps); return; }
     if (c.verification.expiresAt && deps.now() > c.verification.expiresAt) {
       fail(c, 'The verification request expired before the DNS record was found. Start verification again to get a fresh record.', deps);
       return;

@@ -121,15 +121,24 @@ const PREVIEW_ASSET_MIME_TYPES = {
   gif: 'image/gif', svg: 'image/svg+xml', avif: 'image/avif', ico: 'image/x-icon'
 };
 
+// A text SVG under public/ (templates ship their pictures this way) is an image asset like any other: its bytes are its UTF-8 text.
+function previewAssetBase64(file) {
+  if (file?.encoding === 'base64') return file.content || '';
+  if (typeof file?.content !== 'string' || !file.content || !/\.svg$/i.test(file.path || '')) return null;
+  return typeof Buffer !== 'undefined' ? Buffer.from(file.content, 'utf8').toString('base64') : btoa(unescape(encodeURIComponent(file.content)));
+}
+
 export function inlinePreviewAssets(files = []) {
   const replacements = [];
   for (const file of files) {
-    if (file?.encoding !== 'base64' || !file.path?.startsWith('public/')) continue;
+    if (!file.path?.startsWith('public/')) continue;
+    const base64 = previewAssetBase64(file);
+    if (base64 === null) continue;
     const extension = file.path.split('.').pop()?.toLowerCase();
     const mimeType = PREVIEW_ASSET_MIME_TYPES[extension];
-    if (!mimeType || !file.content) continue;
+    if (!mimeType || !base64) continue;
     const publicPath = `/${file.path.slice('public/'.length)}`;
-    const dataUrl = `data:${mimeType};base64,${file.content}`;
+    const dataUrl = `data:${mimeType};base64,${base64}`;
     replacements.push([publicPath, dataUrl], [file.path, dataUrl]);
   }
   if (!replacements.length) return files;
@@ -147,13 +156,15 @@ function collectReferencedPreviewAssets(files = [], { allowEmptyContent = false 
   const textFiles = files.filter((file) => file && file.encoding !== 'base64' && /\.(?:jsx?|tsx?|css|html)$/i.test(file.path || ''));
   const corpus = textFiles.map((file) => String(file.content || '')).join('\n');
   for (const file of files) {
-    if (file?.encoding !== 'base64' || !file.path?.startsWith('public/')) continue;
-    if (!file.content && !allowEmptyContent) continue;
+    if (!file?.path?.startsWith('public/')) continue;
+    const base64 = previewAssetBase64(file);
+    if (base64 === null) continue;
+    if (!base64 && !allowEmptyContent) continue;
     const mimeType = PREVIEW_ASSET_MIME_TYPES[file.path.split('.').pop()?.toLowerCase()];
     if (!mimeType) continue;
     const publicPath = `/${file.path.slice('public/'.length)}`;
     if (!corpus.includes(publicPath)) continue;
-    assets.push({ publicPath, mimeType, base64: file.content });
+    assets.push({ publicPath, mimeType, base64 });
   }
   return assets;
 }
@@ -294,6 +305,27 @@ function buildPreviewAssetShim(assets) {
  * @param {string} [options.assetBase] When set (e.g. a URL or a placeholder token), images/fonts under public/ are referenced
  *   as `${assetBase}/path` instead of being embedded as base64. Used for stored, precompiled previews.
  */
+/**
+ * Reads the project's tailwind.config.js (`export default {...}` or `module.exports = {...}`) and returns its `theme`
+ * so the preview can generate the same custom colours (bg-surface, text-fg, ...) as a real build. The file is the
+ * project's own code, which the preview iframe runs anyway; it is evaluated with no access to anything but plain
+ * JavaScript. Returns null when absent or not evaluable.
+ */
+export function extractTailwindConfig(files) {
+  const file = (files || []).find((f) => f && /^tailwind\.config\.(?:js|cjs|mjs|ts)$/.test(f.path) && typeof f.content === 'string');
+  if (!file) return null;
+  try {
+    const body = file.content
+      .replace(/^\s*import\s[^\n]*\n/gm, '')
+      .replace(/export\s+default\s+/, 'return ')
+      .replace(/module\.exports\s*=\s*/, 'return ');
+    const config = new Function(`"use strict"; ${body}`)();
+    return config && typeof config === 'object' ? { theme: config.theme || {} } : null;
+  } catch {
+    return null;
+  }
+}
+
 export function buildPreviewHTML(files, dependencies = [], options = {}) {
   const assetBase = options.assetBase || '';
   if (!files || files.length === 0) {
@@ -418,8 +450,12 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
   <title>Preview</title>
   <script src="https://unpkg.com/react@18/umd/react.development.js"><\/script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"><\/script>
+  <script src="https://unpkg.com/framer-motion@11.5.4/dist/framer-motion.js"><\/script>
+  <script src="https://unpkg.com/gsap@3.12.5/dist/gsap.min.js"><\/script>
+  <script src="https://unpkg.com/gsap@3.12.5/dist/ScrollTrigger.min.js"><\/script>
   <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"><\/script>
   <script src="https://cdn.tailwindcss.com"><\/script>
+  ${(() => { const cfg = extractTailwindConfig(files); return cfg ? `<script>window.tailwind = window.tailwind || {}; window.tailwind.config = ${JSON.stringify(cfg).replace(/</g, '\\u003c')};<\/script>` : ''; })()}
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1052,6 +1088,131 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
       });
     } catch(err) {}
 
+    // ---- Visual Edit: choose the element the user MEANS, label it, and describe it for the AI ----
+    function veaveNorm(t) {
+      return String(t || '').split(String.fromCharCode(10)).join(' ').split(String.fromCharCode(9)).join(' ').trim();
+    }
+    function veaveRole(el) {
+      var tag = el.tagName.toLowerCase();
+      var cls = String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : (el.className || '')).toLowerCase();
+      if (tag === 'img' || tag === 'picture' || tag === 'svg') return 'Image';
+      if (tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6') return 'Heading';
+      if (tag === 'button' || cls.indexOf('btn') > -1 || cls.indexOf('button') > -1 || el.getAttribute('role') === 'button') return 'Button';
+      if (tag === 'a') return 'Link';
+      if (tag === 'nav') return 'Navigation';
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return 'Input';
+      if (tag === 'section' || tag === 'header' || tag === 'footer' || tag === 'main' || tag === 'aside' || tag === 'article') return tag === 'header' || tag === 'footer' ? (tag === 'header' ? 'Header' : 'Footer') : 'Section';
+      if (cls.indexOf('card') > -1) return 'Card';
+      if (tag === 'p' || tag === 'span' || tag === 'li' || tag === 'label' || tag === 'strong' || tag === 'em' || tag === 'small' || tag === 'blockquote') return 'Text';
+      return 'Element';
+    }
+    // An inline wrapper that holds the WHOLE text of its parent (a span inside a heading) is not a separate design element.
+    function pickMeaningfulTarget(el) {
+      var inline = ',span,b,strong,i,em,small,mark,u,code,sup,sub,abbr,';
+      var textParents = ',h1,h2,h3,h4,h5,h6,p,li,label,blockquote,a,button,figcaption,dt,dd,td,th,';
+      var guard = 0;
+      while (el && el.parentElement && guard < 4) {
+        guard++;
+        var tag = ',' + el.tagName.toLowerCase() + ',';
+        var parent = el.parentElement;
+        var ptag = ',' + parent.tagName.toLowerCase() + ',';
+        if (inline.indexOf(tag) < 0) break;
+        if (textParents.indexOf(ptag) < 0 && inline.indexOf(ptag) < 0) break;
+        var own = veaveNorm(el.innerText || el.textContent);
+        var whole = veaveNorm(parent.innerText || parent.textContent);
+        if (own && own === whole) { el = parent; } else { break; }
+      }
+      return el;
+    }
+    function resolveSelectableTarget(el) {
+      if (!el) return el;
+      if (el instanceof SVGElement && el.tagName.toLowerCase() !== 'svg') {
+        el = el.closest('svg') || el;
+      }
+      var interactiveParent = el.closest ? el.closest('button, a[href], [role="button"]') : null;
+      if (interactiveParent && interactiveParent !== el) { el = interactiveParent; }
+      if (el.tagName.toLowerCase() !== 'img') {
+        var directImg = el.querySelector ? el.querySelector('img') : null;
+        var textContent = veaveNorm(el.innerText || el.textContent);
+        if (directImg && !textContent) {
+          el = directImg;
+        } else if (el.parentElement) {
+          var siblingImg = el.parentElement.querySelector('img');
+          var cs = window.getComputedStyle(el);
+          if (siblingImg && (cs.position === 'absolute' || (typeof el.className === 'string' && el.className.indexOf('absolute') > -1)) && !textContent) {
+            el = siblingImg;
+          }
+        }
+      }
+      return pickMeaningfulTarget(el);
+    }
+    var veaveHoverLabel = null;
+    function showHoverLabel(el) {
+      if (!veaveHoverLabel) {
+        veaveHoverLabel = document.createElement('div');
+        veaveHoverLabel.setAttribute('data-veave-overlay', 'true');
+        veaveHoverLabel.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;background:#18181B;color:#fff;font:600 11px/1 Inter,system-ui,sans-serif;padding:4px 7px;border-radius:6px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.25);';
+        document.body.appendChild(veaveHoverLabel);
+      }
+      var r = el.getBoundingClientRect();
+      veaveHoverLabel.textContent = veaveRole(el) + ' · ' + Math.round(r.width) + ' × ' + Math.round(r.height);
+      var top = r.top - 24;
+      if (top < 4) top = Math.min(r.top + 4, window.innerHeight - 24);
+      veaveHoverLabel.style.top = top + 'px';
+      veaveHoverLabel.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 150)) + 'px';
+      veaveHoverLabel.style.display = 'block';
+    }
+    function hideHoverLabel() {
+      if (veaveHoverLabel) veaveHoverLabel.style.display = 'none';
+    }
+    function veaveFingerprint(text) {
+      var h = 5381;
+      for (var i = 0; i < text.length; i++) { h = ((h << 5) + h + text.charCodeAt(i)) | 0; }
+      return (h >>> 0).toString(36);
+    }
+    function describeNeighbours(el) {
+      var parents = [];
+      var p = el.parentElement;
+      while (p && p !== document.body && p.id !== 'root' && parents.length < 3) {
+        var pc = String(p.className && p.className.baseVal !== undefined ? p.className.baseVal : (p.className || '')).trim().split(' ').filter(Boolean).slice(0, 3).join('.');
+        parents.push(p.tagName.toLowerCase() + (pc ? '.' + pc : ''));
+        p = p.parentElement;
+      }
+      var children = [];
+      for (var i = 0; i < el.children.length && children.length < 6; i++) {
+        var c = el.children[i];
+        children.push(c.tagName.toLowerCase() + (veaveNorm(c.innerText || c.textContent) ? ' "' + veaveNorm(c.innerText || c.textContent).slice(0, 30) + '"' : ''));
+      }
+      return { parents: parents, children: children, childCount: el.children.length };
+    }
+    function describeImage(el) {
+      var img = el.tagName.toLowerCase() === 'img' ? el : el.querySelector('img');
+      var cs = window.getComputedStyle(img || el);
+      var info = {};
+      if (img) {
+        var src = img.currentSrc || img.getAttribute('src') || '';
+        info.src = src.indexOf('data:') === 0 ? 'data-url' : src.slice(0, 200);
+        info.alt = img.getAttribute('alt') || '';
+        info.decorative = img.getAttribute('alt') === '';
+        info.naturalWidth = img.naturalWidth;
+        info.naturalHeight = img.naturalHeight;
+        info.loaded = img.complete && img.naturalWidth > 0;
+        var ir = img.getBoundingClientRect();
+        info.renderedWidth = Math.round(ir.width);
+        info.renderedHeight = Math.round(ir.height);
+        info.objectFit = cs.objectFit;
+        info.objectPosition = cs.objectPosition;
+        if (img.parentElement) {
+          var pr = img.parentElement.getBoundingClientRect();
+          info.containerWidth = Math.round(pr.width);
+          info.containerHeight = Math.round(pr.height);
+        }
+      }
+      var bg = window.getComputedStyle(el).backgroundImage;
+      if (bg && bg !== 'none') info.backgroundImage = bg.indexOf('data:') > -1 ? 'data-url' : bg.slice(0, 200);
+      return info;
+    }
+
     function notifySelected(el) {
       if (!el || el === document.body || el.id === 'root') return;
       if (selectedVisualElement) {
@@ -1085,6 +1246,15 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
           elementId: elId,
           selector: tag + (el.id ? '#' + el.id : (cls ? '.' + cls.split(' ')[0] : '')),
           elementPath: path,
+          role: veaveRole(el),
+          size: { width: Math.round(r.width), height: Math.round(r.height) },
+          route: (window.__veavePathname && window.__veavePathname()) || '/',
+          fingerprint: veaveFingerprint(tag + '|' + cls + '|' + text.slice(0, 60) + '|' + path.join('>')),
+          parents: describeNeighbours(el).parents,
+          children: describeNeighbours(el).children,
+          childCount: describeNeighbours(el).childCount,
+          responsiveClasses: cls.split(' ').filter(function(c) { return /^(sm|md|lg|xl|2xl):/.test(c); }).slice(0, 12),
+          imageInfo: (tag === 'img' || subImg || (window.getComputedStyle(el).backgroundImage || 'none') !== 'none') ? describeImage(el) : undefined,
           sourceComponent: sourceInfo.componentName,
           sourceFile: sourceInfo.sourceFile,
           sourceLine: sourceInfo.lineNumber,
@@ -1108,16 +1278,15 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
     window.addEventListener('mouseover', function(e) {
       if (!inspectModeActive || document.body.dataset.veaveInspect === 'false' || isScrollingPreview) return;
       var el = e.target;
-      if (!el || el === document.body || el.id === 'root') return;
-      if (el instanceof SVGElement && el.tagName.toLowerCase() !== 'svg') {
-        el = el.closest('svg') || el;
-      }
+      if (!el || el === document.body || el.id === 'root' || (el.getAttribute && el.getAttribute('data-veave-overlay'))) return;
+      el = resolveSelectableTarget(el);
 
       if (hoveredVisualElement && hoveredVisualElement !== el) {
         hoveredVisualElement.classList.remove('veave-inspect-highlight');
       }
       hoveredVisualElement = el;
       el.classList.add('veave-inspect-highlight');
+      showHoverLabel(el);
 
       var r = el.getBoundingClientRect();
       var elId = ensureVeaveId(el);
@@ -1136,6 +1305,8 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
       if (e.target && e.target.classList) {
         e.target.classList.remove('veave-inspect-highlight');
       }
+      if (hoveredVisualElement) hoveredVisualElement.classList.remove('veave-inspect-highlight');
+      hideHoverLabel();
     }, false);
 
     // Main Click Handler: Mode-aware
@@ -1193,33 +1364,8 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
       e.preventDefault();
       e.stopPropagation();
 
-      // Resolve SVG child element (like <path>) to the parent <svg>
-      if (el instanceof SVGElement && el.tagName.toLowerCase() !== 'svg') {
-        el = el.closest('svg') || el;
-      }
-
-      // If clicked element is an inner span/icon inside a button or link,
-      // select the button/link so user gets button styles, href, and controls
-      var interactiveParent = el.closest('button, a[href], [role="button"]');
-      if (interactiveParent && interactiveParent !== el && selectedVisualElement !== el) {
-        el = interactiveParent;
-      }
-
-      // If clicked element is an overlay (e.g. gradient or backdrop) over an image, or an image wrapper without text,
-      // resolve directly to the <img> so images are always 100% clickable and changeable!
-      if (el.tagName.toLowerCase() !== 'img') {
-        var directImg = el.querySelector('img');
-        var textContent = (el.innerText || el.textContent || '').trim();
-        if (directImg && (!textContent || textContent.length === 0)) {
-          el = directImg;
-        } else if (el.parentElement) {
-          var siblingImg = el.parentElement.querySelector('img');
-          var cs = window.getComputedStyle(el);
-          if (siblingImg && (cs.position === 'absolute' || (el.className && typeof el.className === 'string' && el.className.includes('absolute'))) && (!textContent || textContent.length === 0)) {
-            el = siblingImg;
-          }
-        }
-      }
+      // Pick the element the user means: not a bare <path>, not a span that only wraps a heading's text, a button rather than its icon.
+      el = resolveSelectableTarget(el);
 
       // In Edit Mode, EVERY element clicked is selectable and editable:
       // headings, paragraphs, spans, badges, buttons, links, images, cards, divs, sections, lists, etc.
@@ -1247,6 +1393,7 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
         hoveredVisualElement.classList.remove('veave-inspect-highlight');
         hoveredVisualElement = null;
       }
+      hideHoverLabel();
     }, { passive: true });
 
     window.addEventListener('resize', function() {
@@ -1440,6 +1587,7 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
           selectedVisualElement.classList.remove('veave-inspect-selected');
           selectedVisualElement = null;
         }
+        if (!inspectModeActive) hideHoverLabel();
         if (!inspectModeActive && hoveredVisualElement) {
           hoveredVisualElement.classList.remove('veave-inspect-highlight');
           hoveredVisualElement = null;
@@ -1834,12 +1982,6 @@ function transformFileContent(file) {
   // Preview documents cannot change location.pathname; read the virtual path.
   content = content.replace(/\b(?:window\.)?location\.pathname\b/g, 'window.__veavePathname()');
 
-  // Handle: import { motion, AnimatePresence } from 'framer-motion'
-  content = content.replace(
-    /import\s+.*?\s+from\s+['"]framer-motion['"];?/g,
-    'var motion = new Proxy({}, { get: function(_, tag) { return function(props) { var p = Object.assign({}, props); delete p.initial; delete p.animate; delete p.exit; delete p.transition; delete p.whileHover; delete p.whileTap; return React.createElement(tag, p); }; } }); var AnimatePresence = function(props) { return props.children; };'
-  );
-
   // Handle: import confetti from 'canvas-confetti'
   content = content.replace(
     /import\s+.*?\s+from\s+['"]canvas-confetti['"];?/g,
@@ -1900,6 +2042,39 @@ function transformFileContent(file) {
   content = content.replace(
     /import\s+(?:\*\s+as\s+(\w+)|(\w+))\s+from\s+['"]lucide-react['"];?/g,
     (_, m1, m2) => `var ${m1 || m2} = new Proxy({}, { get: function(_, prop) { return window.__lucideIcon(prop); } });`
+  );
+
+  // GSAP is loaded as a global script in the preview (window.gsap, window.ScrollTrigger).
+  content = content.replace(
+    /import\s+\{([^}]+)\}\s+from\s+['"]gsap(?:\/[\w./-]*)?['"];?/g,
+    (_, imports) => imports.split(',').map((entry) => entry.trim()).filter(Boolean).map((entry) => {
+      const parts = entry.split(/\s+as\s+/i).map((p) => p.trim());
+      return `var ${parts[1] || parts[0]} = window['${parts[0]}'] || (window.gsap && window.gsap['${parts[0]}']);`;
+    }).join('\n')
+  );
+  content = content.replace(
+    /import\s+(\w+)\s+from\s+['"]gsap(\/[\w./-]*)?['"];?/g,
+    (_, name, sub) => `var ${name} = ${sub ? `window['${sub.split('/').pop().replace(/\.js$/, '')}'] || ` : ''}window.gsap;`
+  );
+
+  // Framer Motion is loaded as a global script in the preview (window.Motion). If the script could not load
+  // (offline), motion.* renders plain elements and AnimatePresence renders its children so the page still shows.
+  content = content.replace(
+    /import\s+\{([^}]+)\}\s+from\s+['"](?:framer-motion|motion\/react)['"];?/g,
+    (_, imports) => imports.split(',').map((entry) => entry.trim()).filter((entry) => entry && !/^type\s+/i.test(entry)).map((entry) => {
+      const parts = entry.split(/\s+as\s+/i).map((p) => p.trim());
+      const name = parts[0];
+      const local = parts[1] || name;
+      let fallback = 'function() { return null; }';
+      if (name === 'motion') fallback = 'new Proxy({}, { get: function(_, tag) { return function(props) { var p = Object.assign({}, props); ["initial","animate","exit","transition","whileHover","whileTap","whileInView","whileFocus","whileDrag","variants","layout","layoutId","viewport","drag"].forEach(function(k) { delete p[k]; }); return React.createElement(tag, p); }; } })';
+      else if (name === 'AnimatePresence') fallback = 'function(props) { return props.children; }';
+      else if (name === 'useReducedMotion') fallback = 'function() { return false; }';
+      return `var ${local} = (window.Motion && window.Motion['${name}']) || ${fallback};`;
+    }).join('\n')
+  );
+  content = content.replace(
+    /import\s+\*\s+as\s+(\w+)\s+from\s+['"](?:framer-motion|motion\/react)['"];?/g,
+    (_, name) => `var ${name} = window.Motion || {};`
   );
 
   // Handle react-router-dom from the local preview runtime.

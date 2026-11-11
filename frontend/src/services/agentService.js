@@ -1,4 +1,5 @@
 ﻿import api from './api';
+import { API_URL } from '../config';
 
 export const agentService = {
   sendMessage: (projectId, message, image, selectedElement) => {
@@ -9,7 +10,7 @@ export const agentService = {
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
-    return fetch(`/api/agent/${projectId}`, {
+    return fetch(`${API_URL}/agent/${projectId}`, {
       method: 'POST',
       headers,
       body: JSON.stringify({

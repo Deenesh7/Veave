@@ -114,7 +114,7 @@ async function pageSnapshot(limits) {
     if (images.length >= maxImages) break;
     if (!visible(img)) continue;
     const rect = img.getBoundingClientRect();
-    images.push({ src: img.currentSrc || img.src || img.getAttribute('data-src') || '', alt: (img.alt || '').slice(0, 120), documentY: documentTop(img), width: Math.round(rect.width), height: Math.round(rect.height), near: nearText(img), kind: 'img' });
+    images.push({ src: img.currentSrc || img.src || img.getAttribute('data-src') || '', alt: (img.alt || '').slice(0, 120), documentY: documentTop(img), width: Math.round(rect.width), height: Math.round(rect.height), near: nearText(img), kind: 'img', loaded: img.complete && img.naturalWidth > 0, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, fit: getComputedStyle(img).objectFit });
   }
   const urlOf = (value) => (/url\(["']?([^"')]+)["']?\)/.exec(value || '') || [])[1] || '';
   for (const element of document.querySelectorAll('body *')) {
@@ -223,4 +223,12 @@ function assetPlacementState({ assets = [], realImages = [], projectImages = [],
   return { needed: needed.length, placed: needed.length - unplaced.length, unplaced };
 }
 
-module.exports = { pageSnapshot, compareStyles, assetPlacementState, colorDistance, contrastRatio, toHex, pathOf };
+/**
+ * Identity check on top of placement: is the image that sits where the source page shows image X really X, is it allowed on
+ * this route, and does it load at a sensible size? `manifest` comes from assetManifest.buildAssetManifest.
+ */
+function assetIdentityState({ manifest, route = '/', realImages = [], projectImages = [] }) {
+  return require('./assetManifest').verifyRenderedAssets({ manifest, route, rendered: projectImages, realImages });
+}
+
+module.exports = { pageSnapshot, compareStyles, assetPlacementState, assetIdentityState, colorDistance, contrastRatio, toHex, pathOf };

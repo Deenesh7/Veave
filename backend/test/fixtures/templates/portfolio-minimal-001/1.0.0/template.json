@@ -1,0 +1,191 @@
+{
+  "schemaVersion": 1,
+  "id": "portfolio-minimal-001",
+  "version": "1.0.0",
+  "name": "Lena Portfolio",
+  "status": "published",
+  "featured": true,
+  "popularity": 81,
+  "releasedAt": "2026-02-03",
+  "description": "A warm, editorial portfolio with a serif intro, a filterable project grid, an about page with a timeline and a contact form.",
+  "category": "Portfolio",
+  "tags": [
+    "portfolio",
+    "designer",
+    "freelance",
+    "creative",
+    "personal"
+  ],
+  "styleTags": [
+    "Light",
+    "Editorial",
+    "Minimal",
+    "Serif"
+  ],
+  "access": {
+    "visibility": "public"
+  },
+  "previewImage": "preview.svg",
+  "designTokens": {
+    "mood": "Warm Editorial",
+    "colors": {
+      "bg": "#FAF7F2",
+      "surface": "#FFFFFF",
+      "surface2": "#F1EBE1",
+      "line": "#E4DACB",
+      "fg": "#2B2118",
+      "muted": "#76695B",
+      "brand": "#C2410C",
+      "onBrand": "#FFFFFF",
+      "accent": "#0F766E"
+    },
+    "radius": {
+      "card": "4px",
+      "button": "999px"
+    }
+  },
+  "typography": {
+    "headingFont": "ui-serif, Georgia, Cambria, 'Times New Roman', serif",
+    "bodyFont": "ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif",
+    "scale": "Hero 36 to 60px serif semibold, section titles 30 to 36px serif, body 16 to 18px sans, eyebrow labels 12px uppercase with wide tracking."
+  },
+  "layout": {
+    "summary": "Quiet static header, centred serif hero above a wide image, two-column project grid, generous white space",
+    "container": "max-w-5xl centred with 16/24/32px side padding",
+    "navigation": "static"
+  },
+  "spacing": {
+    "section": "py-16 sm:py-24",
+    "gap": "gap-10 (project grid)",
+    "scale": "4px base"
+  },
+  "responsive": {
+    "summary": "Single column on mobile with a hamburger menu; project grid goes 1, 2 and 3 columns at 640px and 1024px.",
+    "breakpoints": {
+      "sm": 640,
+      "md": 768,
+      "lg": 1024
+    }
+  },
+  "components": [
+    {
+      "name": "Navbar",
+      "path": "src/components/Navbar.jsx",
+      "role": "Static header with active link underline and a mobile menu, driven by src/data/site.js",
+      "shared": true
+    },
+    {
+      "name": "Footer",
+      "path": "src/components/Footer.jsx",
+      "role": "Footer with brand, link groups and email, driven by src/data/site.js",
+      "shared": true
+    },
+    {
+      "name": "Section",
+      "path": "src/components/Section.jsx",
+      "role": "Section wrapper, container and heading primitives",
+      "shared": true
+    },
+    {
+      "name": "ProjectCard",
+      "path": "src/components/ProjectCard.jsx",
+      "role": "Project thumbnail with title, category and summary",
+      "shared": false
+    },
+    {
+      "name": "FeatureCard",
+      "path": "src/components/FeatureCard.jsx",
+      "role": "Card with optional icon, title and text",
+      "shared": false
+    },
+    {
+      "name": "CTA",
+      "path": "src/components/CTA.jsx",
+      "role": "Closing call-to-action",
+      "shared": false
+    }
+  ],
+  "pages": [
+    {
+      "path": "/",
+      "file": "src/pages/Home.jsx",
+      "title": "Home",
+      "sections": [
+        "Serif intro hero",
+        "Selected work grid",
+        "Services",
+        "Call to action"
+      ]
+    },
+    {
+      "path": "/work",
+      "file": "src/pages/Work.jsx",
+      "title": "Work",
+      "sections": [
+        "Category filter",
+        "Project grid"
+      ]
+    },
+    {
+      "path": "/about",
+      "file": "src/pages/About.jsx",
+      "title": "About",
+      "sections": [
+        "Biography",
+        "Skills",
+        "Timeline"
+      ]
+    },
+    {
+      "path": "/contact",
+      "file": "src/pages/Contact.jsx",
+      "title": "Contact",
+      "sections": [
+        "Contact details",
+        "Validated contact form"
+      ]
+    }
+  ],
+  "features": [
+    "Responsive layout",
+    "Mobile navigation",
+    "Filterable project grid",
+    "Contact form validation",
+    "Active link states",
+    "Client-side routing"
+  ],
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "lucide-react": "^0.400.0"
+  },
+  "scaffold": {
+    "dir": "files",
+    "themeFile": "src/index.css",
+    "requiredFiles": [
+      "package.json",
+      "index.html",
+      "src/main.jsx",
+      "src/App.jsx",
+      "src/index.css",
+      "src/data/site.js",
+      "tailwind.config.js"
+    ],
+    "protectedFiles": [
+      "package.json",
+      "vite.config.js",
+      "postcss.config.js"
+    ],
+    "sharedFiles": [
+      "src/components/Navbar.jsx",
+      "src/components/Footer.jsx",
+      "src/components/Section.jsx"
+    ],
+    "promptFiles": [
+      "src/App.jsx",
+      "src/data/site.js",
+      "src/index.css"
+    ]
+  }
+}

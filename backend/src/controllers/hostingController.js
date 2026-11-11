@@ -1,8 +1,6 @@
 const hosting = require('../services/hosting/deploymentService');
 const domains = require('../services/hosting/domainService');
 const connections = require('../services/hosting/domainConnectionService');
-const purchase = require('../services/hosting/domainPurchaseService');
-const godaddy = require('../services/hosting/godaddyService');
 const { hostingConfig } = require('../services/hosting/config');
 
 const userIdOf = (req) => String(req.user._id || req.user.id);
@@ -64,17 +62,6 @@ const wrap = (fn) => async (req, res, next) => {
   try { res.json({ success: true, data: await fn(req) }); } catch (error) { next(error); }
 };
 
-exports.domainAvailable = wrap((req) => godaddy.checkAvailability(req.query.domain));
-exports.domainSearch = wrap((req) => purchase.search(req.query.domain));
-exports.domainOrder = wrap((req) => purchase.createOrder({ projectId: req.params.projectId, userId: userIdOf(req), domain: req.body?.domain, contact: req.body?.contact }));
-exports.myDomains = wrap((req) => purchase.listMyDomains(userIdOf(req)));
-exports.renewalPrice = wrap((req) => purchase.renewalPrice(userIdOf(req), req.params.domain, Number(req.query.period) || 1));
-exports.renewalOrder = wrap((req) => purchase.createRenewalOrder({ userId: userIdOf(req), domain: req.params.domain, period: req.body?.period }));
-exports.dnsList = wrap((req) => purchase.dnsList(userIdOf(req), req.params.domain));
-exports.dnsSet = wrap((req) => purchase.dnsSet(userIdOf(req), req.params.domain, req.body));
-exports.dnsDelete = wrap((req) => purchase.dnsDelete(userIdOf(req), req.params.domain, req.body));
-exports.domainOrderGet = wrap((req) => purchase.getOrder({ orderId: req.params.orderId, userId: userIdOf(req) }));
-exports.domainOrderVerify = wrap((req) => purchase.verifyAndRegister({ projectId: req.params.projectId, userId: userIdOf(req), ...req.body }));
 exports.getDomain = wrap((req) => domains.getDomain(req.params.projectId, userIdOf(req)));
 exports.connectDomain = wrap((req) => connections.connect({ projectId: req.params.projectId, userId: userIdOf(req), hostname: req.body?.domain,
   includeWww: req.body?.includeWww !== false, canonical: req.body?.canonical || 'none', confirmReplace: req.body?.confirmReplace === true, move: req.body?.move === true }));
@@ -84,15 +71,4 @@ exports.confirmDomainReplace = wrap((req) => connections.confirmReplace({ projec
 exports.domainInstructions = wrap(async (req) => connections.instructions(await connections.status(req.params.projectId, userIdOf(req))));
 exports.domainHealth = wrap((req) => connections.health({ projectId: req.params.projectId, userId: userIdOf(req), refresh: req.query.refresh === 'true' }));
 exports.verifyDomain = wrap((req) => domains.verifyDomain(req.params.projectId, userIdOf(req)));
-exports.configureDomain = wrap((req) => domains.configureWithGoDaddy(req.params.projectId, userIdOf(req)));
 exports.removeDomain = wrap((req) => domains.removeDomain(req.params.projectId, userIdOf(req)));
-
-// Razorpay posts raw JSON; the signature is computed over the exact bytes.
-exports.razorpayWebhook = async (req, res) => {
-  try {
-    await purchase.handleWebhook(req.body, req.get('x-razorpay-signature'));
-    res.json({ success: true });
-  } catch (error) {
-    res.status(error.statusCode || 400).json({ success: false });
-  }
-};

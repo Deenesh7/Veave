@@ -10,6 +10,8 @@ router.get('/', billingController.getOverview);
 router.post('/change-plan', billingController.changePlan);
 router.post('/create-order', billingController.createOrder);
 router.post('/verify-payment', billingController.verifyPayment);
+router.post('/credits/create-order', billingController.createCreditOrder);
+router.post('/credits/verify-payment', billingController.verifyCreditPayment);
 router.get('/invoices', billingController.getInvoices);
 
 module.exports = router;

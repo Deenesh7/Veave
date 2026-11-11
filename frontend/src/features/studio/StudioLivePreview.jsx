@@ -27,7 +27,9 @@ export function StudioLivePreview({
   isGenerating = false,
   previewKey = 0,
   projectId = null,
-  inspectionEnabled = true
+  inspectionEnabled = true,
+  onElementSelected,
+  clearSelectionToken = 0
 }) {
   const { iframeRef, previewHtml, previewUrl, previewBuildId, statusLabel, buildPreview } = usePreview({
     files,
@@ -42,6 +44,22 @@ export function StudioLivePreview({
   const [currentRoute, setCurrentRoute] = useState('/');
   const [historyStack, setHistoryStack] = useState(['/']);
   const [selectedElement, setSelectedElement] = useState(null);
+
+  // Tell the workspace which element is selected (or that the selection was cleared) so the prompt can mention it.
+  const selectionKey = selectedElement
+    ? (selectedElement.elementId || `${selectedElement.selector}|${selectedElement.text}`)
+    : null;
+  useEffect(() => {
+    onElementSelected?.(selectionKey ? selectedElement : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionKey]);
+
+  // The side panel's "clear selection" button bumps the token: drop the selection (and highlight) in the preview too.
+  useEffect(() => {
+    if (!clearSelectionToken) return;
+    setSelectedElement(null);
+    try { iframeRef.current?.contentWindow?.postMessage({ type: 'clear-inspect-selection' }, '*'); } catch (e) {}
+  }, [clearSelectionToken, iframeRef]);
 
   const filesFingerprint = useMemo(() => quickFingerprint(files || []), [files]);
 
@@ -249,20 +267,6 @@ export function StudioLivePreview({
           <div className="flex items-center gap-2">
             <span>{isBuilding ? 'Preparing preview...' : statusLabel}</span>
           </div>
-
-          {/* Visual Edit Quick Jump CTA in Status Bar */}
-          {onOpenVisualEdit && (
-            <button
-              type="button"
-              onClick={() => onOpenVisualEdit('editor')}
-              disabled={isOpeningVisualEditor}
-              className="flex items-center gap-1 text-[11px] font-semibold text-zinc-600 hover:text-zinc-900 transition-colors cursor-pointer"
-              title="Open Visual Editor"
-            >
-              <Sliders className="w-3 h-3" />
-              <span>Visual Edit</span>
-            </button>
-          )}
         </div>
 
         {/* The Live Sandboxed Iframe */}
@@ -291,49 +295,6 @@ export function StudioLivePreview({
             >
               {/* Blue selection box */}
               <div className="absolute inset-0 border-2 border-zinc-600 shadow-[0_0_0_1px_rgba(255,255,255,0.8)] pointer-events-none rounded-xs" />
-
-              {/* Floating Pill Toolbar */}
-              <div className={`absolute flex items-center gap-1.5 bg-zinc-900/95 text-white px-2 py-1 rounded-xl shadow-xl border border-zinc-700/80 pointer-events-auto backdrop-blur-md select-none text-xs animate-in fade-in zoom-in-95 duration-100 ${
-                selectedElement.rect.top < 45 ? 'top-full mt-2' : '-top-9'
-              } ${
-                selectedElement.rect.left > 600 ? 'right-0' : 'left-0'
-              }`}>
-                <span className="font-mono font-bold text-[10px] text-zinc-300 uppercase px-1 py-0.2 rounded bg-zinc-800">
-                  {selectedElement.tagName}
-                </span>
-                {selectedElement.text && (
-                  <span className="max-w-[110px] truncate text-zinc-200 text-[11px]">
-                    "{selectedElement.text}"
-                  </span>
-                )}
-                <div className="h-3 w-px bg-zinc-700 mx-0.5" />
-                <button
-                  type="button"
-                  onClick={handleEditInVisualEditor}
-                  className="flex items-center gap-1 px-1.5 py-0.5 rounded-lg bg-zinc-600 hover:bg-zinc-700 text-white font-medium text-[10px] transition-colors cursor-pointer"
-                  title="Open Visual Editor to customize styling and layout"
-                >
-                  <Sliders className="w-3 h-3" />
-                  <span>Edit</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleAskAi}
-                  className="flex items-center gap-1 px-1.5 py-0.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-[10px] transition-colors cursor-pointer"
-                  title="Ask AI in conversation panel to change this element"
-                >
-                  <Sparkles className="w-3 h-3" />
-                  <span>Ask AI</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedElement(null)}
-                  className="p-0.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors cursor-pointer ml-0.5"
-                  title="Close"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
             </div>
           )}
 

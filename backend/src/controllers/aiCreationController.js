@@ -5,12 +5,12 @@ const ProjectVersion = require('../models/ProjectVersion');
 const User = require('../models/User');
 const AIUsage = require('../models/AIUsage');
 const openrouterService = require('../services/ai/openrouterService');
-const geminiService = require('../services/ai/geminiService');
 const dynamicGenerator = require('../services/ai/dynamicGeneratorService');
 const promptEngineService = require('../services/ai/promptEngineService');
 const whisperService = require('../services/ai/whisperService');
 const { scaffoldReactProject } = require('../services/project/reactScaffolder');
 const { SCREENSHOT_TO_UI_FEATURE_PROMPT, UI_GENERATION_SYSTEM_PROMPT } = require('../services/ai/prompts/systemPrompt');
+const { GSAP_ANIMATION_RULES } = require('../services/ai/prompts/gsapRules');
 const mongoose = require('mongoose');
 const sessionManager = require('../services/ai/sessionManager');
 const jobManager = require('../services/ai/jobManager');
@@ -20,6 +20,7 @@ const projectAccess = require('../services/collaboration/projectAccess');
 const GenerationJob = require('../models/GenerationJob');
 const Conversation = require('../models/Conversation');
 const logger = require('../utils/logger');
+const templateService = require('../services/templates/templateService');
 const { hydrateFiles } = require('../services/storage/s3BlobStorage');
 
 function repairAndSanitizeReactCode(code) {
@@ -723,7 +724,7 @@ exports.transcribeVoice = async (req, res, next) => {
 // 0. Enhance Prompt endpoint (VEAVE Prompt Engine)
 exports.enhancePrompt = async (req, res, next) => {
   try {
-    const { prompt, designSystem = 'Modern', model = 'Gemini Flash 3.8', command } = req.body;
+    const { prompt, designSystem = 'Modern', model = 'Veave AI', command } = req.body;
     if (!prompt || !prompt.trim()) {
       return res.status(400).json({ success: false, error: 'Prompt is required' });
     }
@@ -743,7 +744,7 @@ exports.enhancePrompt = async (req, res, next) => {
 exports.generateDesign = async (req, res, next) => {
   const startTime = Date.now();
   try {
-    const { prompt, designSystem = 'Modern', model = 'Gemini Flash 3.8', command, paletteId, customTokens } = req.body;
+    const { prompt, designSystem = 'Modern', model = 'Veave AI', command, paletteId, customTokens } = req.body;
 
     if (!prompt || !prompt.trim()) {
       return res.status(400).json({ success: false, error: 'Prompt is required' });
@@ -763,32 +764,7 @@ exports.generateDesign = async (req, res, next) => {
     let files = [];
     let tokenUsage = null;
 
-    // 1. Direct Google Gemini Flash 3.8 (using GEMINI_FLASH_API_KEY or GEMINI_API_KEY)
-    const isGeminiPreferred = !model || model.toLowerCase().includes('gemini') || model === 'Auto' || model === 'Fast';
-    if (geminiService.isConfigured() && isGeminiPreferred) {
-      try {
-        const promptWithCommand = commandDirectiveText ? `${prompt}\n${commandDirectiveText}` : prompt;
-        const geminiRes = await geminiService.generateReactCode(promptWithCommand, systemTokens);
-        const cleanGeminiCode = cleanSourceCode(geminiRes?.code);
-        if (cleanGeminiCode) {
-          files = [
-            { path: 'src/App.jsx', content: cleanGeminiCode, language: 'javascript' },
-            { path: 'src/tokens.json', content: JSON.stringify(systemTokens, null, 2), language: 'json' }
-          ];
-          tokenUsage = {
-            promptTokens: geminiRes.usage?.prompt || Math.ceil(prompt.length / 4),
-            completionTokens: geminiRes.usage?.completion || Math.ceil((cleanGeminiCode.length) / 4),
-            totalTokens: geminiRes.usage?.total || (Math.ceil(prompt.length / 4) + Math.ceil((cleanGeminiCode.length) / 4)),
-            modelUsed: 'Gemini Flash 3.8',
-            provider: 'Google Gemini (Direct)'
-          };
-        }
-      } catch (gErr) {
-        logger.warn(`Direct Gemini Flash 3.8 fallback: ${gErr.message}`);
-      }
-    }
-
-    // 2. OpenRouter AI (using OPENROUTER_API_KEY)
+    // OpenRouter AI (GPT-6 Luna, using OPENROUTER_API_KEY)
     if ((!files || files.length === 0) && process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key') {
       try {
         const aiPrompt = `You are a world-class React engineer.${commandDirectiveText} Generate a production-ready, interactive React functional component using Tailwind CSS and lucide-react icons based on this request: "${prompt}".
@@ -802,7 +778,9 @@ CRITICAL BOTTOM PAGE NAVIGATION & "ADD MORE PAGE" REQUIREMENT:
 CRITICAL FORMAT RULES:
 - Use standard JavaScript React JSX only. Do NOT use TypeScript or "interface" or type annotations.
 - Use backticks for all dynamic classNames: className={\`px-4 py-2 \${active ? 'bg-black' : ''}\`}.
-Return ONLY clean React code with "export default function App()".`;
+Return ONLY clean React code with "export default function App()".
+
+${GSAP_ANIMATION_RULES}`;
 
         const completion = await openrouterService.generateCompletion([
           { role: 'system', content: 'You generate high-fidelity, interactive React code with Tailwind.' },
@@ -819,8 +797,8 @@ Return ONLY clean React code with "export default function App()".`;
             promptTokens: completion.usage?.prompt_tokens || Math.ceil(prompt.length / 4),
             completionTokens: completion.usage?.completion_tokens || Math.ceil((cleanAiCode.length) / 4),
             totalTokens: completion.usage?.total_tokens || (Math.ceil(prompt.length / 4) + Math.ceil((cleanAiCode.length) / 4)),
-            modelUsed: 'Gemini 3.8 Flash (OpenRouter)',
-            provider: 'OpenRouter'
+            modelUsed: 'Veave AI',
+            provider: 'Veave AI'
           };
         }
       } catch (aiErr) {
@@ -837,7 +815,7 @@ Return ONLY clean React code with "export default function App()".`;
         promptTokens: estPrompt,
         completionTokens: estComp,
         totalTokens: estPrompt + estComp,
-        modelUsed: model || 'Gemini Flash 3.8',
+        modelUsed: model || 'Veave AI',
         provider: 'Veave Engine'
       };
     }
@@ -991,7 +969,7 @@ exports.modifyDesign = async (req, res, next) => {
   try {
     const startTime = Date.now();
     let tokenUsage = null;
-    const { projectId, prompt, designSystem, model = 'Gemini Flash 3.8', command } = req.body;
+    const { projectId, prompt, designSystem, model = 'Veave AI', command } = req.body;
     if (!projectId || !prompt || !prompt.trim()) {
       return res.status(400).json({ success: false, error: 'Project ID and modification prompt are required' });
     }
@@ -1025,32 +1003,8 @@ exports.modifyDesign = async (req, res, next) => {
       throw error;
     }
 
-    // 1. Direct Google Gemini Flash 3.8 modification
-    const isGeminiPreferred = !model || model.toLowerCase().includes('gemini') || model === 'Auto' || model === 'Fast';
     let codeModifiedByAi = false;
-    if (geminiService.isConfigured() && isGeminiPreferred) {
-      try {
-        const currentApp = appFile.content;
-        const promptWithCommand = commandGuidance ? `${prompt}\n${commandGuidance}` : prompt;
-        const geminiRes = await geminiService.modifyReactCode(currentApp, promptWithCommand, tokens);
-        const cleanGeminiCode = cleanSourceCode(geminiRes?.code);
-        if (cleanGeminiCode) {
-          updatedFiles = updatedFiles.map(f => f.path === appFile.path ? { ...f, content: cleanGeminiCode } : f);
-          codeModifiedByAi = true;
-          tokenUsage = {
-            promptTokens: geminiRes.usage?.promptTokenCount || Math.ceil(prompt.length / 4),
-            completionTokens: geminiRes.usage?.candidatesTokenCount || Math.ceil(cleanGeminiCode.length / 4),
-            totalTokens: (geminiRes.usage?.promptTokenCount || Math.ceil(prompt.length / 4)) + (geminiRes.usage?.candidatesTokenCount || Math.ceil(cleanGeminiCode.length / 4)),
-            modelUsed: model || 'Gemini Flash 3.8',
-            provider: 'Google Gemini Direct'
-          };
-        }
-      } catch (gErr) {
-        logger.warn(`Direct Gemini Flash modify fallback: ${gErr.message}`);
-      }
-    }
-
-    // 2. OpenRouter AI modification fallback
+    // OpenRouter AI modification (GPT-6 Luna)
     if (!codeModifiedByAi && process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key') {
       try {
         const currentApp = appFile.content;
@@ -1074,8 +1028,8 @@ Keep existing design consistency, use Tailwind CSS and lucide-react. Return ONLY
             promptTokens: completion.usage?.prompt_tokens || Math.ceil(prompt.length / 4),
             completionTokens: completion.usage?.completion_tokens || Math.ceil(newCode.length / 4),
             totalTokens: (completion.usage?.prompt_tokens || 0) + (completion.usage?.completion_tokens || 0) || Math.ceil((prompt.length + newCode.length) / 4),
-            modelUsed: model || 'Gemini Flash 3.8',
-            provider: 'OpenRouter'
+            modelUsed: model || 'Veave AI',
+            provider: 'Veave AI'
           };
         }
       } catch (e) {
@@ -1165,7 +1119,7 @@ Keep existing design consistency, use Tailwind CSS and lucide-react. Return ONLY
 
 // 1c. Streaming UI Generation endpoint with animated activity timeline
 exports.streamGenerateDesign = async (req, res, next) => {
-  const { prompt, designSystem = 'Modern', model = 'Gemini Flash 3.8' } = req.body;
+  const { prompt, designSystem = 'Modern', model = 'Veave AI' } = req.body;
 
   if (!prompt || !prompt.trim()) {
     return res.status(400).json({ success: false, error: 'Prompt is required' });
@@ -1266,31 +1220,10 @@ exports.recreateScreenshot = async (req, res, next) => {
     let tokenUsage = null;
     let methodUsed = 'Template Fallback';
 
-    // 1. Direct Vision Model (Google Gemini Flash 3.8 / Vision)
-    if (geminiService.isConfigured()) {
-      try {
-        const geminiRes = await geminiService.generateReactCodeFromScreenshot(image, prompt, systemTokens);
-        const cleanCode = cleanSourceCode(geminiRes?.code);
-        if (cleanCode) {
-          code = cleanCode;
-          methodUsed = 'Gemini Flash Vision';
-          tokenUsage = {
-            promptTokens: geminiRes.usage?.prompt || Math.ceil(prompt.length / 4),
-            completionTokens: geminiRes.usage?.completion || Math.ceil(cleanCode.length / 4),
-            totalTokens: geminiRes.usage?.total || (Math.ceil(prompt.length / 4) + Math.ceil(cleanCode.length / 4)),
-            modelUsed: 'Gemini Flash 3.8 Vision',
-            provider: 'Google Gemini (Vision)'
-          };
-        }
-      } catch (gErr) {
-        logger.warn(`Gemini Flash Vision screenshot recreation fallback: ${gErr.message}`);
-      }
-    }
-
-    // 2. OpenRouter Vision Model Fallback
+    // OpenRouter vision model (GPT-6 Luna)
     if (!code && process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key') {
       try {
-        const targetModel = openrouterService.resolveModel(model) || 'google/gemini-3.8-flash';
+        const targetModel = openrouterService.resolveModel(model) || openrouterService.model;
         const completion = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
           model: targetModel,
           messages: [
@@ -1335,7 +1268,7 @@ exports.recreateScreenshot = async (req, res, next) => {
             completionTokens: completion.data?.usage?.completion_tokens || 0,
             totalTokens: completion.data?.usage?.total_tokens || 0,
             modelUsed: targetModel,
-            provider: 'OpenRouter'
+            provider: 'Veave AI'
           };
         }
       } catch (oErr) {
@@ -1792,7 +1725,7 @@ exports.startJob = async (req, res, next) => {
       type = 'generate',
       prompt,
       designSystem = 'Modern',
-      model = 'Gemini Flash 3.8',
+      model = 'Veave AI',
       image,
       sourceUrl,
       projectId,
@@ -1814,6 +1747,24 @@ exports.startJob = async (req, res, next) => {
     }
     if (type === 'clone' && (!sourceUrl || typeof sourceUrl !== 'string')) {
       return res.status(400).json({ success: false, error: 'A public website URL is required for cloning' });
+    }
+
+    // Optional template: only a new website can start from one, and the server (not the picker) decides whether this
+    // account may use it. The job validates it again when it runs.
+    const rawTemplateId = req.body.templateId;
+    const templateRequested = rawTemplateId !== undefined && rawTemplateId !== null && rawTemplateId !== '';
+    if (templateRequested) {
+      if (type !== 'generate' || projectId || conversationId) {
+        return res.status(400).json({ success: false, code: 'TEMPLATE_NOT_APPLICABLE', error: 'A template can only be used when generating a new website.' });
+      }
+      try {
+        templateService.resolveTemplate(rawTemplateId, { version: req.body.templateVersion || null, user: req.user });
+      } catch (templateError) {
+        if (templateError instanceof templateService.TemplateError) {
+          return res.status(templateError.status).json({ success: false, code: templateError.code, error: templateError.message });
+        }
+        throw templateError;
+      }
     }
 
     // Modifying an existing project (or continuing one of its conversations) needs edit rights on that project.
@@ -1840,7 +1791,7 @@ exports.startJob = async (req, res, next) => {
 
     const job = await jobManager.createJob({
       type,
-      payload: req.body,
+      payload: templateRequested ? req.body : { ...req.body, templateId: undefined, templateVersion: undefined },
       userId,
       projectId: projectId || null,
       conversationId: conversationId || null,
@@ -1891,8 +1842,12 @@ exports.getJobStatus = async (req, res, next) => {
         projectId: job.projectId,
         result: job.result,
         error: job.error,
+        errorCode: job.errorCode || null,
+        degraded: job.result?.degraded || job.validation?.degraded || null,
+        entityImages: job.analysis?.entityImages ? { missing: job.analysis.entityImages.missing || [], found: [...new Set((job.analysis.entityImages.assets || []).map((asset) => asset.entity))] } : null,
         validation: job.validation,
         visualValidation: job.analysis?.visualValidation || null,
+        prototypeQueue: job.analysis?.prototype?.queue || null,
         usage: job.usage,
         approval: job.approval,
         completedAt: job.completedAt,
@@ -1932,8 +1887,12 @@ exports.getActiveJob = async (req, res, next) => {
         projectId: job.projectId,
         result: job.result,
         error: job.error,
+        errorCode: job.errorCode || null,
+        degraded: job.result?.degraded || job.validation?.degraded || null,
+        entityImages: job.analysis?.entityImages ? { missing: job.analysis.entityImages.missing || [], found: [...new Set((job.analysis.entityImages.assets || []).map((asset) => asset.entity))] } : null,
         validation: job.validation,
         visualValidation: job.analysis?.visualValidation || null,
+        prototypeQueue: job.analysis?.prototype?.queue || null,
         usage: job.usage,
         approval: job.approval,
         completedAt: job.completedAt,

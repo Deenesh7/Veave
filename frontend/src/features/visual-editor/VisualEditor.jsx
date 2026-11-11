@@ -10,7 +10,6 @@ import { PreviewMode } from './PreviewMode';
 import { ScreensMode } from './ScreensMode';
 import { CodeWorkspace } from '../code-workspace/CodeWorkspace';
 import { ShareModal } from '../share/ShareModal';
-import { VersionHistory } from '../editor/VersionHistory';
 import { projectService } from '../../services/projectService';
 import { useProjectStore } from '../../store/projectStore';
 
@@ -30,7 +29,14 @@ export function VisualEditor({ project, onBack }) {
   // script as a browser compile. Never the built bundle, which cannot be inspected. Unsaved edits compile locally.
   const { previewHtml, buildPreview } = usePreview({ projectId: (project || currentProject)?._id || null, skipBuiltPreview: true });
 
-  const handleBack = useCallback(() => {
+  // Leaving the editor first saves anything still unsaved (and waits for it), so the last change is never lost.
+  const flushUnsavedRef = useRef(async () => {});
+  const handleBack = useCallback(async () => {
+    try {
+      await flushUnsavedRef.current();
+    } catch (err) {
+      console.warn('Saving before leaving failed:', err);
+    }
     if (onBack) {
       onBack();
     } else {
@@ -52,9 +58,19 @@ export function VisualEditor({ project, onBack }) {
 
   const [isBuilding, setIsBuilding] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  // Code mode: the embedded code workspace reports whether it has unsaved edits and exposes a save function.
+  const [codeStatus, setCodeStatus] = useState({ isDirty: false, isSaving: false });
+  const [codeSavedOnce, setCodeSavedOnce] = useState(false);
+  const codeSaveRef = useRef(null);
+  const codeDirtyRef = useRef(false);
+  const handleCodeStatus = useCallback((status) => {
+    codeDirtyRef.current = status.isDirty;
+    setCodeStatus(status);
+    if (status.isSaving) setCodeSavedOnce(true);
+  }, []);
+  const handleSaveCode = useCallback(() => codeSaveRef.current?.save(), []);
   const [shareOpen, setShareOpen] = useState(false);
   const [publishSuccessOpen, setPublishSuccessOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
 
   // Synchronize activeMode with browser URL ?mode= parameter smoothly
   useEffect(() => {
@@ -94,15 +110,13 @@ export function VisualEditor({ project, onBack }) {
   const autoSaveTimerRef = useRef(null);
   const deferredPreviewBuildRef = useRef(false);
 
+  // Edits are NOT saved on a timer: the change stays "unsaved" until the user clicks Save (or presses Ctrl+S). It is
+  // still saved when they leave the editor or switch mode, so nothing is lost. Kept as a hook point for the edit handlers.
   const triggerVisualAutoSave = useCallback(() => {
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
     }
-    autoSaveTimerRef.current = setTimeout(() => {
-      if (handleSaveRef.current) {
-        handleSaveRef.current();
-      }
-    }, 1000);
   }, []);
 
   // Listen for iframe readiness messages
@@ -226,26 +240,6 @@ export function VisualEditor({ project, onBack }) {
       });
     }
     useVisualEditorStore.getState().updateElementAttribute(attr, value);
-    triggerVisualAutoSave();
-  };
-
-  const handleInsertBadge = (color = 'indigo', text = 'NEW') => {
-    const badgeId = 'vel-' + Date.now();
-    postToIframe({
-      type: 'insert-visual-badge',
-      color,
-      text,
-      badgeId,
-      elementId: selectedElement?.elementId,
-    });
-    useVisualEditorStore.getState().recordAction({
-      type: 'badge',
-      badgeElementId: badgeId,
-      color,
-      text,
-      targetElementId: selectedElement?.elementId,
-      targetText: selectedElement?.text?.trim() || null,
-    });
     triggerVisualAutoSave();
   };
 
@@ -554,6 +548,27 @@ export function VisualEditor({ project, onBack }) {
 
   handleSaveRef.current = handleSave;
 
+  // Save whatever is pending, in whichever mode the user is in: Visual Edit changes, or edited code files.
+  flushUnsavedRef.current = async () => {
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    const visualDirty = useVisualEditorStore.getState().isDirty || pendingEditsRef.current.length > 0;
+    if (visualDirty && handleSaveRef.current) await handleSaveRef.current();
+    await codeSaveRef.current?.save();
+  };
+
+  // Closing the tab or reloading: start a save right away and let the browser ask before leaving while changes are unsaved.
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      const visualDirty = useVisualEditorStore.getState().isDirty || pendingEditsRef.current.length > 0;
+      if (!visualDirty && !codeDirtyRef.current) return;
+      flushUnsavedRef.current().catch(() => {});
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
+
   // Automatically flush any unsaved visual edits when leaving Visual mode or unmounting
   useEffect(() => {
     return () => {
@@ -610,11 +625,10 @@ export function VisualEditor({ project, onBack }) {
         onSave={handleSave}
         onShare={() => setShareOpen(true)}
         onPublish={handlePublish}
-        onInsertBadge={handleInsertBadge}
         onUndo={handleUndoTrigger}
         onRedo={handleRedoTrigger}
-        onOpenHistory={() => setHistoryOpen(true)}
         isSaving={isSaving}
+        codeSave={{ isDirty: codeStatus.isDirty, isSaving: codeStatus.isSaving, saved: codeSavedOnce, onSave: handleSaveCode }}
       />
 
       {/* 2. Middle Content Workspace Area */}
@@ -640,6 +654,8 @@ export function VisualEditor({ project, onBack }) {
             initialFiles={files}
             projectName={activeProject?.name}
             onBack={handleBack}
+            onSaveStateChange={handleCodeStatus}
+            saveHandleRef={codeSaveRef}
             onSwitchMode={(mode) => setActiveMode(mode)}
             onFilesChange={(newFiles) => {
               if (setCurrentProject) {
@@ -664,7 +680,6 @@ export function VisualEditor({ project, onBack }) {
               onApplyStyle={handleApplyStyle}
               onApplyText={handleApplyText}
               onApplyAttribute={handleApplyAttribute}
-              onInsertBadge={handleInsertBadge}
               onDeleteElement={handleDeleteElement}
               onDuplicateElement={handleDuplicateElement}
               onSelectParent={handleSelectParent}
@@ -729,15 +744,6 @@ export function VisualEditor({ project, onBack }) {
             </div>
           </div>
         </div>
-      )}
-
-      {/* Version History Modal */}
-      {activeProject?._id && (
-        <VersionHistory
-          open={historyOpen}
-          onClose={() => setHistoryOpen(false)}
-          projectId={activeProject._id}
-        />
       )}
     </div>
   );

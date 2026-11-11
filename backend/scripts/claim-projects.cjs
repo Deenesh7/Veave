@@ -6,7 +6,7 @@
  *   node scripts/claim-projects.cjs you@example.com            # dry run: shows what would change
  *   node scripts/claim-projects.cjs you@example.com --apply    # does it
  */
-require('dotenv').config();
+require('../src/config/loadEnv');
 const mongoose = require('mongoose');
 
 (async () => {

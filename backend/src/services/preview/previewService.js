@@ -95,7 +95,8 @@ async function compileProject(projectId) {
     const bytes = Buffer.byteLength(html, 'utf8');
     // Public binary files the document actually references (listed in the asset shim / rewritten in CSS).
     const assetPaths = source.files
-      .filter((file) => file.encoding === 'base64' && file.path.startsWith('public/'))
+      // Binary files, and text SVGs (templates ship their pictures as SVG text), under public/.
+      .filter((file) => (file.encoding === 'base64' || /\.svg$/i.test(file.path)) && file.path.startsWith('public/'))
       .map((file) => `/${file.path.slice('public/'.length)}`)
       .filter((publicPath) => html.includes(publicPath));
     fields = bytes > MAX_HTML_BYTES
@@ -116,6 +117,46 @@ async function compileProject(projectId) {
   );
   logger.info(`Precompiled preview ${fields.status} for project ${projectId} in ${Date.now() - started}ms (${Math.round((fields.bytes || 0) / 1024)} KB)`);
   return doc;
+}
+
+/**
+ * Compiles the project as it would look with `overrides` (text files replacing the current ones) WITHOUT saving anything: used to
+ * look at an older revision before restoring it. Returns { html, token } (the token serves the project's pictures, as for the normal preview).
+ */
+async function compileWithOverrides(projectId, overrides = []) {
+  const source = await loadSource(projectId);
+  if (!source) return null;
+  const replace = new Map(overrides.filter((file) => file && typeof file.path === 'string' && !file.deleted).map((file) => [file.path, file]));
+  const merged = source.files.map((file) => (replace.has(file.path) ? { ...file, content: replace.get(file.path).content, encoding: undefined } : file));
+  for (const [filePath, file] of replace) if (!merged.some((item) => item.path === filePath)) merged.push({ path: filePath, content: file.content, language: file.language || 'plaintext' });
+  const compileFiles = merged.map((file) => (file.encoding === 'base64' ? { path: file.path, encoding: 'base64', content: '' } : file));
+  const html = await runCompileWorker(compileFiles, { assetBase: ASSET_BASE_PLACEHOLDER, sourceMaps: false });
+  if (Buffer.byteLength(html, 'utf8') > MAX_HTML_BYTES) throw new Error('This revision is too large to preview.');
+  const doc = await ensurePrecompiled(projectId);
+  // The older version may show pictures the current one no longer does: let the preview's token serve them too.
+  const assetPaths = source.files
+    .filter((file) => (file.encoding === 'base64' || /\.svg$/i.test(file.path)) && file.path.startsWith('public/'))
+    .map((file) => `/${file.path.slice('public/'.length)}`)
+    .filter((publicPath) => html.includes(publicPath));
+  if (doc?.token && assetPaths.length) await PrecompiledPreview.updateOne({ projectId }, { $addToSet: { assetPaths: { $each: assetPaths } } });
+  return { html, token: doc?.token || null };
+}
+
+/**
+ * Compiles a complete, given set of files as the project's website WITHOUT saving anything (used to look at an older version).
+ * Text files carry their content; binary files may be references (they are not needed to compile). Returns { html, token }.
+ */
+async function compileFilesPreview(projectId, files = []) {
+  const compileFiles = files.map((file) => (file.encoding === 'base64' ? { path: file.path, encoding: 'base64', content: '' } : { path: file.path, content: file.content || '', language: file.language }));
+  const html = await runCompileWorker(compileFiles, { assetBase: ASSET_BASE_PLACEHOLDER, sourceMaps: false });
+  if (Buffer.byteLength(html, 'utf8') > MAX_HTML_BYTES) throw new Error('This version is too large to preview.');
+  const doc = await ensurePrecompiled(projectId);
+  // The version may show pictures the current site no longer does: let the preview's token serve them too (they are stored with the project).
+  const stored = await Project.findById(projectId).select('files.path').lean();
+  const have = new Set((stored?.files || []).map((file) => file.path));
+  const assetPaths = files.filter((file) => file.encoding === 'base64' && file.path.startsWith('public/') && have.has(file.path)).map((file) => `/${file.path.slice('public/'.length)}`).filter((publicPath) => html.includes(publicPath));
+  if (doc?.token && assetPaths.length) await PrecompiledPreview.updateOne({ projectId }, { $addToSet: { assetPaths: { $each: assetPaths } } });
+  return { html, token: doc?.token || null };
 }
 
 /** Returns an up-to-date stored preview, compiling it first if the source changed. Concurrent callers share one compile. */
@@ -169,7 +210,10 @@ async function readPreviewAsset(token, assetPath) {
   const file = await hydrateFile(stored);
   const buffer = file.encoding === 'base64' ? Buffer.from(file.content || '', 'base64') : Buffer.from(file.content || '', 'utf8');
   const extension = clean.split('.').pop().toLowerCase();
-  return { buffer, contentType: MIME[extension] || 'application/octet-stream' };
+  return { buffer, contentType: MIME[extension] || require('../storage/s3BlobStorage').contentTypeForPath(clean) };
 }
 
-module.exports = { ensurePrecompiled, schedulePrecompile, previewSourceHash, readPreviewAsset, ASSET_BASE_PLACEHOLDER };
+/** Compiles a template's own files (no project, nothing saved) for the New Site preview. */
+const compileTemplateFiles = (files) => runCompileWorker(files.map((file) => ({ path: file.path, content: file.content || '', language: file.language })), { assetBase: ASSET_BASE_PLACEHOLDER, sourceMaps: false });
+
+module.exports = { compileTemplateFiles, compileFilesPreview, compileWithOverrides, ensurePrecompiled, schedulePrecompile, previewSourceHash, readPreviewAsset, ASSET_BASE_PLACEHOLDER };

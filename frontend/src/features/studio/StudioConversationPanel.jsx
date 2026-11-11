@@ -11,15 +11,14 @@ import {
   RotateCw,
   History,
   MessageSquare,
-  Activity,
   Layers,
   ArrowRight,
   GitBranch,
   User,
-  Bot
+  Bot,
+  MousePointerClick
 } from 'lucide-react';
 import { StudioPromptBar } from './StudioPromptBar';
-import { MatrixOrb } from '../../components/rare-ui';
 import { useGenerationJobStore } from '../../store/generationJobStore';
 import { useAuthStore } from '../../store/authStore';
 
@@ -66,10 +65,15 @@ export function StudioConversationPanel({
   onUndo,
   onRedo,
   onRollback,
-  onOpenFile
+  onOpenFile,
+  sidePane = 'studio',
+  onSidePaneChange,
+  selectedElement = null,
+  mentionRequest = null,
+  onOpenFullEditor
 }) {
   const [selectedStyle, setSelectedStyle] = useState('Modern');
-  const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'lineage' | 'timeline'
+  const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'lineage' | 'history'
   const chatBottomRef = useRef(null);
 
   const {
@@ -102,10 +106,9 @@ export function StudioConversationPanel({
       <button
         onClick={() => setIsOpen(true)}
         className="absolute top-16 right-4 z-20 p-2.5 rounded-2xl bg-white border border-[#E2E5E8] shadow-md hover:bg-zinc-50 text-zinc-700 transition-all flex items-center gap-2 text-xs font-semibold cursor-pointer"
-        title="Open Veave"
+        title="Open panel"
       >
         <Sparkles className="w-4 h-4 text-zinc-600" />
-        <span className="hidden sm:inline">Veave</span>
         <PanelRightOpen className="w-3.5 h-3.5 text-zinc-400" />
       </button>
     );
@@ -116,126 +119,122 @@ export function StudioConversationPanel({
     ? conversationMessages
     : (prompt ? [{ role: 'user', content: prompt, timestamp: new Date() }] : []);
 
-  const hasGenerations = generationHistory && generationHistory.length > 0;
+  // Requests stay in Refine and Lineage for 24 hours. After that they leave Lineage and are kept in History.
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const timeOf = (value) => { const t = new Date(value).getTime(); return Number.isFinite(t) ? t : null; };
+  const isOlderThanDay = (value) => { const t = timeOf(value); return t !== null && Date.now() - t > DAY_MS; };
+  const allRequests = (conversationMessages || []).filter((m) => m.role === 'user').slice().reverse();
+  const archivedRequests = allRequests.filter((msg) => isOlderThanDay(msg.timestamp));
+  const formatHistoryTime = (msg) => {
+    const t = timeOf(msg.timestamp);
+    if (t === null) return '';
+    return new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' + formatMessageTime(msg.timestamp);
+  };
+  // Lineage lists only the last 24 hours (plus whichever checkpoint is active, so the current state is always shown).
+  const lineageItems = (generationHistory || [])
+    .map((gen, idx, all) => ({
+      gen,
+      isActive: gen.isActive !== undefined ? gen.isActive : (gen.generationId === activeGenerationId || idx === all.length - 1)
+    }))
+    .filter(({ gen, isActive }) => isActive || !isOlderThanDay(gen.timestamp));
+  const hasGenerations = lineageItems.length > 0;
   const canDoUndo = canUndo !== undefined ? canUndo : (generationHistory && generationHistory.length > 1);
   const canDoRedo = !!canRedo;
 
   return (
     <aside className="w-84 sm:w-96 lg:w-[420px] h-full bg-white border-l border-[#E2E5E8] flex flex-col justify-between shrink-0 select-none relative z-20 shadow-xs">
-      {/* Panel Header */}
-      <div className="h-12 px-4 border-b border-[#E2E5E8] flex items-center justify-between bg-zinc-50/80">
-        <div className="flex items-center gap-2.5">
-          <MatrixOrb 
-            state={isGenerating ? 'thinking' : 'idle'} 
-            size={22} 
-            dots={7} 
-            color="#18181B" 
-            className="shrink-0"
-          />
-          <div>
-            <span className="font-bold text-xs text-[#111827] tracking-tight block">Veave</span>
-          </div>
+      {/* Row 1: Studio | Visual Edit, with undo / redo / collapse on the right */}
+      <div className="h-11 px-2 border-b border-[#E2E5E8] bg-white flex items-stretch justify-between shrink-0" role="tablist">
+        <div className="flex items-stretch gap-1">
+          {[
+            { id: 'studio', label: 'Studio', icon: Sparkles },
+            { id: 'visual', label: 'Visual Edit', icon: MousePointerClick },
+          ].map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={sidePane === id}
+              onClick={() => onSidePaneChange?.(id)}
+              className={`px-3 flex items-center gap-1.5 text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
+                sidePane === id ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-500 hover:text-zinc-800'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span>{label}</span>
+            </button>
+          ))}
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           {canDoUndo && (
             <button
               onClick={() => {
                 try {
                   const res = onUndo && onUndo();
-                  if (res && typeof res.catch === 'function') {
-                    res.catch((err) => console.warn('Undo failed:', err));
-                  }
-                } catch (e) {
-                  console.warn('Undo failed:', e);
-                }
+                  if (res && typeof res.catch === 'function') res.catch((err) => console.warn('Undo failed:', err));
+                } catch (e) { console.warn('Undo failed:', e); }
               }}
-              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200/60 transition-colors flex items-center gap-1 text-[11px] font-medium cursor-pointer"
-              title="Undo previous change (restore immediate previous state)"
+              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 transition-colors cursor-pointer"
+              title="Undo previous change"
+              aria-label="Undo"
             >
-              <RotateCcw className="w-3.5 h-3.5 text-zinc-600" />
-              <span className="hidden sm:inline">Undo</span>
+              <RotateCcw className="w-4 h-4" />
             </button>
           )}
-
           {canDoRedo && (
             <button
               onClick={() => {
                 try {
                   const res = onRedo && onRedo();
-                  if (res && typeof res.catch === 'function') {
-                    res.catch((err) => console.warn('Redo failed:', err));
-                  }
-                } catch (e) {
-                  console.warn('Redo failed:', e);
-                }
+                  if (res && typeof res.catch === 'function') res.catch((err) => console.warn('Redo failed:', err));
+                } catch (e) { console.warn('Redo failed:', e); }
               }}
-              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200/60 transition-colors flex items-center gap-1 text-[11px] font-medium cursor-pointer"
+              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 transition-colors cursor-pointer"
               title="Redo forward change"
+              aria-label="Redo"
             >
-              <RotateCw className="w-3.5 h-3.5 text-zinc-600" />
-              <span className="hidden sm:inline">Redo</span>
+              <RotateCw className="w-4 h-4" />
             </button>
           )}
-
           <button
             onClick={() => setIsOpen(false)}
-            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-200/60 transition-colors cursor-pointer"
-            title="Collapse Panel"
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors cursor-pointer"
+            title="Collapse panel"
+            aria-label="Collapse panel"
           >
             <PanelRightClose className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* Navigation Sub-Tabs: Chat, Lineage, Timeline */}
-      <div className="flex items-center border-b border-zinc-200 bg-white px-2 py-1 gap-1 text-xs">
-        <button
-          onClick={() => setActiveTab('chat')}
-          className={`flex-1 py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-            activeTab === 'chat'
-              ? 'bg-zinc-900 text-white shadow-2xs'
-              : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100'
-          }`}
-        >
-          <MessageSquare className="w-3.5 h-3.5" />
-          <span>Chat</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('lineage')}
-          className={`flex-1 py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-            activeTab === 'lineage'
-              ? 'bg-zinc-900 text-white shadow-2xs'
-              : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100'
-          }`}
-        >
-          <GitBranch className="w-3.5 h-3.5" />
-          <span>Lineage</span>
-          {hasGenerations && (
-            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-              activeTab === 'lineage' ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-100 text-zinc-600'
-            }`}>
-              {generationHistory.length}
-            </span>
-          )}
-        </button>
-
-        <button
-          onClick={() => setActiveTab('timeline')}
-          className={`flex-1 py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-            activeTab === 'timeline'
-              ? 'bg-zinc-900 text-white shadow-2xs'
-              : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100'
-          }`}
-        >
-          <Activity className="w-3.5 h-3.5" />
-          <span>Activity</span>
-        </button>
-      </div>
+      {/* Row 2 (Studio only): Refine | Lineage | History */}
+      {(
+        <div className="grid grid-cols-3 gap-1 border-b border-zinc-200 bg-zinc-50/70 px-2 py-1.5 text-xs shrink-0">
+          {[
+            { id: 'chat', label: 'Refine', icon: MessageSquare },
+            { id: 'lineage', label: 'Lineage', icon: GitBranch, count: lineageItems.length },
+            { id: 'history', label: 'History', icon: History },
+          ].map(({ id, label, icon: Icon, count }) => (
+            <button
+              key={id}
+              onClick={() => setActiveTab(id)}
+              className={`h-8 rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                activeTab === id ? 'bg-zinc-900 text-white shadow-2xs' : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span>{label}</span>
+              {count > 0 && (
+                <span className={`text-[10px] px-1.5 rounded-full font-mono ${activeTab === id ? 'bg-zinc-700 text-zinc-200' : 'bg-zinc-200 text-zinc-600'}`}>{count}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Main Tab Content Body */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3.5 scrollbar-thin">
+      <div className={`flex-1 overflow-y-auto p-4 space-y-3.5 scrollbar-thin`}>
         
         {/* ==================================================== */}
         {/* TAB 1: CHAT FEED (Stateful Message History) */}
@@ -274,7 +273,6 @@ export function StudioConversationPanel({
                   ) : (
                     <div className="flex items-center gap-1.5 px-1 text-[10px] text-zinc-400 font-mono">
                       <Bot className="w-3 h-3 text-zinc-500" />
-                      <span className="font-semibold text-zinc-600">Veave</span>
                       <span>{formatMessageTime(msg.timestamp)}</span>
                     </div>
                   )}
@@ -304,7 +302,6 @@ export function StudioConversationPanel({
               <div className="flex flex-col items-start pr-6 gap-1 animate-in fade-in">
                 <div className="flex items-center gap-1.5 px-1 text-[10px] text-zinc-400 font-mono">
                   <Bot className="w-3 h-3 text-zinc-500" />
-                  <span className="font-semibold text-zinc-600">Veave</span>
                 </div>
                 <div className="p-3 rounded-2xl bg-zinc-50/80 border border-zinc-200 text-zinc-900 text-xs flex items-center gap-2.5 shadow-2xs">
                   <Loader2 className="w-4 h-4 animate-spin text-zinc-600 shrink-0" />
@@ -325,10 +322,10 @@ export function StudioConversationPanel({
             <div className="flex items-center justify-between pb-1 border-b border-zinc-100">
               <div>
                 <span className="text-xs font-bold text-zinc-800">Session Checkpoints</span>
-                <span className="text-[10px] text-zinc-400 block">1-Day History · Step-by-Step Restore</span>
+                <span className="text-[10px] text-zinc-400 block">Last 24 hours · older requests move to History</span>
               </div>
               <span className="text-[10px] font-mono text-zinc-400">
-                {generationHistory.length} Checkpoints
+                {lineageItems.length} Checkpoints
               </span>
             </div>
 
@@ -336,10 +333,7 @@ export function StudioConversationPanel({
               <div className="space-y-2 relative pl-2">
                 <div className="absolute left-4 top-3 bottom-3 w-0.5 bg-zinc-200" />
 
-                {generationHistory.map((gen, idx) => {
-                  const isActive = gen.isActive !== undefined
-                    ? gen.isActive
-                    : (gen.generationId === activeGenerationId || idx === generationHistory.length - 1);
+                {lineageItems.map(({ gen, isActive }, idx) => {
                   return (
                     <div 
                       key={gen.generationId || idx}
@@ -405,141 +399,22 @@ export function StudioConversationPanel({
         )}
 
         {/* ==================================================== */}
-        {/* TAB 3: ACTIVITY TIMELINE & SOURCE FILES */}
+        {/* TAB 3: HISTORY (requests older than 24 hours) */}
         {/* ==================================================== */}
-        {activeTab === 'timeline' && (
-          <div className="space-y-4">
-            {/* Live AI Status Badge */}
-            <div className={`p-3 rounded-2xl border transition-all ${
-              isGenerating 
-                ? 'bg-zinc-50/80 border-zinc-200 shadow-xs' 
-                : 'bg-emerald-50/80 border-emerald-200'
-            }`}>
-              <div className="flex items-center gap-2.5">
-                <MatrixOrb 
-                  state={isGenerating ? 'thinking' : 'idle'} 
-                  size={24} 
-                  dots={7} 
-                  color={isGenerating ? '#18181B' : '#059669'} 
-                  className="shrink-0"
-                />
-                <div className="min-w-0">
-                  <span className={`text-[11px] font-bold block truncate ${
-                    isGenerating ? 'text-zinc-900' : 'text-emerald-900'
-                  }`}>
-                    {statusMessage || (isGenerating ? 'Synthesizing layout...' : 'Your interface is ready.')}
-                  </span>
-                  <span className="text-[10px] text-zinc-500 font-mono">
-                    {isGenerating ? `Step ${currentStep + 1} of ${GENERATION_TIMELINE_STEPS.length}` : 'Completed successfully'}
-                  </span>
-                </div>
+        {activeTab === 'history' && (
+          <div className="space-y-2.5">
+            <p className="px-1 text-[11px] text-zinc-500">Requests older than 24 hours are moved here from Lineage.</p>
+            {archivedRequests.length === 0 ? (
+              <div className="py-8 text-center text-xs text-zinc-400">
+                <History className="w-6 h-6 mx-auto mb-2 text-zinc-300" />
+                <span>Nothing here yet. A request appears in History 24 hours after you send it.</span>
               </div>
-            </div>
-
-            {/* Style Clarification Options */}
-            <div className="bg-white rounded-2xl border border-zinc-200 p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-zinc-700">Visual Style Setting</span>
-                <span className="text-[10px] font-mono text-zinc-400">{selectedStyle}</span>
+            ) : archivedRequests.map((msg, idx) => (
+              <div key={idx} className="p-3 rounded-2xl border border-zinc-200 bg-white">
+                <p className="text-xs text-zinc-800 font-medium break-words line-clamp-3">{msg.content}</p>
+                <span className="text-[10px] text-zinc-400 font-mono mt-1 block">{formatHistoryTime(msg)}</span>
               </div>
-              <div className="grid grid-cols-2 gap-1.5">
-                {styleOptions.map((opt) => (
-                  <button
-                    key={opt.label}
-                    onClick={() => {
-                      setSelectedStyle(opt.label);
-                      if (onSelectClarification) onSelectClarification(opt.label);
-                    }}
-                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-semibold border text-left transition-all cursor-pointer ${
-                      selectedStyle === opt.label 
-                        ? 'bg-zinc-900 text-white border-zinc-900 shadow-2xs' 
-                        : 'bg-zinc-50 text-zinc-600 border-zinc-200 hover:bg-zinc-100'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Animated AI Activity Timeline */}
-            <div className="bg-white rounded-2xl border border-zinc-200 p-3.5 space-y-3">
-              <div className="flex items-center justify-between border-b border-zinc-100 pb-2">
-                <span className="text-xs font-bold text-zinc-900">Activity Timeline</span>
-                <span className="text-[10px] font-mono text-zinc-400">
-                  {Math.min(100, Math.round(((currentStep + 1) / GENERATION_TIMELINE_STEPS.length) * 100))}%
-                </span>
-              </div>
-
-              <div className="space-y-2 relative pl-2">
-                <div className="absolute left-4 top-2 bottom-2 w-0.5 bg-zinc-100" />
-
-                {GENERATION_TIMELINE_STEPS.map((step, idx) => {
-                  const isPast = currentStep > idx;
-                  const isCurrent = currentStep === idx;
-                  return (
-                    <div 
-                      key={step.id} 
-                      className={`relative flex items-center gap-2.5 py-1 text-xs transition-all duration-300 ${
-                        isCurrent ? 'font-bold text-zinc-600 scale-101 pl-1' :
-                        isPast ? 'text-zinc-700 font-medium' :
-                        'text-zinc-400'
-                      }`}
-                    >
-                      <div className="relative z-10 shrink-0">
-                        {isPast ? (
-                          <div className="w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center">
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                          </div>
-                        ) : isCurrent ? (
-                          <div className="w-4 h-4 rounded-full bg-zinc-600 text-white flex items-center justify-center ring-4 ring-zinc-100 animate-pulse">
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          </div>
-                        ) : (
-                          <div className="w-4 h-4 rounded-full bg-zinc-200 border border-zinc-300" />
-                        )}
-                      </div>
-
-                      <span className="truncate">{step.name}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Generated Source Files */}
-            {((files && files.length > 0) || (components && components.length > 0)) && (
-              <div className="bg-white rounded-2xl border border-zinc-200 p-3 space-y-2">
-                <div className="flex items-center justify-between border-b border-zinc-100 pb-1.5">
-                  <span className="text-xs font-bold text-zinc-900">Generated Source Files</span>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600 font-bold">
-                    {(files && files.length > 0 ? files : components).length} files
-                  </span>
-                </div>
-
-                <div className="space-y-1.5 pt-1 max-h-56 overflow-y-auto pr-0.5">
-                  {(files && files.length > 0 ? files : components).map((c, i) => {
-                    const ext = c.path?.split('.').pop()?.toUpperCase() || 'FILE';
-                    return (
-                      <button
-                        key={i}
-                        onClick={() => onOpenFile && onOpenFile(c.path)}
-                        className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-zinc-50 text-[11px] font-mono text-zinc-700 hover:bg-indigo-50/80 hover:text-indigo-600 transition-all cursor-pointer group text-left"
-                        title={`Open ${c.path} in Code Editor`}
-                      >
-                        <div className="flex items-center gap-1.5 truncate">
-                          <Code2 className="w-3.5 h-3.5 text-zinc-400 group-hover:text-indigo-500 shrink-0" />
-                          <span className="truncate">{c.path}</span>
-                        </div>
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-zinc-200/60 text-zinc-500 group-hover:bg-indigo-100 group-hover:text-indigo-600 shrink-0 ml-1">
-                          {ext}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            ))}
           </div>
         )}
       </div>
@@ -550,6 +425,8 @@ export function StudioConversationPanel({
         onSubmit={onSubmitPrompt}
         isGenerating={isGenerating}
         onStop={onStopGeneration}
+        mentionRequest={mentionRequest}
+        selectedElement={sidePane === 'visual' ? selectedElement : null}
       />
     </aside>
   );

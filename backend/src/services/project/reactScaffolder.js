@@ -41,7 +41,9 @@
 const DEFAULT_DEPENDENCIES = {
   react: '^18.3.1',
   'react-dom': '^18.3.1',
-  'lucide-react': '^0.400.0'
+  'lucide-react': '^0.400.0',
+  gsap: '^3.12.5',
+  'framer-motion': '^11.5.4'
 };
 
 const DEFAULT_DEV_DEPENDENCIES = {
@@ -80,6 +82,12 @@ class CanonicalPathMap extends Map {
 function scaffoldReactProject(sourceFiles = [], options = {}) {
   const projectName = sanitizePkgName(options.projectName || 'veave-app');
   const tokens = options.tokens || null;
+  // MODE B (template-based): the approved template files are the project's base. An empty input means "start from the
+  // template"; otherwise the given files (the template as edited by the AI file operations) are completed, never replaced.
+  const template = options.template || null;
+  if (template && (!Array.isArray(sourceFiles) || sourceFiles.length === 0)) {
+    sourceFiles = createTemplateCandidate(template, { tokens, projectName: options.projectName });
+  }
 
   // Normalize + dedupe input files
   const seen = new CanonicalPathMap();
@@ -92,6 +100,8 @@ function scaffoldReactProject(sourceFiles = [], options = {}) {
       encoding: f.encoding || 'utf8'
     });
   }
+
+  if (template) ensureTemplateDependencies(seen, template, projectName);
 
   // 1) Ensure src/App.jsx exists
   if (!seen.has('src/App.jsx') && !seen.has('src/App.js')) {
@@ -268,7 +278,7 @@ function scaffoldReactProject(sourceFiles = [], options = {}) {
   }
 
   // 18) src/components/Navbar.jsx
-  if (!seen.has('src/components/Navbar.jsx')) {
+  if (!template && !seen.has('src/components/Navbar.jsx')) {
     seen.set('src/components/Navbar.jsx', {
       path: 'src/components/Navbar.jsx',
       content: NAVBAR_JSX,
@@ -277,7 +287,7 @@ function scaffoldReactProject(sourceFiles = [], options = {}) {
   }
 
   // 19) src/components/Footer.jsx
-  if (!seen.has('src/components/Footer.jsx')) {
+  if (!template && !seen.has('src/components/Footer.jsx')) {
     seen.set('src/components/Footer.jsx', {
       path: 'src/components/Footer.jsx',
       content: FOOTER_JSX,
@@ -286,7 +296,7 @@ function scaffoldReactProject(sourceFiles = [], options = {}) {
   }
 
   // 20) src/components/Card.jsx
-  if (!seen.has('src/components/Card.jsx')) {
+  if (!template && !seen.has('src/components/Card.jsx')) {
     seen.set('src/components/Card.jsx', {
       path: 'src/components/Card.jsx',
       content: CARD_JSX,
@@ -295,7 +305,7 @@ function scaffoldReactProject(sourceFiles = [], options = {}) {
   }
 
   // 21) src/components/Modal.jsx
-  if (!seen.has('src/components/Modal.jsx')) {
+  if (!template && !seen.has('src/components/Modal.jsx')) {
     seen.set('src/components/Modal.jsx', {
       path: 'src/components/Modal.jsx',
       content: MODAL_JSX,
@@ -333,6 +343,43 @@ function scaffoldReactProject(sourceFiles = [], options = {}) {
     const d = rank(a.path) - rank(b.path);
     return d !== 0 ? d : a.path.localeCompare(b.path);
   });
+}
+
+/* ------------------------------ template mode ------------------------------ */
+
+/**
+ * Builds an isolated candidate project from a template: fresh copies of its approved files (the stored template is never
+ * shared with, or changed by, the project), the resolved design tokens written into the theme files, and the project name.
+ */
+function createTemplateCandidate(template, { tokens = null, projectName = null } = {}) {
+  const templateService = require('../templates/templateService');
+  let files = templateService.instantiateFiles(template);
+  const resolved = tokens || templateService.tokensFromTemplate(template);
+  files = templateService.applyTokensToFiles(files, template, resolved);
+  const pkgFile = files.find((file) => file.path === 'package.json');
+  if (pkgFile && projectName) {
+    try {
+      const pkg = JSON.parse(pkgFile.content);
+      pkg.name = sanitizePkgName(projectName);
+      pkgFile.content = JSON.stringify(pkg, null, 2);
+    } catch { /* validated when the template was loaded */ }
+  }
+  return files;
+}
+
+/** The template's required packages must stay in package.json whatever the AI file operations did to it. */
+function ensureTemplateDependencies(seen, template, projectName) {
+  const file = seen.get('package.json');
+  if (!file) return;
+  let pkg;
+  try { pkg = JSON.parse(file.content); } catch { return; }
+  let changed = false;
+  pkg.dependencies = pkg.dependencies || {};
+  for (const [name, range] of Object.entries(template.dependencies)) {
+    if (!pkg.dependencies[name] && !(pkg.devDependencies || {})[name]) { pkg.dependencies[name] = range; changed = true; }
+  }
+  if (!pkg.name || pkg.name === template.id) { pkg.name = sanitizePkgName(projectName); changed = true; }
+  if (changed) seen.set('package.json', { ...file, content: JSON.stringify(pkg, null, 2) });
 }
 
 /* ------------------------------ helpers ------------------------------ */
@@ -387,8 +434,8 @@ function buildManifestJson(name) {
       }
     ],
     start_url: "/",
-    background_color: "#09090b",
-    theme_color: "#6366f1",
+    background_color: "#ffffff",
+    theme_color: "#18181b",
     display: "standalone"
   };
 }
@@ -433,7 +480,7 @@ function buildIndexHtml(name) {
     <meta property="og:description" content="${escapeHtml(name)} - official website." />
     <meta name="twitter:card" content="summary_large_image" />
   </head>
-  <body class="bg-[#09090b] text-[#f8fafc] antialiased">
+  <body class="bg-bg text-fg antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
@@ -499,7 +546,7 @@ function escapeHtml(s) {
 
 /* ------------------------------ file templates ------------------------------ */
 
-const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#18181b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
 </svg>`;
 
@@ -555,10 +602,24 @@ html, body, #root {
   margin: 0;
   padding: 0;
 }
+/* Theme tokens (RGB channels so Tailwind opacity utilities like bg-bg/80 work). The default is a LIGHT theme.
+   Change the look of the whole site here: for a dark theme, swap these values. Components use the semantic
+   colours bg, surface, surface-2, line, fg, muted and brand instead of fixed zinc/white classes. */
+:root {
+  --bg: 255 255 255;
+  --surface: 249 250 251;
+  --surface-2: 243 244 246;
+  --line: 228 228 231;
+  --fg: 24 24 27;
+  --muted: 113 113 122;
+  --brand: 24 24 27;
+  --on-brand: 255 255 255;
+}
+
 body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  background-color: #09090b;
-  color: #f8fafc;
+  background-color: rgb(var(--bg));
+  color: rgb(var(--fg));
 }
 `;
 
@@ -583,9 +644,16 @@ export default {
   theme: {
     extend: {
       colors: {
+        bg: 'rgb(var(--bg) / <alpha-value>)',
+        surface: 'rgb(var(--surface) / <alpha-value>)',
+        'surface-2': 'rgb(var(--surface-2) / <alpha-value>)',
+        line: 'rgb(var(--line) / <alpha-value>)',
+        fg: 'rgb(var(--fg) / <alpha-value>)',
+        muted: 'rgb(var(--muted) / <alpha-value>)',
+        'on-brand': 'rgb(var(--on-brand) / <alpha-value>)',
         brand: {
-          500: '#6366f1',
-          600: '#4f46e5'
+          500: 'rgb(var(--brand) / <alpha-value>)',
+          600: 'rgb(var(--brand) / <alpha-value>)'
         }
       },
       fontFamily: {
@@ -691,17 +759,17 @@ import { Sparkles, Menu, Bell } from 'lucide-react';
 
 export default function Navbar({ title = 'VEAVE App', onMenuClick }) {
   return (
-    <header className="h-16 px-6 border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-md flex items-center justify-between sticky top-0 z-30">
+    <header className="h-16 px-6 border-b border-line bg-bg/80 backdrop-blur-md flex items-center justify-between sticky top-0 z-30">
       <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded-xl bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-600/30">
+        <div className="w-8 h-8 rounded-xl bg-brand-600 flex items-center justify-center text-on-brand shadow-md shadow-brand-600/30">
           <Sparkles className="w-4 h-4" />
         </div>
-        <span className="font-bold text-sm tracking-tight text-white">{title}</span>
+        <span className="font-bold text-sm tracking-tight text-fg">{title}</span>
       </div>
 
       <div className="flex items-center gap-3">
         <button 
-          className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+          className="p-2 rounded-xl text-muted hover:text-fg hover:bg-surface-2 transition-colors"
           aria-label="Notifications"
         >
           <Bell className="w-4 h-4" />
@@ -709,7 +777,7 @@ export default function Navbar({ title = 'VEAVE App', onMenuClick }) {
         {onMenuClick && (
           <button 
             onClick={onMenuClick}
-            className="md:hidden p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+            className="md:hidden p-2 rounded-xl text-muted hover:text-fg hover:bg-surface-2 transition-colors"
             aria-label="Menu"
           >
             <Menu className="w-4 h-4" />
@@ -725,7 +793,7 @@ const FOOTER_JSX = `import React from 'react';
 
 export default function Footer({ year = 2026 }) {
   return (
-    <footer className="border-t border-zinc-800 bg-zinc-950 py-6 px-6 text-center text-xs text-zinc-500">
+    <footer className="border-t border-line bg-bg py-6 px-6 text-center text-xs text-muted">
       <p>&copy; {year} Built with Veave AI Studio. All rights reserved.</p>
     </footer>
   );
@@ -736,9 +804,9 @@ const CARD_JSX = `import React from 'react';
 
 export default function Card({ title, subtitle, children, className = '' }) {
   return (
-    <div className={\`bg-zinc-900 border border-zinc-800 rounded-2xl p-5 hover:border-zinc-700 transition-all \${className}\`}>
-      {title && <h3 className="text-sm font-semibold text-white mb-1">{title}</h3>}
-      {subtitle && <p className="text-xs text-zinc-400 mb-3">{subtitle}</p>}
+    <div className={\`bg-surface border border-line rounded-2xl p-5 hover:border-fg/30 transition-all \${className}\`}>
+      {title && <h3 className="text-sm font-semibold text-fg mb-1">{title}</h3>}
+      {subtitle && <p className="text-xs text-muted mb-3">{subtitle}</p>}
       {children}
     </div>
   );
@@ -753,12 +821,12 @@ export default function Modal({ isOpen, onClose, title, children }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-200">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative">
-        <div className="flex items-center justify-between pb-4 border-b border-zinc-800 mb-4">
-          <h2 className="text-base font-bold text-white">{title}</h2>
+      <div className="bg-surface border border-line rounded-2xl max-w-lg w-full p-6 shadow-2xl relative">
+        <div className="flex items-center justify-between pb-4 border-b border-line mb-4">
+          <h2 className="text-base font-bold text-fg">{title}</h2>
           <button 
             onClick={onClose}
-            className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+            className="p-1 rounded-lg text-muted hover:text-fg hover:bg-surface-2 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
@@ -798,59 +866,59 @@ export default function App() {
   const activePageObj = pages.find(p => p.id === activePageId) || pages[0];
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col justify-between">
+    <div className="min-h-screen bg-bg text-fg flex flex-col justify-between">
       <Navbar title="Veave Application" />
 
       <main className="flex-1 max-w-5xl mx-auto px-6 py-12 flex flex-col items-center justify-center text-center w-full">
         {activePageId === 'home' ? (
           <>
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-semibold mb-6">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-brand-500/10 border border-brand-500/20 text-brand-600 text-xs font-semibold mb-6">
               <Sparkles className="w-3.5 h-3.5" />
               <span>Production Ready React Layout</span>
             </div>
 
-            <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-white mb-4">
+            <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-fg mb-4">
               Structured React Application
             </h1>
-            <p className="text-sm sm:text-base text-zinc-400 max-w-lg mb-8">
+            <p className="text-sm sm:text-base text-muted max-w-lg mb-8">
               This project is equipped with modular components, custom hooks, utilities, and a clean architecture.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-2xl text-left mb-8">
               <Card title="Modular Components" subtitle="src/components">
-                <p className="text-xs text-zinc-400">Includes Navbar, Footer, Card, and Modal components ready for reuse.</p>
+                <p className="text-xs text-muted">Includes Navbar, Footer, Card, and Modal components ready for reuse.</p>
               </Card>
               <Card title="Custom Hooks & Libs" subtitle="src/hooks & src/lib">
-                <p className="text-xs text-zinc-400">Comes with useToast, useTheme, and className utility helpers.</p>
+                <p className="text-xs text-muted">Comes with useToast, useTheme, and className utility helpers.</p>
               </Card>
             </div>
 
             <button 
               onClick={() => setCount(prev => prev + 1)}
-              className="px-6 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition-all shadow-lg shadow-indigo-600/30 flex items-center gap-2"
+              className="px-6 py-3 rounded-xl bg-brand-600 hover:bg-brand-500 text-on-brand font-semibold text-sm transition-all shadow-lg shadow-brand-600/30 flex items-center gap-2"
             >
               <span>Clicked {count} times</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </>
         ) : (
-          <div className="w-full max-w-2xl bg-zinc-900 border border-zinc-800 rounded-3xl p-8 text-left animate-in fade-in duration-200">
+          <div className="w-full max-w-2xl bg-surface border border-line rounded-3xl p-8 text-left animate-in fade-in duration-200">
             <div className="flex items-center gap-3 mb-4">
-              <span className="p-2.5 rounded-xl bg-indigo-600 text-white">
+              <span className="p-2.5 rounded-xl bg-brand-600 text-on-brand">
                 <FileText className="w-5 h-5" />
               </span>
               <div>
-                <h2 className="text-xl font-bold text-white">{activePageObj.title}</h2>
-                <p className="text-xs text-zinc-400">{activePageObj.desc}</p>
+                <h2 className="text-xl font-bold text-fg">{activePageObj.title}</h2>
+                <p className="text-xs text-muted">{activePageObj.desc}</p>
               </div>
             </div>
-            <div className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-400 mb-6 flex items-center gap-2">
+            <div className="p-4 rounded-xl bg-bg border border-line text-xs text-muted mb-6 flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
               <span>Page view dynamically mounted in React state. Switch between views using the bar below.</span>
             </div>
             <button
               onClick={() => setActivePageId('home')}
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-300 bg-zinc-800 hover:bg-zinc-700 transition-colors"
+              className="px-4 py-2 rounded-xl text-xs font-semibold text-fg/80 bg-surface-2 hover:bg-surface-2 transition-colors"
             >
               &larr; Return to Main View
             </button>
@@ -858,10 +926,10 @@ export default function App() {
         )}
 
         {/* Bottom Multi-Page Bar */}
-        <div className="w-full max-w-3xl mt-12 pt-6 border-t border-zinc-800 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-2 text-zinc-400 text-xs">
-            <Layers className="w-4 h-4 text-indigo-400" />
-            <span className="font-semibold text-zinc-300">Pages:</span>
+        <div className="w-full max-w-3xl mt-12 pt-6 border-t border-line flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-2 text-muted text-xs">
+            <Layers className="w-4 h-4 text-brand-600" />
+            <span className="font-semibold text-fg/80">Pages:</span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {pages.map(p => (
@@ -870,8 +938,8 @@ export default function App() {
                 onClick={() => setActivePageId(p.id)}
                 className={\`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors \${
                   p.id === activePageId 
-                    ? 'bg-indigo-600 border-indigo-500 text-white' 
-                    : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:bg-zinc-800 hover:text-white'
+                    ? 'bg-brand-600 border-brand-500 text-on-brand' 
+                    : 'bg-surface border-line text-muted hover:bg-surface-2 hover:text-fg'
                 }\`}
               >
                 {p.title}
@@ -879,7 +947,7 @@ export default function App() {
             ))}
             <button
               onClick={handleAddPage}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-indigo-400 border border-indigo-500/30 hover:border-indigo-500 transition-all"
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-surface-2 hover:bg-surface-2 text-brand-600 border border-brand-500/30 hover:border-brand-500 transition-all"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>+ Add More Page</span>
@@ -894,4 +962,4 @@ export default function App() {
 }
 `;
 
-module.exports = { scaffoldReactProject };
+module.exports = { scaffoldReactProject, createTemplateCandidate };

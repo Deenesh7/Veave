@@ -7,6 +7,8 @@ const subscriptionSchema = new mongoose.Schema({
   billingCycle: { type: String, enum: ['monthly', 'yearly', 'lifetime'], default: 'monthly' },
   creditsAllocated: { type: Number, default: 50 },
   creditsRemaining: { type: Number, default: 50 },
+  // Credits bought on top of the plan allowance; they also lift the monthly token cap (20,000 tokens each).
+  bonusCredits: { type: Number, default: 0, min: 0 },
   renewsAt: { type: Date }
 }, { _id: false });
 

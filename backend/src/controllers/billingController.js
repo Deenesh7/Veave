@@ -4,7 +4,7 @@ const User = require('../models/User');
 const AIUsage = require('../models/AIUsage');
 const Payment = require('../models/Payment');
 
-const { PLAN_LIMITS, limitsFor, resolvePlanName } = require('../services/billing/plans');
+const { PLAN_LIMITS, imageEnhanceCredits, limitsFor, resolvePlanName, CREDIT_PRICE_INR, MIN_CREDIT_PURCHASE, MAX_CREDIT_PURCHASE, canBuyExtraCredits, TOKENS_PER_CREDIT } = require('../services/billing/plans');
 const { getProjectUsage } = require('../services/billing/usageService');
 
 // Initialize Razorpay instance
@@ -103,6 +103,12 @@ exports.getOverview = async (req, res, next) => {
           allocated: creditsAllocated,
           remaining: creditsRemaining,
           used: creditsAllocated - creditsRemaining,
+          bonus: user.subscription?.bonusCredits || 0,
+          pricePerCredit: CREDIT_PRICE_INR,
+          imageEnhanceCredits: imageEnhanceCredits(),
+          minPurchase: MIN_CREDIT_PURCHASE,
+          maxPurchase: MAX_CREDIT_PURCHASE,
+          canBuy: canBuyExtraCredits(planName),
           percentage: creditsAllocated > 0
             ? Math.round(((creditsAllocated - creditsRemaining) / creditsAllocated) * 100)
             : 0,
@@ -111,10 +117,10 @@ exports.getOverview = async (req, res, next) => {
           used: tokenUsage.totalTokens,
           inputTokens: tokenUsage.totalInputTokens,
           outputTokens: tokenUsage.totalOutputTokens,
-          limit: limits.monthlyTokens,
+          limit: limits.monthlyTokens + (user.subscription?.bonusCredits || 0) * TOKENS_PER_CREDIT,
           requests: tokenUsage.totalRequests,
           percentage: limits.monthlyTokens > 0
-            ? Math.min(100, Math.round((tokenUsage.totalTokens / limits.monthlyTokens) * 100))
+            ? Math.min(100, Math.round((tokenUsage.totalTokens / (limits.monthlyTokens + (user.subscription?.bonusCredits || 0) * TOKENS_PER_CREDIT)) * 100))
             : 0,
         },
         storage: {
@@ -180,6 +186,7 @@ exports.changePlan = async (req, res, next) => {
         'subscription.status': 'active',
         'subscription.creditsAllocated': limits.credits,
         'subscription.creditsRemaining': limits.credits,
+        'subscription.bonusCredits': 0,
         'subscription.renewsAt': renewsAt,
       },
       { new: true }
@@ -389,6 +396,7 @@ exports.verifyPayment = async (req, res, next) => {
         'subscription.status': 'active',
         'subscription.creditsAllocated': limits.credits,
         'subscription.creditsRemaining': limits.credits,
+        'subscription.bonusCredits': 0,
         'subscription.renewsAt': renewsAt,
       },
       { new: true }
@@ -408,6 +416,130 @@ exports.verifyPayment = async (req, res, next) => {
           paidAt: new Date(),
         },
         message: `Payment successful! You are now subscribed to ${plan}.`,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const parseCreditQty = (value) => {
+  const qty = Number(value);
+  if (!Number.isInteger(qty) || qty < MIN_CREDIT_PURCHASE || qty > MAX_CREDIT_PURCHASE) return null;
+  return qty;
+};
+
+/**
+ * POST /api/billing/credits/create-order
+ * Creates a Razorpay order for extra credits at CREDIT_PRICE_INR each (paid plans only).
+ */
+exports.createCreditOrder = async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, error: { message: 'User not found' } });
+
+    if (!canBuyExtraCredits(user.plan)) {
+      return res.status(403).json({ success: false, error: { message: 'Extra credits are available on Plus and Pro plans. Upgrade to buy more credits.' } });
+    }
+    const qty = parseCreditQty(req.body.credits);
+    if (!qty) {
+      return res.status(400).json({ success: false, error: { message: `Enter a whole number of credits between ${MIN_CREDIT_PURCHASE} and ${MAX_CREDIT_PURCHASE}.` } });
+    }
+
+    const rzp = getRazorpayInstance();
+    if (!rzp) {
+      return res.status(503).json({ success: false, error: { message: 'Payments are not configured on this server. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.' } });
+    }
+
+    const amount = qty * CREDIT_PRICE_INR;
+    const receipt = `cred_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    let orderId;
+    try {
+      const order = await rzp.orders.create({
+        amount: amount * 100,
+        currency: 'INR',
+        receipt,
+        notes: { userId: userId.toString(), userEmail: user.email, kind: 'credits', credits: String(qty) },
+      });
+      orderId = order.id;
+    } catch (err) {
+      console.error('Razorpay credit order failed:', err.error?.description || err.message);
+      return res.status(502).json({ success: false, error: { message: `Could not start the payment: ${err.error?.description || err.message}` } });
+    }
+
+    await Payment.create({ userId, plan: 'Extra Credits', kind: 'credits', credits: qty, amount, currency: 'INR', status: 'created', razorpayOrderId: orderId, receipt });
+
+    res.status(200).json({
+      success: true,
+      data: { orderId, amount: amount * 100, currency: 'INR', keyId: process.env.RAZORPAY_KEY_ID, credits: qty, user: { name: user.name, email: user.email } },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /api/billing/credits/verify-payment
+ * Verifies the signature and adds the purchased credits (once per order).
+ */
+exports.verifyCreditPayment = async (req, res, next) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    const userId = req.user._id;
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ success: false, error: { message: 'Missing payment details for verification' } });
+    }
+    if (!isRazorpayConfigured()) {
+      return res.status(503).json({ success: false, error: { message: 'Payments are not configured on this server.' } });
+    }
+
+    const pending = await Payment.findOne({ razorpayOrderId: String(razorpay_order_id), userId, kind: 'credits' });
+    if (!pending || pending.amount !== pending.credits * CREDIT_PRICE_INR) {
+      return res.status(400).json({ success: false, error: { message: 'Unknown credit order for this account.' } });
+    }
+    if (pending.status === 'paid') {
+      return res.status(200).json({
+        success: true,
+        data: {
+          user: await User.findById(userId),
+          payment: { invoiceNumber: pending.invoiceNumber, amount: pending.amount, currency: pending.currency, plan: 'Extra Credits', credits: pending.credits, status: 'paid', paymentId: pending.razorpayPaymentId },
+          message: 'Payment already verified.',
+        },
+      });
+    }
+
+    const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex');
+    const given = Buffer.from(String(razorpay_signature));
+    const exp = Buffer.from(expected);
+    if (given.length !== exp.length || !crypto.timingSafeEqual(given, exp)) {
+      await Payment.updateOne({ _id: pending._id }, { status: 'failed' });
+      return res.status(400).json({ success: false, error: { message: 'Invalid payment signature. Verification failed.' } });
+    }
+
+    const invoiceNumber = `INV-${new Date().getFullYear()}-${pending._id.toString().slice(-6).toUpperCase()}`;
+    // Atomic paid-flip guarantees the credits are granted exactly once.
+    const payment = await Payment.findOneAndUpdate(
+      { _id: pending._id, status: { $ne: 'paid' } },
+      { status: 'paid', razorpayPaymentId: razorpay_payment_id, razorpaySignature: razorpay_signature, invoiceNumber },
+      { new: true }
+    );
+    if (!payment) {
+      return res.status(409).json({ success: false, error: { message: 'This payment was already processed.' } });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $inc: { credits: pending.credits, 'subscription.creditsRemaining': pending.credits, 'subscription.creditsAllocated': pending.credits, 'subscription.bonusCredits': pending.credits } },
+      { new: true }
+    );
+
+    res.status(200).json({
+      success: true,
+      data: {
+        user: updatedUser,
+        payment: { invoiceNumber, amount: pending.amount, currency: 'INR', plan: 'Extra Credits', credits: pending.credits, status: 'paid', paymentId: razorpay_payment_id, paidAt: new Date() },
+        message: `${pending.credits} credits added to your account.`,
       },
     });
   } catch (error) {

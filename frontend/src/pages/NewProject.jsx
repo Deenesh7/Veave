@@ -4,7 +4,6 @@ import { useSmartBack } from '../hooks/useSmartBack';
 import { Sparkles, ArrowLeft } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Textarea } from '../components/ui/Textarea';
-import { TemplateSelector } from '../features/projects/TemplateSelector';
 import { useProjectStore } from '../store/projectStore';
 
 export default function NewProject() {
@@ -95,7 +94,6 @@ export default function NewProject() {
         </div>
 
         <div className="pt-6 border-t border-zinc-200">
-          <TemplateSelector onSelect={setPrompt} />
         </div>
       </div>
     </div>

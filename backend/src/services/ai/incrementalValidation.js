@@ -39,6 +39,7 @@ function resolveConfig(env = process.env) {
     enforce: !/^(?:0|off|false|no)$/i.test(String(env.INCREMENTAL_VISUAL_ENFORCE || 'on')),
     maxRepairs: Math.max(0, Math.min(5, Number.parseInt(env.INCREMENTAL_VISUAL_MAX_REPAIRS, 10) || 2)),
     maxRoutes: Math.max(1, Math.min(8, Number.parseInt(env.INCREMENTAL_VISUAL_MAX_ROUTES, 10) || 4)),
+    themeMaxRoutes: Math.max(1, Math.min(30, Number.parseInt(env.INCREMENTAL_THEME_MAX_ROUTES, 10) || 12)),
     viewports: viewports.length ? viewports.map((width) => ({ width, height: width < 600 ? 844 : 900 })) : DEFAULT_VIEWPORTS
   };
 }
@@ -491,15 +492,53 @@ function routesForChange(files, changedPaths, { knownRoutes = [], viewingRoute =
  * "The Admission button in the nav bar should go to https://..." : the request names a destination. Pull out the URL and the
  * words that identify the element, so the rendered page can be checked for a link that really goes there.
  */
-function extractRequestedLink(prompt = '') {
+const LINK_VERB = /\b(?:redirect|redirects|redirected|link|links|linked|navigate|navigates|open|opens|go\s+to|goes\s+to|point|points|href|take|takes|send|sends|direct|lead|leads|jump|jumps|route|routes)\b/i;
+const FILE_LIKE = /\.(?:jsx?|tsx?|css|scss|html?|json|md|png|jpe?g|gif|svg|webp|avif|ico)$/i;
+const LINK_STOP_WORDS = new Set(['the', 'a', 'an', 'in', 'on', 'of', 'to', 'and', 'should', 'must', 'will', 'redirect', 'redirects', 'link', 'linked', 'navigate', 'open', 'go', 'goes', 'nav', 'bar', 'navbar', 'menu', 'header', 'footer', 'button', 'tab', 'page', 'website', 'site', 'url', 'this', 'that', 'it', 'new', 'with', 'for', 'when', 'click', 'clicked', 'clicking', 'user', 'inteh', 'teh', 'make', 'word', 'words', 'text', 'label', 'change', 'called', 'named', 'say', 'says', 'please', 'can', 'you', 'want', 'need', 'like', 'also', 'then', 'its', 'into', 'from', 'was', 'are', 'not']);
+
+/**
+ * "Make the word Admission redirect to https://..." -> { url, words, newTab }. The target may be a full URL, a web address
+ * written without the scheme (www.example.com/apply, apply.school.edu), or a page/anchor of the site itself (/admissions, #apply).
+ */
+function extractRequestedLink(prompt = '', knownRoutes = [], attachments = []) {
   const text = String(prompt || '');
-  const url = (text.match(/https?:\/\/[^\s"'<>)]+/i) || [])[0];
-  if (!url || !/\b(?:redirect|redirects|link|links|navigate|navigates|open|opens|go\s+to|goes\s+to|point|points|href|take|takes|send|sends|direct|lead|leads)\b/i.test(text)) return null;
+  if (!LINK_VERB.test(text)) return null;
+  let raw = (text.match(/https?:\/\/[^\s"'<>)]+/i) || [])[0] || null;
+  let url = raw;
+  if (!url) {
+    const bare = text.match(/(?:^|[\s"'(])((?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|org|net|edu|gov|info|biz|app|dev|ai|io|co|in|uk|us|ca|au|ac\.[a-z]{2}|school|online|site)(?:\/[^\s"'<>)]*)?)(?=$|[\s"'),;!?]|\.(?:\s|$))/i);
+    if (bare && !FILE_LIKE.test(bare[1].replace(/[.,;:!?]+$/, ''))) { raw = bare[1]; url = `https://${bare[1]}`; }
+  }
+  if (!url) {
+    const internal = text.match(/(?:^|[\s"'(])(\/[a-z0-9][\w\-./]*|#[a-z][\w-]*)(?=$|[\s"'),;!?]|\.(?:\s|$))/i);
+    if (internal) { raw = internal[1]; url = internal[1]; }
+  }
+  if (!url && knownRoutes.length) {
+    // "... should go to the admissions page": the page is named, not written as a path; use it only when exactly one route fits.
+    const named = text.match(/\b(?:to|towards|into)\s+(?:the\s+)?([a-z][a-z -]{2,30}?)\s+page\b/i);
+    if (named) {
+      const tokens = named[1].toLowerCase().split(/\s+/).filter((word) => word.length > 2 && !LINK_STOP_WORDS.has(word)).map((word) => word.replace(/s$/, ''));
+      const fits = tokens.length ? knownRoutes.filter((route) => route !== '/' && tokens.every((word) => route.toLowerCase().includes(word))) : [];
+      if (fits.length === 1) { raw = named[0]; url = fits[0]; }
+    }
+  }
+  if (!url && attachments.length) {
+    // "make Prospectus open the attached file": the target is the file the user attached (the one named, else the only one).
+    const lower = text.toLowerCase();
+    const named = attachments.filter((item) => lower.includes(String(item.name || '').replace(/\.[a-z0-9]+$/i, '').toLowerCase()));
+    const chosen = named.length === 1 ? named[0] : (attachments.length === 1 ? attachments[0] : null);
+    if (chosen) {
+      const generic = new Set(['file', 'files', 'document', 'doc', 'pdf', 'image', 'images', 'photo', 'picture', 'attached', 'attachment', 'uploaded', 'upload', 'download', 'downloads', 'brochure']);
+      const words = (lower.replace(/\[<[^>]*>[^\]]*\]/g, ' ').match(/[a-z]{3,}/g) || []).filter((w) => !LINK_STOP_WORDS.has(w) && !generic.has(w)).slice(0, 4);
+      return { url: chosen.publicPath, words, newTab: false, attachment: chosen.name };
+    }
+  }
+  if (!url) return null;
   const clean = url.replace(/[.,;:!?]+$/, '');
-  const before = text.slice(0, text.indexOf(url)).toLowerCase();
-  const stop = new Set(['the', 'a', 'an', 'in', 'on', 'of', 'to', 'and', 'should', 'must', 'will', 'redirect', 'link', 'navigate', 'open', 'go', 'goes', 'nav', 'bar', 'navbar', 'menu', 'header', 'footer', 'button', 'tab', 'page', 'website', 'site', 'url', 'this', 'that', 'it', 'new', 'with', 'for', 'when', 'click', 'clicked', 'clicking', 'user', 'inteh', 'teh']);
-  const words = (before.match(/[a-z]{3,}/g) || []).filter((w) => !stop.has(w)).slice(0, 4);
-  return { url: clean, words };
+  const before = text.slice(0, text.indexOf(raw)).toLowerCase();
+  const words = (before.match(/[a-z]{3,}/g) || []).filter((w) => !LINK_STOP_WORDS.has(w)).slice(0, 4);
+  const newTab = /\b(?:new|another|separate)\s+(?:tab|window)\b/i.test(text);
+  return { url: clean, words, newTab };
 }
 
 const sameUrl = (a, b) => String(a || '').trim().replace(/^http:/i, 'https:').replace(/#.*$/, '').replace(/\/+$/, '').toLowerCase() === String(b || '').trim().replace(/^http:/i, 'https:').replace(/#.*$/, '').replace(/\/+$/, '').toLowerCase();
@@ -526,18 +565,23 @@ function linkInspector(argument) {
 function verifyRequestedLink(requested, anchors) {
   const exact = anchors.filter((item) => sameUrl(item.href, requested.url));
   const labelled = requested.words.length ? anchors.filter((item) => item.related) : [];
+  const opensRight = (item) => !requested.newTab || item.target === '_blank';
   const ok = requested.words.length
-    ? exact.some((item) => item.related && item.shown && item.clickable)
-    : exact.some((item) => item.shown && item.clickable);
+    ? exact.some((item) => item.related && item.shown && item.clickable && opensRight(item))
+    : exact.some((item) => item.shown && item.clickable && opensRight(item));
   let detail = '';
   if (!ok) {
     if (!exact.length) detail = `No link on the rendered page goes to ${requested.url}.${labelled.length ? ` The element(s) labelled like your request link to: ${labelled.slice(0, 4).map((item) => `"${item.text}" -> ${item.href || '(no href)'}`).join('; ')}.` : ''}`;
     else if (!exact.some((item) => item.shown)) detail = `A link to ${requested.url} exists but it is not visible on the page.`;
     else if (!exact.some((item) => item.clickable)) detail = `A link to ${requested.url} exists but another element covers it, so it cannot be clicked.`;
+    else if (requested.newTab && !exact.some(opensRight)) detail = `A link to ${requested.url} exists but it does not open in a new tab. Add target="_blank" rel="noopener noreferrer" to it.`;
     else detail = `A link to ${requested.url} exists, but not on the element you named (${requested.words.join(' ')}). Elements with that label link to: ${labelled.slice(0, 4).map((item) => `"${item.text}" -> ${item.href || '(no href)'}`).join('; ') || 'nothing'}.`;
   }
   return { ok, detail, found: exact.length, labelled: labelled.slice(0, 5) };
 }
+
+const themeValidation = require('./themeValidation');
+const { extractThemeRequest, themeInspector, verifyThemeRequest } = themeValidation;
 
 const reachableFromEntry = (files) => require('./incrementalEditor').reachableFromEntry(files);
 const blockingOf = (defects) => defects.filter((defect) => BLOCKING_KINDS.has(defect.kind));
@@ -560,9 +604,24 @@ function requestedIssues(requested, expected) {
   return issues;
 }
 
+/** The evidence the correction model receives when the rendered theme is not what was asked for. */
+function themeRepairDetail(requested, theme, files, reach) {
+  const label = requested.mode === 'custom' ? requested.label : requested.mode;
+  const suspects = themeValidation.themeSuspects(files, requested);
+  const lines = [
+    theme.detail,
+    suspects.length ? `Files the running app uses that still hard-code the old theme: ${suspects.map((item) => `${item.path} (${item.count}: ${item.examples.join(', ')})`).join('; ')}.` : '',
+    reach && reach.ineffective && reach.ineffective.length ? `Edits to ${reach.ineffective.join(', ')} had no effect because the running app never reads ${reach.ineffective.length === 1 ? 'it' : 'them'}; do not rely on ${reach.ineffective.length === 1 ? 'it' : 'them'}.` : '',
+    `Make the ${label} theme apply where it is painted: the root container in src/App.jsx, global CSS in src/index.css (body, :root variables), the body classes in index.html, and the shared components and pages listed above (navbar, footer, cards, modals, sections, text colours). Change only surfaces and text that belong to the theme; keep photographs, logos, brand colours and intentionally contrasting components (for example image overlays) as they are, and keep every text readable against its background.`
+  ];
+  // The files that paint the page: the correction model is shown these and may patch them (not only the files the edit touched).
+  const owners = [...new Set([...suspects.map((item) => item.path), ...['src/App.jsx', 'src/index.css', 'index.html'].filter((filePath) => (files || []).some((file) => file.path === filePath))])].slice(0, 14);
+  return { detail: lines.filter(Boolean).join(' '), ownerFiles: owners };
+}
+
 async function runIncrementalValidation({
   beforeFiles, afterFiles, changedPaths = [], knownRoutes = [], viewingRoute = null, focusTerms = [],
-  expectedContent = null, verifyContent = null, inspectContent = null, requestedLink = null, spacingRequest = false, layoutRequest = null,
+  expectedContent = null, verifyContent = null, inspectContent = null, requestedLink = null, spacingRequest = false, layoutRequest = null, themeRequest = null,
   render, reference = null, routing = null, repair = null, rebuild = null, fidelity, onState = async () => {}, signal = null,
   config = resolveConfig(), buildResult = { status: 'passed', detail: 'syntax, build and runtime smoke checks passed' }
 }) {
@@ -575,11 +634,10 @@ async function runIncrementalValidation({
   const changed = changedPaths.filter((filePath) => (afterFiles.find((file) => file.path === filePath)?.content) !== (beforeFiles.find((file) => file.path === filePath)?.content));
   check('patch-applied', changed.length ? 'passed' : 'failed', changed.length ? `changed: ${changed.join(', ')}` : 'no file differs from the previous revision');
   check('syntax-and-build', buildResult.status, buildResult.detail);
-  // An edit to code that nothing imports cannot change what the user sees (for example a leftover Navbar.jsx).
-  const reachable = reachableFromEntry(afterFiles);
-  const codeChanged = changed.filter((filePath) => /\.(?:jsx?|tsx?|css|scss)$/i.test(filePath));
-  const unreachableOnly = Boolean(reachable) && codeChanged.length > 0 && codeChanged.every((filePath) => !reachable.has(filePath));
-  check('edit-reaches-screen', !reachable || !codeChanged.length ? 'skipped' : unreachableOnly ? 'failed' : 'passed', unreachableOnly ? `${codeChanged.join(', ')} is not imported by the running app, so the edit changes nothing the user sees` : reachable ? 'the changed code is part of the running app' : 'no entry file found');
+  // An edit to files that nothing consumes cannot change what the user sees: unused components, and also design-token JSON,
+  // stylesheets or data files that no running code imports or reads.
+  const reach = themeValidation.analyzeReach(beforeFiles, afterFiles, changed);
+  check('edit-reaches-screen', reach.status, reach.detail);
 
   await enter(STATES.PLANNING, 'mapping the change to the routes it can affect');
   const plan = routesForChange(afterFiles, changed, { knownRoutes, viewingRoute, maxRoutes: config.maxRoutes });
@@ -726,14 +784,33 @@ async function runIncrementalValidation({
         layout = { ok: true, skipped: true, detail: `the arrangement could not be measured: ${String(error.message).slice(0, 160)}` };
       }
     }
-    return { perRoute, introduced, resolved, preexisting, renderFailures, comparison, targeted, requested, link, layout, diagnostics };
+    // "Change to light theme": the painted page itself must match, on EVERY known route, whatever the source says.
+    let theme = null;
+    if (themeRequest) {
+      const themeRoutes = [...new Set([viewingRoute || primaryRoute, ...routes, ...knownRoutes])].filter((route) => route && !/[*:]/.test(route)).slice(0, config.themeMaxRoutes);
+      const perThemeRoute = [];
+      for (const route of themeRoutes) {
+        signal?.throwIfAborted();
+        try {
+          const measured = await render(files, { routePath: route, viewport: primaryViewport, inspect: themeInspector, argument: { target: themeRequest.color || null } });
+          perThemeRoute.push({ route, ...verifyThemeRequest(themeRequest, measured) });
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          perThemeRoute.push({ route, ok: true, skipped: true, detail: `could not be measured: ${String(error.message).slice(0, 160)}` });
+        }
+      }
+      theme = { ...themeValidation.summarizeThemeRoutes(themeRequest, perThemeRoute), route: viewingRoute || primaryRoute };
+    }
+    // Do the files changed so far (including repairs) influence the running app?
+    const reachNow = themeValidation.analyzeReach(beforeFiles, files, allChanged);
+    return { perRoute, introduced, resolved, preexisting, renderFailures, comparison, targeted, requested, link, layout, theme, reach: reachNow, diagnostics };
   };
 
   evaluation = await evaluate();
   // A requested arrangement can take more than one correction: the measured structure is new evidence every time.
   let lastRepairError = '';
   const history = [];
-  let lastSignature = [imageDiagnostics.measurementSignature(evaluation.diagnostics), evaluation.introduced.map(defectSignature).sort().join(','), evaluation.layout && !evaluation.layout.ok ? evaluation.layout.detail : ''].join('#');
+  let lastSignature = [imageDiagnostics.measurementSignature(evaluation.diagnostics), evaluation.introduced.map(defectSignature).sort().join(','), evaluation.layout && !evaluation.layout.ok ? evaluation.layout.detail : '', evaluation.theme && !evaluation.theme.ok ? JSON.stringify((evaluation.theme.routes || []).map((entry) => [entry.route, entry.ok, entry.measured && Math.round((entry.measured.darkShare || 0) * 20), entry.measured && Math.round((entry.measured.lightShare || 0) * 20)])) : ''].join('#');
   // Every project state tried so far (by content of what differs from the first candidate), so an identical patch is recognised.
   const crypto = require('crypto');
   const baseContent = new Map(afterFiles.map((file) => [file.path, file.content]));
@@ -746,6 +823,8 @@ async function runIncrementalValidation({
       ...evaluation.targeted.map((issue) => ({ source: 'requested-part-differs-from-real-site', ...issue })),
       ...requestedIssues(evaluation.requested, expectedContent),
       ...(evaluation.layout && !evaluation.layout.ok ? [{ source: 'requested-layout-missing', kind: 'layout-not-applied', selector: null, route: evaluation.layout.route, detail: `${evaluation.layout.detail}. Change the CSS of the container that holds these images so they really sit ${layoutRequest.orientation === 'row' ? 'side by side in one row' : 'one below the other'}; check the rules that place the items (grid-area, width, position, flex-direction, display) and reset those that keep the old arrangement.` }] : []),
+      ...(evaluation.theme && !evaluation.theme.ok ? [{ source: 'requested-theme-missing', kind: 'theme-not-applied', selector: null, route: evaluation.theme.route, ...themeRepairDetail(themeRequest, evaluation.theme, files, evaluation.reach) }] : []),
+      ...(evaluation.reach && evaluation.reach.status === 'failed' ? [{ source: 'edit-has-no-effect', kind: 'unused-file-edit', selector: null, route: viewingRoute || primaryRoute, detail: `${evaluation.reach.detail}. Make the change in files the running app actually renders and loads${(evaluation.reach.paintingFiles || []).length ? `, for example: ${evaluation.reach.paintingFiles.slice(0, 12).join(', ')}` : ''}. Do not edit files that nothing imports.` }] : []),
       ...(evaluation.link && !evaluation.link.ok ? [{ source: 'requested-link-missing', kind: 'missing-link', selector: null, route: viewingRoute || primaryRoute, detail: `${evaluation.link.detail} Make the element the user named a real link (<a href="${requestedLink.url}">) that is visible and clickable.` }] : [])
     ];
     if (!toFix.length || !repair) break;
@@ -796,8 +875,8 @@ async function runIncrementalValidation({
     }
     lastRepairError = '';
     evaluation = await evaluate();
-    const remaining = evaluation.introduced.length + evaluation.targeted.length + requestedIssues(evaluation.requested, expectedContent).length + (evaluation.link && !evaluation.link.ok ? 1 : 0) + (evaluation.layout && !evaluation.layout.ok ? 1 : 0);
-    const signature = [imageDiagnostics.measurementSignature(evaluation.diagnostics), evaluation.introduced.map(defectSignature).sort().join(','), evaluation.layout && !evaluation.layout.ok ? evaluation.layout.detail : ''].join('#');
+    const remaining = evaluation.introduced.length + evaluation.targeted.length + requestedIssues(evaluation.requested, expectedContent).length + (evaluation.link && !evaluation.link.ok ? 1 : 0) + (evaluation.layout && !evaluation.layout.ok ? 1 : 0) + (evaluation.theme && !evaluation.theme.ok ? 1 : 0) + (evaluation.reach && evaluation.reach.status === 'failed' ? 1 : 0);
+    const signature = [imageDiagnostics.measurementSignature(evaluation.diagnostics), evaluation.introduced.map(defectSignature).sort().join(','), evaluation.layout && !evaluation.layout.ok ? evaluation.layout.detail : '', evaluation.theme && !evaluation.theme.ok ? JSON.stringify((evaluation.theme.routes || []).map((entry) => [entry.route, entry.ok, entry.measured && Math.round((entry.measured.darkShare || 0) * 20), entry.measured && Math.round((entry.measured.lightShare || 0) * 20)])) : ''].join('#');
     // A correction that leaves every measurement as it was has not touched the cause.
     const ineffective = Boolean(remaining) && signature === lastSignature;
     lastSignature = signature;
@@ -861,13 +940,36 @@ async function runIncrementalValidation({
       : [req.missingTexts.length ? `${req.missingTexts.length}/${total} requested text block(s) not shown: ${req.missingTexts.slice(0, 3).map((text) => `"${text.slice(0, 80)}"`).join(', ')}` : '', req.assetShown ? '' : 'none of the real page images for the requested part is shown', (req.removedWords || []).length ? `existing content outside the requested part was removed (${req.removedWords.slice(0, 8).join(', ')})` : ''].filter(Boolean).join('; '));
   }
   if (evaluation.link) check('requested-link', evaluation.link.ok ? 'passed' : 'failed', evaluation.link.ok ? `a visible, clickable element on the page links to ${requestedLink.url}` : evaluation.link.detail);
+  if (evaluation.theme && !evaluation.theme.skipped) check('rendered-theme-validation', evaluation.theme.ok ? 'passed' : 'failed', evaluation.theme.detail);
+  else if (themeRequest) check('rendered-theme-validation', 'skipped', evaluation.theme ? evaluation.theme.detail : 'the page colours could not be measured');
+  // The final files (after any correction) decide whether the edit reached the screen.
+  if (evaluation.reach) check('edit-reaches-screen', evaluation.reach.status, evaluation.reach.detail);
+  // Passing the build never implies the request was fulfilled: this check only passes when every verifiable part of the request
+  // (text, link, arrangement, rendered theme) was confirmed on the rendered page.
+  {
+    const intentNames = ['requested-content', 'requested-link', 'requested-layout', 'rendered-theme-validation'];
+    const intent = checks.filter((item) => intentNames.includes(item.name) && item.status !== 'skipped');
+    const reachFailed = evaluation.reach && evaluation.reach.status === 'failed';
+    if (reachFailed && themeRequest) intent.push({ name: 'edit-reaches-screen', status: 'failed', detail: evaluation.reach.detail });
+    const failedIntent = intent.filter((item) => item.status === 'failed');
+    check('request-intent-validation', !intent.length ? 'skipped' : failedIntent.length ? 'failed' : 'passed',
+      !intent.length ? 'the request has no machine-verifiable outcome (such as a theme, link, text or arrangement); only build, render and regression checks ran'
+        : failedIntent.length ? `not satisfied: ${failedIntent.map((item) => `${item.name} (${String(item.detail).slice(0, 200)})`).join('; ')}`
+          : `confirmed on the rendered page: ${intent.map((item) => item.name).join(', ')}`);
+  }
+  {
+    // Every route that renders the edited code, compared before and after: render success, new blocking defects, other routes.
+    const other = checks.find((item) => item.name === 'regression-other-routes');
+    const failures = [rendered && !evaluation.renderFailures ? '' : 'a page could not be rendered', blockingLeft.length ? `${blockingLeft.length} new blocking defect(s): ${blockingLeft.slice(0, 2).map((defect) => defect.detail).join('; ')}` : '', other && other.status === 'failed' ? other.detail : ''].filter(Boolean);
+    check('route-regression-validation', !rendered ? 'failed' : failures.length ? 'failed' : 'passed', failures.length ? failures.join(' | ') : `${rendered} route render(s) at ${config.viewports.map((viewport) => viewport.width).join('/')}px (${[...new Set(evaluation.perRoute.map((entry) => entry.route))].join(', ')}) show no new blocking defects`);
+  }
   if (evaluation.layout && !evaluation.layout.skipped) check('requested-layout', evaluation.layout.ok ? 'passed' : 'failed', evaluation.layout.detail);
   check('interaction', 'skipped', 'no functional scenario is defined for this project; interactions were not exercised');
 
   const failedChecks = checks.filter((item) => item.status === 'failed');
-  const skippedChecks = checks.filter((item) => item.status === 'skipped' && !['interaction', 'edit-reaches-screen', 'multipage-routing'].includes(item.name));
+  const skippedChecks = checks.filter((item) => item.status === 'skipped' && !['interaction', 'edit-reaches-screen', 'multipage-routing', 'request-intent-validation', 'rendered-theme-validation'].includes(item.name));
   let status;
-  if (failedChecks.some((item) => ['patch-applied', 'syntax-and-build', 'render', 'edit-reaches-screen', 'multipage-routing', 'requested-content', 'requested-link', 'requested-layout'].includes(item.name)) || blockingLeft.length || targetedLeft.length) status = STATES.FAILED;
+  if (failedChecks.some((item) => ['patch-applied', 'syntax-and-build', 'render', 'edit-reaches-screen', 'multipage-routing', 'requested-content', 'requested-link', 'requested-layout', 'rendered-theme-validation', 'request-intent-validation', 'route-regression-validation'].includes(item.name)) || blockingLeft.length || targetedLeft.length) status = STATES.FAILED;
   else if (softLeft.length || failedChecks.length || skippedChecks.length || evaluation.comparison.issues.length) status = STATES.PARTIAL;
   else status = STATES.PASSED;
   await enter(status);
@@ -878,6 +980,7 @@ async function runIncrementalValidation({
     report: {
       status,
       enforce: config.enforce,
+      intentVerified: checks.some((item) => item.name === 'request-intent-validation' && item.status === 'passed'),
       timeline,
       checks,
       routes: { checked: routes, untested: plan.untested || [], shared: plan.shared, affected: plan.affected, viewports: config.viewports.map((viewport) => viewport.width) },
@@ -902,7 +1005,19 @@ async function runIncrementalValidation({
   };
 }
 
+/**
+ * A link to a file of the site itself (/files/prospectus.pdf) only works when that file is in the project's public folder.
+ * Returns a message when it is not, otherwise null. Page routes, anchors and web addresses are not files.
+ */
+function findMissingLinkedFile(requested, files = []) {
+  if (!requested || !requested.url || !requested.url.startsWith('/')) return null;
+  const pathname = requested.url.split(/[?#]/)[0];
+  if (!/\.[a-z0-9]{2,5}$/i.test(pathname)) return null;
+  const exists = files.some((file) => file && (file.path === `public${pathname}` || file.path === pathname.replace(/^\//, '')));
+  return exists ? null : `The link points to ${pathname}, but that file is not in the project. Attach the file with the + button (or give a web address) and say which word should open it.`;
+}
+
 module.exports = {
   STATES, CATEGORY_PRIORITY, BLOCKING_KINDS, resolveConfig, defectInspector, defectSignature, diffDefects,
-  compareWithReference, targetedIssues, routesForChange, runIncrementalValidation, isSpacingRequest, extractLayoutRequest, verifyLayoutRequest, layoutTarget, layoutInspector, extraSpaceIssues, extractRequestedLink, verifyRequestedLink, linkInspector, sameUrl
+  compareWithReference, targetedIssues, routesForChange, runIncrementalValidation, isSpacingRequest, extractLayoutRequest, extractThemeRequest, verifyThemeRequest, themeInspector, verifyLayoutRequest, layoutTarget, layoutInspector, extraSpaceIssues, extractRequestedLink, verifyRequestedLink, linkInspector, sameUrl, findMissingLinkedFile
 };

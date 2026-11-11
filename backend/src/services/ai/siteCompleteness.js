@@ -45,6 +45,17 @@ function visibleWords(source) {
   return [...jsxText, ...strings].join(' ').split(/\s+/).filter((word) => /[a-z]{2,}/i.test(word)).length;
 }
 
+const NO_IMAGES_REQUEST = /\b(?:without|no|zero)\s+(?:any\s+)?(?:images?|photos?|pictures?)\b|\btext[- ]only\b/i;
+const NON_VISUAL_APP = /\b(widget|component|calculator|form|login page|sign[- ]?in page|dashboard|admin panel|game|todo|to-do)\b/i;
+
+// Images the source really shows: <img>, CSS/inline background images, and image fields in data arrays.
+function countImages(source) {
+  const tags = (source.match(/<img\b/gi) || []).length;
+  const backgrounds = (source.match(/background-image\s*:|backgroundImage\s*:|bg-\[url\(|url\(\s*['"]?(?:\/|https?:)/gi) || []).length;
+  const fields = (source.match(/\b(?:image|img|photo|thumbnail|cover|avatar|banner|poster)\w*\s*:\s*['"`](?:https?:\/\/|\/assets\/|\/images\/|data:image)/gi) || []).length;
+  return tags + backgrounds + fields;
+}
+
 function luminance(hex) {
   const m = String(hex || '').match(/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i);
   if (!m) return null;
@@ -58,7 +69,7 @@ function luminance(hex) {
  * @param {{prompt?:string, spec?:{pages?:Array}, prototypeBg?:string|null}} context
  * @returns {Array<{category:'completeness', path:string, message:string, kind:string}>}
  */
-function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null } = {}) {
+function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null, brokenImageLinks = [], entityAssets = [] } = {}) {
   const issues = [];
   const byPath = new Map(files.map((file) => [file.path, file]));
   const app = byPath.get('src/App.jsx') || byPath.get('src/App.tsx') || byPath.get('src/App.js');
@@ -96,6 +107,12 @@ function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null
     add('routing', 'The pages are not routed. Use react-router-dom (BrowserRouter, Routes, Route) in src/App.jsx so each page has its own URL.');
   }
 
+  // 2b. Every route must be its own page with its own content (not one component under several URLs, not copies of Home).
+  if (!singleScreen && pageCount >= 2) {
+    const { findPageIssues } = require('./pageDistinctness');
+    for (const issue of findPageIssues(files, { spec }).slice(0, 8)) add(issue.kind, issue.message, issue.path);
+  }
+
   // 3. Page length: the home page and the components it is made of.
   const home = (() => {
     const routedHome = pageFiles.find((file) => /(?:^|\/)(?:home|index|landing|main|overview)\w*\.(?:jsx?|tsx?)$/i.test(file.path));
@@ -113,7 +130,31 @@ function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null
   // 4. Footer.
   if (!/<footer[\s>]/i.test(treeSource)) add('footer', 'The site has no footer. Add a footer with the brand, links to every page and contact details, rendered on every page.');
 
-  // 5. The look of a reference website: do not hard-code the opposite theme over the reference's background.
+  // 5. Images: a website is not created without them. Links that could not be downloaded count as a failure of their own.
+  const imagesExempt = NO_IMAGES_REQUEST.test(prompt) || (NON_VISUAL_APP.test(prompt) && !/\b(website|web ?site)\b/i.test(prompt));
+  if (!imagesExempt) {
+    const minimumHome = 3;
+    const minimumSite = singleScreen ? 3 : 6;
+    const homeImages = countImages(homeSource);
+    const siteImages = countImages(treeSource);
+    if (homeImages < minimumHome || siteImages < minimumSite) {
+      add('images', `The site has ${siteImages} image(s) (${homeImages} on the home page) but a website must have real images: at least ${minimumHome} on the home page and ${minimumSite} across the site. Add a hero image and images inside the feature, service, team, news, product or gallery cards of every page. Use <img src="https://..."> with real, working, public image links you are certain exist (they are downloaded into the project), meaningful alt text, a fixed-aspect frame with object-cover, and loading="lazy" below the fold. Do not use gradients or empty boxes instead of images, do not invent stock-photo ids, and do not reuse one image everywhere.`, home.path);
+    }
+    if (brokenImageLinks.length) {
+      add('images', `These image links could not be downloaded: ${brokenImageLinks.slice(0, 8).map((item) => item.url).join(', ')}. Replace each with a different real, working, public image link (or a different image that fits the same place). Do not leave a broken or empty image.${(() => { const spare = entityAssets.length ? require('./entityImages').spareAssets(files, entityAssets) : []; return spare.length ? ` Verified working pictures you can use instead where they fit: ${spare.slice(0, 4).map((item) => `${item.url} (${item.entity}, ${item.kind})`).join('; ')}.` : ''; })()}`, home.path);
+    }
+  }
+
+  // 5b. Pictures found for names in the prompt must really be on the site (each entity's primary picture), and spare verified
+  // pictures are offered as replacements for links that failed.
+  if (Array.isArray(entityAssets) && entityAssets.length) {
+    const { findUnusedAssets } = require('./entityImages');
+    for (const asset of findUnusedAssets(files, entityAssets).slice(0, 6)) {
+      add('entity-images', `The verified picture of "${asset.entity}" (${asset.kind}, ${asset.width}x${asset.height}; ${asset.url}) is not used on the site. Place it where it belongs (${asset.kind === 'logo' ? 'navbar and footer' : (asset.entityType === 'person' ? 'hero, About or the Team/Speakers card with that name' : 'hero, About or a feature section about it')}) as <img src="${asset.url}" alt="${asset.entity}"> in a fixed-aspect frame with object-cover. Never replace it with another person's or brand's picture.`, home.path);
+    }
+  }
+
+  // 6. The look of a reference website: do not hard-code the opposite theme over the reference's background.
   const bgLum = luminance(prototypeBg);
   if (bgLum !== null) {
     const hardDark = /className\s*=\s*["'`][^"'`]*\bbg-(?:black|slate-9\d\d|zinc-9\d\d|gray-9\d\d|neutral-9\d\d|stone-9\d\d)\b/;

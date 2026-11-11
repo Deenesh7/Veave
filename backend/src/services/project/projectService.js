@@ -112,7 +112,7 @@ class ProjectService {
     // Dashboard listings only need file metadata for the count. Returning every
     // source body makes large generated projects stall unrelated API requests.
     return await Project.find(query)
-      .select('-files.content -files.blob')
+      .select('-files.content -files.blob -provenance')
       .sort({ updatedAt: -1 })
       .lean();
   }

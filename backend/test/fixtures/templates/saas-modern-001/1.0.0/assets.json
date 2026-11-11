@@ -1,0 +1,69 @@
+{
+  "assets": [
+    {
+      "path": "files/public/images/card-1.svg",
+      "blob": {
+        "provider": "s3",
+        "bucket": "veave-uploads",
+        "key": "veave/blobs/sha256/54/54cda931e53e40fbbb6b5e194dbecdea9e61bf3bae42db46224a963b4e408678",
+        "etag": "\"309100a695364a6847f62470fec065de\"",
+        "versionId": null,
+        "sha256": "54cda931e53e40fbbb6b5e194dbecdea9e61bf3bae42db46224a963b4e408678",
+        "size": 572,
+        "contentType": "image/svg+xml"
+      }
+    },
+    {
+      "path": "files/public/images/card-2.svg",
+      "blob": {
+        "provider": "s3",
+        "bucket": "veave-uploads",
+        "key": "veave/blobs/sha256/8a/8ae6b410d50eb0d2f67c066f11254df482db67149545fd4f1023d0534c624d6f",
+        "etag": "\"8e4d46ed98c4d8388056562122796962\"",
+        "versionId": null,
+        "sha256": "8ae6b410d50eb0d2f67c066f11254df482db67149545fd4f1023d0534c624d6f",
+        "size": 656,
+        "contentType": "image/svg+xml"
+      }
+    },
+    {
+      "path": "files/public/images/card-3.svg",
+      "blob": {
+        "provider": "s3",
+        "bucket": "veave-uploads",
+        "key": "veave/blobs/sha256/7b/7b226139d0706df9eff820fe25eb2702dd2d96c1b0e29b2c7b33b193cbdb6d96",
+        "etag": "\"3ba6b604950656a6659c50c5bf1931de\"",
+        "versionId": null,
+        "sha256": "7b226139d0706df9eff820fe25eb2702dd2d96c1b0e29b2c7b33b193cbdb6d96",
+        "size": 660,
+        "contentType": "image/svg+xml"
+      }
+    },
+    {
+      "path": "files/public/images/hero.svg",
+      "blob": {
+        "provider": "s3",
+        "bucket": "veave-uploads",
+        "key": "veave/blobs/sha256/e8/e89147b8cfc1cb8b91365c98ad1b77533b0e1c042b30c9e4d1695c5ca7e8c737",
+        "etag": "\"bbf74e16331ec4b24a9105cf159e92ce\"",
+        "versionId": null,
+        "sha256": "e89147b8cfc1cb8b91365c98ad1b77533b0e1c042b30c9e4d1695c5ca7e8c737",
+        "size": 1449,
+        "contentType": "image/svg+xml"
+      }
+    },
+    {
+      "path": "preview.svg",
+      "blob": {
+        "provider": "s3",
+        "bucket": "veave-uploads",
+        "key": "veave/blobs/sha256/2d/2d0c8e81be8f0839a2f39a56cccc65faecae67f9b856a0f0c1564f118d9088ac",
+        "etag": "\"a217c7a32f01c2a26431ee8716d30841\"",
+        "versionId": null,
+        "sha256": "2d0c8e81be8f0839a2f39a56cccc65faecae67f9b856a0f0c1564f118d9088ac",
+        "size": 1573,
+        "contentType": "image/svg+xml"
+      }
+    }
+  ]
+}

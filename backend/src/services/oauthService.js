@@ -18,6 +18,28 @@ class OAuthService {
     );
   }
 
+  /** Returns a human-readable problem with the Google settings in backend/.env, or '' when they look usable. */
+  googleConfigProblem() {
+    const id = String(process.env.GOOGLE_CLIENT_ID || '').trim();
+    const secret = String(process.env.GOOGLE_CLIENT_SECRET || '').trim();
+    if (!/^[\w-]+\.apps\.googleusercontent\.com$/i.test(id)) {
+      return `GOOGLE_CLIENT_ID in backend/.env is not a real Google client ID (it must end in .apps.googleusercontent.com). Create an OAuth client (Web application) in Google Cloud Console, add this Authorized redirect URI: ${googleRedirectUri()}, then put its Client ID and secret in backend/.env and restart the backend.`;
+    }
+    if (!secret || /^your[_-]/i.test(secret)) {
+      return 'GOOGLE_CLIENT_SECRET in backend/.env is missing. Copy the client secret of the same OAuth client and restart the backend.';
+    }
+    return '';
+  }
+
+  /** Same for Apple. */
+  appleConfigProblem() {
+    const bad = (v) => !String(v || '').trim() || /^your[_-]/i.test(String(v));
+    if (bad(process.env.APPLE_CLIENT_ID) || bad(process.env.APPLE_TEAM_ID) || bad(process.env.APPLE_KEY_ID)) {
+      return 'Apple sign-in needs APPLE_CLIENT_ID, APPLE_TEAM_ID, APPLE_KEY_ID and the private key from an Apple Developer account in backend/.env. They are not set yet.';
+    }
+    return '';
+  }
+
   /**
    * Generates Google OAuth consent screen URL
    */

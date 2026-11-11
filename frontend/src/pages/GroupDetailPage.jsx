@@ -7,7 +7,7 @@ import { useProjectStore } from '../store/projectStore';
 import { useAuthStore } from '../store/authStore';
 import ProjectsTable from '../features/collaboration/ProjectsTable';
 import {
-  PageHeader, Btn, Card, EmptyState, Spinner, RoleBadge, StatusBadge, Notice, Modal, ConfirmDialog, Field, inputClass, useFlash, timeAgo
+  PageHeader, Btn, Card, EmptyState, Spinner, RoleBadge, StatusBadge, Notice, Modal, ConfirmDialog, Field, inputClass, useFlash, timeAgo, RoleSelect, roleLabel
 } from '../features/collaboration/ui';
 
 const TABS = [
@@ -292,15 +292,11 @@ function MembersTab({ group, onChanged }) {
                   </div>
                   <div className="flex items-center gap-2">
                     {canChangeRole && isOwner ? (
-                      <select
-                        aria-label={`Role of ${m.user?.name}`}
-                        className="text-xs rounded-lg border border-[#E2E5E8] bg-white px-2 py-1"
+                      <RoleSelect
+                        label={`Role of ${m.user?.name}`}
                         value={m.role}
-                        onChange={(e) => act(() => svc.setMemberRole(group.id, m.userId, e.target.value), `${m.user?.name} is now ${e.target.value === 'admin' ? 'an admin' : 'a member'}.`)}
-                      >
-                        <option value="member">Member</option>
-                        <option value="admin">Admin</option>
-                      </select>
+                        onChange={(v) => act(() => svc.setMemberRole(group.id, m.userId, v), `${m.user?.name} is now ${v === 'admin' ? 'an admin' : 'staff'}.`)}
+                      />
                     ) : <RoleBadge role={m.role} />}
                     {isOwner && m.role !== 'owner' && !isMe && <Btn variant="ghost" onClick={() => setConfirmTransfer(m)}>Make owner</Btn>}
                     {canRemove && <Btn variant="ghost" icon={Trash2} onClick={() => setConfirmRemove(m)} aria-label={`Remove ${m.user?.name}`}>Remove</Btn>}
@@ -413,7 +409,7 @@ function InvitationsTab({ group }) {
           <div className="flex-1 min-w-[220px]"><Field label="Email address"><input type="email" className={inputClass} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="teammate@company.com" required /></Field></div>
           {isOwner && (
             <Field label="Role">
-              <select className={inputClass} value={role} onChange={(e) => setRole(e.target.value)}><option value="member">Member</option><option value="admin">Admin</option></select>
+              <RoleSelect value={role} onChange={setRole} className="w-44" />
             </Field>
           )}
           <Btn type="submit" loading={busy} disabled={!email}>Send invitation</Btn>
@@ -430,7 +426,7 @@ function InvitationsTab({ group }) {
               <li key={inv.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold truncate">{inv.invitee?.name || inv.inviteeEmail}</p>
-                  <p className="text-[11px] text-zinc-500 truncate">{inv.inviteeEmail} · invited by {inv.inviter?.name} · {timeAgo(inv.createdAt)} · as {inv.role}</p>
+                  <p className="text-[11px] text-zinc-500 truncate">{inv.inviteeEmail} · invited by {inv.inviter?.name} · {timeAgo(inv.createdAt)} · as {roleLabel(inv.role)}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <StatusBadge status={inv.status} />

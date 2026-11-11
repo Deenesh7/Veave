@@ -92,7 +92,7 @@ function normalizePlan(raw) {
 }
 
 function resolvePlannerModel(override) {
-  return override || process.env.PLANNER_MODEL || process.env.OPENROUTER_MODEL || 'google/gemini-3.8-flash';
+  return override || openRouterService.model; // GPT-6 Luna, the only model Veave uses
 }
 
 async function createPlan({ request, scrape = null, files = [], model, complete } = {}) {

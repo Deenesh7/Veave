@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* Template design tokens (RGB channels so Tailwind opacity utilities such as bg-bg/80 work).
+   Components use the semantic colours bg, surface, surface-2, line, fg, muted and brand. */
+:root {
+  --bg: 250 247 242;
+  --surface: 255 255 255;
+  --surface-2: 241 235 225;
+  --line: 228 218 203;
+  --fg: 43 33 24;
+  --muted: 118 105 91;
+  --brand: 194 65 12;
+  --on-brand: 255 255 255;
+  --radius-card: 4px;
+  --radius-button: 999px;
+}
+
+body {
+  background-color: rgb(var(--bg));
+  color: rgb(var(--fg));
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  font-family: ui-serif, Georgia, Cambria, 'Times New Roman', serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}

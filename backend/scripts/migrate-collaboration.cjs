@@ -11,7 +11,7 @@
  * 3. Backfills `revision: 0` on existing projects (the optimistic-concurrency counter)
  * 4. Adds a (projectId, ...) index used by the project-sharing lookups
  */
-require('dotenv').config();
+require('../src/config/loadEnv');
 const path = require('path');
 const mongoose = require('mongoose');
 

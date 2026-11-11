@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   Plus, 
-  Slash, 
   Mic, 
   ArrowUp, 
   X,
@@ -16,7 +15,7 @@ import {
 } from 'lucide-react';
 import PromptInput from './PromptInput';
 import DesignSystemSelector from './DesignSystemSelector';
-import ModelSelector from './ModelSelector';
+import { getPreferredModel } from '../../utils/modelPreference';
 import CommandMenu, { COMMANDS } from './CommandMenu';
 import GenerationLoader from './GenerationLoader';
 import GeneratedDesignPreview from './GeneratedDesignPreview';
@@ -29,6 +28,8 @@ import UploadedFileBadge from './UploadedFileBadge';
 import aiCreationService from '../../services/aiCreationService';
 import { useProjectStore } from '../../store/projectStore';
 import { useGenerationJobStore } from '../../store/generationJobStore';
+import { useTemplateStore } from '../../store/templateStore';
+import TemplateGalleryModal from './TemplateGalleryModal';
 import { MatrixOrb } from '../rare-ui';
 import { WhisperAudioRecorder } from '../../utils/whisperAudioRecorder';
 
@@ -43,9 +44,16 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
   const navigate = useNavigate();
   const { fetchProjects } = useProjectStore();
 
+  const selectedTemplate = useTemplateStore((state) => state.selected);
+  const isTemplateGalleryOpen = useTemplateStore((state) => state.isGalleryOpen);
+  const openTemplateGallery = useTemplateStore((state) => state.openGallery);
+  const closeTemplateGallery = useTemplateStore((state) => state.closeGallery);
+  const chooseTemplate = useTemplateStore((state) => state.select);
+  const clearTemplate = useTemplateStore((state) => state.clear);
+
   const [designSystem, setDesignSystem] = useState('Modern');
   const [selectedPalette, setSelectedPalette] = useState(null);
-  const [model, setModel] = useState('Gemini Flash 3.8');
+  const [model, setModel] = useState(getPreferredModel);
   const [isCommandMenuOpen, setIsCommandMenuOpen] = useState(false);
   const [commandSearchQuery, setCommandSearchQuery] = useState('');
   const [commandSelectedIndex, setCommandSelectedIndex] = useState(0);
@@ -75,7 +83,9 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
 
   const isGenerating = jobIsGenerating;
   const generationStep = jobStep;
-  const error = jobError || localError;
+  const rawError = jobError || localError;
+  // The error banner renders text; an object (for example { code, message } from the API) must never reach React as a child.
+  const error = rawError && typeof rawError !== 'string' ? (rawError.message || JSON.stringify(rawError)) : rawError;
 
   // Result preview modal
   const [generatedData, setGeneratedData] = useState(null);
@@ -334,14 +344,19 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
     }
   };
 
-  // "Use this website as a prototype": structure/look come from the URL, content stays the user's own.
-  const [prototypeUrl, setPrototypeUrl] = useState('');
-  const [prototypeInputOpen, setPrototypeInputOpen] = useState(false);
-  const normalizedPrototypeUrl = (() => {
-    const raw = prototypeUrl.trim();
-    if (!raw) return '';
-    try { const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`); return ['http:', 'https:'].includes(u.protocol) ? u.href : ''; } catch { return ''; }
+  // "Use this website as a prototype": a website link in the prompt sets the structure/look; the content stays the user's own.
+  // The prototype link found in the prompt that the user removed with the chip's X (so it is not used for this request).
+  const [dismissedPromptUrl, setDismissedPromptUrl] = useState('');
+  // A website link typed or pasted into the prompt itself is taken as the prototype automatically (links to files are not).
+  const promptWebsiteUrl = (() => {
+    const FILE_LINK = /\.(?:png|jpe?g|gif|webp|svg|ico|avif|bmp|pdf|docx?|xlsx?|pptx?|zip|rar|mp4|mov|mp3|wav|json|csv|txt)(?:[?#].*)?$/i;
+    for (const raw of prompt.match(/https?:\/\/[^\s<>"')\]]+/gi) || []) {
+      const link = raw.replace(/[.,;:!?]+$/, '');
+      if (!FILE_LINK.test(link)) { try { const href = new URL(link).href; if (href !== dismissedPromptUrl) return href; } catch { /* keep looking */ } }
+    }
+    return '';
   })();
+  const normalizedPrototypeUrl = promptWebsiteUrl;
 
   const handleSubmit = async () => {
     if (!prompt.trim() || isGenerating) return;
@@ -364,11 +379,13 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
         enrichedPrompt += ` [Context Files Attached: ${fileNames}]`;
       }
 
-      const screenshotFile = uploadedFiles.find(f => f.isImage || f.type?.startsWith('image/'));
+      // With a template selected, an attached image is just an asset: the template (not the image) defines the design.
+      const screenshotFile = selectedTemplate ? null : uploadedFiles.find(f => f.isImage || f.type?.startsWith('image/'));
       const isScreenshot = !!screenshotFile;
 
       await startJob({
         type: isScreenshot ? 'screenshot' : 'generate',
+        ...(selectedTemplate ? { templateId: selectedTemplate.templateId, templateVersion: selectedTemplate.templateVersion } : {}),
         prompt: enrichedPrompt,
         command: detectedCommand,
         designSystem,
@@ -376,7 +393,7 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
         customTokens: selectedPalette || null,
         model,
         image: screenshotFile?.dataUrl || null,
-        prototype: normalizedPrototypeUrl ? { url: normalizedPrototypeUrl } : undefined,
+        prototypeSite: selectedTemplate ? { none: true } : (normalizedPrototypeUrl ? { url: normalizedPrototypeUrl } : (dismissedPromptUrl ? { none: true } : undefined)),
         uploadedFiles: uploadedFiles.map(f => ({
           name: f.name,
           size: f.size,
@@ -401,7 +418,7 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
     <>
       <div 
         ref={composerCardRef}
-        className={`w-full max-w-[620px] mx-auto bg-white rounded-xl sm:rounded-2xl border border-[#E2E5E8] shadow-[0_4px_20px_rgba(0,0,0,0.03)] focus-within:border-[#52525B] focus-within:ring-2 focus-within:ring-zinc-100 transition-all p-3 sm:p-4 flex flex-col justify-between relative ${isGenerating ? 'min-h-[280px]' : 'min-h-[116px]'}`}
+        className={`w-full max-w-[760px] mx-auto text-left bg-white rounded-[20px] border border-[#E5E7EB] shadow-[0_8px_30px_rgba(0,0,0,0.06)] focus-within:border-zinc-400 focus-within:ring-4 focus-within:ring-zinc-100 transition-all p-4 sm:p-5 flex flex-col justify-between relative ${isGenerating ? 'min-h-[280px]' : 'min-h-[140px]'}`}
       >
         {/* Animated Generation Loader Overlay */}
         <GenerationLoader
@@ -432,16 +449,16 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
             onChange={handlePromptChange}
             onKeyDown={handleInputKeyDown}
             onSubmit={handleSubmit}
-            placeholder="Ask Veave to build anything, or type / for commands..."
+            placeholder={selectedTemplate ? `Describe your website. It will be built on the ${selectedTemplate.name} template...` : 'Describe the website you want to create...'}
           />
         </div>
 
 
-        {/* Voice Transcribing with OpenAI Whisper Banner */}
+        {/* Voice Transcribing with voice transcription Banner */}
         {isTranscribing && (
           <div className="mb-2.5 px-3 py-2 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs flex items-center gap-2.5 animate-in fade-in">
             <Loader2 className="w-4 h-4 animate-spin text-indigo-600 shrink-0" />
-            <span className="font-semibold">Transcribing voice message with OpenAI Whisper...</span>
+            <span className="font-semibold">Transcribing voice message with voice transcription...</span>
           </div>
         )}
 
@@ -449,7 +466,7 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
         {isListening && (
           <div className="mb-2.5 px-3 py-2 rounded-xl bg-zinc-50 border border-zinc-200 text-zinc-800 text-xs flex items-center gap-2.5 animate-in fade-in">
             <MatrixOrb state="listening" size={20} dots={7} color="#18181B" />
-            <span className="font-semibold">Recording voice message for Whisper... Click mic when done</span>
+            <span className="font-semibold">Recording voice message for voice transcription... Click mic when done</span>
           </div>
         )}
 
@@ -461,8 +478,11 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
               <span>{error}</span>
             </div>
             <button
-              onClick={() => setError(null)}
+              type="button"
+              onClick={() => { setLocalError(null); if (jobError || ['failed', 'blocked'].includes(jobStatus)) resetJob(); }}
               className="text-red-400 hover:text-red-700 ml-2"
+              title="Dismiss"
+              aria-label="Dismiss error"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -470,7 +490,7 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
         )}
 
         {/* Attached Context Strip: Uploaded Files, Component, GitHub Repo, Active Skills */}
-        {(uploadedFiles.length > 0 || selectedComponent || connectedGitHub || activeSkills.length > 0 || normalizedPrototypeUrl) && (
+        {(uploadedFiles.length > 0 || selectedComponent || connectedGitHub || activeSkills.length > 0 || normalizedPrototypeUrl || selectedTemplate) && (
           <div className="flex flex-wrap items-center gap-1.5 mb-2 px-1 select-none animate-in fade-in">
             {/* Uploaded Files */}
             {uploadedFiles.map((file) => (
@@ -481,12 +501,30 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
               />
             ))}
 
+            {/* Selected template */}
+            {selectedTemplate && (
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-900 text-white text-xs shadow-2xs" data-testid="selected-template-chip">
+                <LayoutTemplate className="w-3.5 h-3.5 shrink-0" />
+                <span className="font-semibold text-[11px] truncate max-w-[190px]">
+                  Template: {selectedTemplate.name}
+                </span>
+                <button type="button" onClick={openTemplateGallery} className="text-[10px] font-semibold text-zinc-300 hover:text-white underline underline-offset-2 cursor-pointer" title="Choose a different template">
+                  Change
+                </button>
+                <button type="button" onClick={clearTemplate} className="text-zinc-400 hover:text-white p-0.5 rounded-full cursor-pointer" title="Remove template" aria-label="Remove selected template">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+
             {/* Prototype website */}
-            {normalizedPrototypeUrl && (
+            {normalizedPrototypeUrl && !selectedTemplate && (
               <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 shadow-2xs">
                 <LayoutTemplate className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                <span className="font-semibold text-[11px] truncate max-w-[170px]">Prototype: {new URL(normalizedPrototypeUrl).hostname}</span>
-                <button type="button" onClick={() => { setPrototypeUrl(''); setPrototypeInputOpen(false); }} className="text-emerald-400 hover:text-emerald-700 p-0.5 rounded-full cursor-pointer" title="Remove prototype">
+                <span className="font-semibold text-[11px] truncate max-w-[170px]">
+                  Prototype: {new URL(normalizedPrototypeUrl).hostname} (from your prompt)
+                </span>
+                <button type="button" onClick={() => setDismissedPromptUrl(promptWebsiteUrl)} className="text-emerald-400 hover:text-emerald-700 p-0.5 rounded-full cursor-pointer" title="Remove prototype">
                   <X className="w-3 h-3" />
                 </button>
               </div>
@@ -547,22 +585,8 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
           </div>
         )}
 
-        {prototypeInputOpen && (
-          <div className="flex items-center gap-2 mb-2 px-1">
-            <input
-              autoFocus
-              value={prototypeUrl}
-              onChange={(e) => setPrototypeUrl(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setPrototypeInputOpen(false); } }}
-              placeholder="Prototype website, e.g. https://example.com (layout and style only; your content)"
-              className="flex-1 min-w-0 rounded-lg border border-zinc-200 px-3 py-1.5 text-xs outline-none focus:border-zinc-900"
-            />
-            <button type="button" onClick={() => setPrototypeInputOpen(false)} className="px-2.5 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-semibold cursor-pointer">Use</button>
-          </div>
-        )}
-
         {/* Bottom Control Bar: All in 1 sleek line */}
-        <div className="flex items-center justify-between gap-2 pt-2 border-t border-zinc-100 select-none flex-nowrap">
+        <div className="flex items-center justify-between gap-2 pt-2 select-none flex-wrap sm:flex-nowrap">
           {/* Left Controls */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* Compact Action Menu (+ button with clean floating dropdown) */}
@@ -574,34 +598,15 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
               onOpenSkills={() => setIsSkillsOpen(true)}
             />
 
-            {/* Prototype website button */}
+            {/* Template gallery */}
             <button
               type="button"
-              title="Use a website as a prototype"
-              onClick={() => setPrototypeInputOpen((open) => !open)}
-              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${normalizedPrototypeUrl || prototypeInputOpen ? 'bg-emerald-50 text-emerald-700' : 'text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100'}`}
+              onClick={openTemplateGallery}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${selectedTemplate ? 'border-zinc-900 bg-zinc-900 text-white' : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'}`}
+              title="Start from a template"
             >
               <LayoutTemplate className="w-3.5 h-3.5" />
-            </button>
-
-            {/* Slash command toggle button */}
-            <button
-              type="button"
-              data-command-toggle="true"
-              title="Slash Commands (/)"
-              onClick={() => {
-                setIsCommandMenuOpen((prev) => !prev);
-                if (!isCommandMenuOpen) {
-                  promptInputRef.current?.focus();
-                }
-              }}
-              className={`p-1.5 rounded-lg transition-colors font-mono text-xs font-bold cursor-pointer ${
-                isCommandMenuOpen
-                  ? 'bg-zinc-50 text-[#52525B]'
-                  : 'text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100'
-              }`}
-            >
-              <Slash className="w-3.5 h-3.5" />
+              <span>Templates</span>
             </button>
 
             {/* Functional Design System Selector Dropdown */}
@@ -615,24 +620,18 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
           </div>
 
           {/* Right Controls: Model, Mic, Up Arrow - all in 1 line */}
-          <div className="flex items-center gap-2 shrink-0">
-            {/* Functional AI Model Selector Dropdown */}
-            <ModelSelector
-              selectedModel={model}
-              onSelectModel={setModel}
-            />
-
-            {/* Voice Input Microphone (OpenAI Whisper) */}
+          <div className="flex items-center gap-2 shrink-0 ml-auto">
+            {/* Voice Input Microphone (voice transcription) */}
             <button
               type="button"
               disabled={isTranscribing}
               onClick={handleMicToggle}
               title={
                 isTranscribing
-                  ? 'Transcribing with OpenAI Whisper...'
+                  ? 'Transcribing with voice transcription...'
                   : isListening
                   ? 'Click to stop and transcribe voice message'
-                  : 'Record voice message (OpenAI Whisper)'
+                  : 'Record voice message (voice transcription)'
               }
               className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
                 isTranscribing
@@ -655,17 +654,24 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
               disabled={!prompt.trim() || isGenerating}
               onClick={handleSubmit}
               aria-label="Generate prototype"
-              className={`w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-xs active:scale-90 ${
+              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all shadow-sm active:scale-90 ${
                 prompt.trim() && !isGenerating
                   ? 'bg-zinc-900 hover:bg-black text-white cursor-pointer'
                   : 'bg-zinc-100 text-zinc-300 cursor-not-allowed'
               }`}
             >
-              <ArrowUp className="w-4 h-4 stroke-[2.5]" />
+              <ArrowUp className="w-5 h-5 stroke-[2.5]" />
             </button>
           </div>
         </div>
       </div>
+
+      <TemplateGalleryModal
+        isOpen={isTemplateGalleryOpen}
+        onClose={closeTemplateGallery}
+        selectedId={selectedTemplate?.templateId || null}
+        onUse={chooseTemplate}
+      />
 
       {/* Generated Design Live Result Modal */}
       <GeneratedDesignPreview

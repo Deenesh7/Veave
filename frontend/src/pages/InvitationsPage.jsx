@@ -62,7 +62,7 @@ export default function InvitationsPage() {
                     <span>Invited by <b className="text-zinc-700">{inv.inviter?.name}</b></span>
                     <span>{new Date(inv.createdAt).toLocaleDateString()} ({timeAgo(inv.createdAt)})</span>
                     <span className="flex items-center gap-1"><Clock className="w-3 h-3" />expires {new Date(inv.expiresAt).toLocaleDateString()}</span>
-                    <span>as {inv.role}</span>
+                    <span>as {inv.role === 'member' ? 'staff' : inv.role}</span>
                   </p>
                 </div>
                 <div className="flex items-center gap-2">

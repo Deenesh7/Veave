@@ -91,7 +91,7 @@ const normalizePath = (value = '') => String(value).split(/[?#]/)[0].replace(/\/
  * @param {Function} p.render      async (files, { routePath, viewport, inspect }) => probe
  * @param {Function} [p.clickThrough] async (files, links) => [{ href, landedOn, sample, error? }]  real link clicks from the home page
  */
-async function validateRouting({ files, routes = [], render, clickThrough = null, signal = null, maxRoutes = 14 }) {
+async function validateRouting({ files, routes = [], render, clickThrough = null, signal = null, maxRoutes = Math.max(1, Number.parseInt(process.env.ROUTING_VALIDATION_MAX_ROUTES, 10) || 60) }) {
   const wanted = [...new Map([{ path: '/' }, ...routes].map((route) => [normalizePath(route.path), { ...route, path: normalizePath(route.path) }])).values()].slice(0, maxRoutes);
   const issues = [];
   const probes = new Map();

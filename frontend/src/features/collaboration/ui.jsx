@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Loader2, X, AlertTriangle, CheckCircle2, Crown, Shield, User, Eye, Pencil } from 'lucide-react';
+import { Loader2, X, AlertTriangle, CheckCircle2, Crown, Shield, User, Eye, Pencil, ChevronDown, Check } from 'lucide-react';
 
 // Small building blocks that follow the dashboard look (white cards, #E2E5E8 borders, zinc-900 actions).
 
@@ -156,12 +156,14 @@ const ROLE_STYLE = {
   editor: ['bg-emerald-50 text-emerald-700 border-emerald-200', Pencil],
 };
 
+export const roleLabel = (role) => (role === 'member' ? 'Staff' : role ? role.charAt(0).toUpperCase() + role.slice(1) : '');
+
 export function RoleBadge({ role }) {
   if (!role) return null;
   const [style, Icon] = ROLE_STYLE[role] || ROLE_STYLE.member;
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full border capitalize ${style}`}>
-      <Icon className="w-3 h-3" /> {role}
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full border ${style}`}>
+      <Icon className="w-3 h-3" /> {roleLabel(role)}
     </span>
   );
 }
@@ -192,4 +194,65 @@ export function timeAgo(date) {
 
 export function Card({ className = '', children, ...props }) {
   return <div className={`bg-white rounded-xl border border-[#E2E5E8] shadow-sm ${className}`} {...props}>{children}</div>;
+}
+
+const ROLE_OPTIONS = {
+  member: { label: 'Staff', hint: 'Can work on shared projects', icon: User },
+  admin: { label: 'Admin', hint: 'Can manage members and projects', icon: Shield },
+};
+
+// Styled dropdown for choosing a group role (stored values: 'member' = Staff, 'admin').
+export function RoleSelect({ value, onChange, options = ['member', 'admin'], label, className = '' }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc); };
+  }, [open]);
+  const current = ROLE_OPTIONS[value] || ROLE_OPTIONS.member;
+  const CurrentIcon = current.icon;
+  return (
+    <div ref={ref} className={`relative ${className}`}>
+      <button
+        type="button"
+        aria-label={label}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="w-full min-w-[120px] inline-flex items-center justify-between gap-2 px-3 py-2 text-xs font-medium rounded-xl border border-[#E2E5E8] bg-white text-[#111827] hover:border-zinc-300 focus:outline-none focus:ring-2 focus:ring-zinc-100 transition-colors"
+      >
+        <span className="inline-flex items-center gap-1.5"><CurrentIcon className="w-3.5 h-3.5 text-zinc-500" />{current.label}</span>
+        <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <ul role="listbox" className="absolute right-0 z-30 mt-1.5 w-60 p-1 bg-white rounded-xl border border-[#E2E5E8] shadow-lg">
+          {options.map((opt) => {
+            const o = ROLE_OPTIONS[opt];
+            const Icon = o.icon;
+            const selected = opt === value;
+            return (
+              <li key={opt} role="option" aria-selected={selected}>
+                <button
+                  type="button"
+                  onClick={() => { setOpen(false); if (!selected) onChange(opt); }}
+                  className={`w-full flex items-start gap-2.5 px-2.5 py-2 rounded-lg text-left transition-colors ${selected ? 'bg-zinc-100' : 'hover:bg-zinc-50'}`}
+                >
+                  <Icon className="w-4 h-4 mt-0.5 text-zinc-500 shrink-0" />
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-xs font-semibold text-[#111827]">{o.label}</span>
+                    <span className="block text-[11px] text-zinc-500">{o.hint}</span>
+                  </span>
+                  {selected && <Check className="w-3.5 h-3.5 mt-0.5 text-zinc-900 shrink-0" />}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
 }

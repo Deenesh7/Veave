@@ -11,6 +11,8 @@ const paymentSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  kind: { type: String, enum: ['plan', 'credits'], default: 'plan' },
+  credits: { type: Number, default: 0 },
   amount: {
     type: Number,
     required: true,

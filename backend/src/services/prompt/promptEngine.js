@@ -24,7 +24,7 @@ const { ValidationError, AIError } = require('../../utils/errors');
  * @param {string} input.userPrompt
  * @param {string} [input.framework]
  * @param {string} [input.designSystem]         preset name (veave | minimal | enterprise)
- * @param {string} [input.model]                'auto' | 'gpt' | 'claude' | 'gemini' | 'openrouter'
+ * @param {string} [input.model]                ignored: GPT-6 Luna via OpenRouter is always used
  * @param {object} [input.referenceImage]       { base64, mimeType, size }
  * @param {object} [input.projectContext]       optional existing project context
  * @returns {Promise<{

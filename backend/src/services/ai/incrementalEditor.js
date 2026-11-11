@@ -177,6 +177,243 @@ function isElementScopedRequest(prompt = '') {
   return property && target;
 }
 
+/* ------------------------------------------------------------------------------------------------------------------ *
+ * Visual Edit: request classification (intent + scope) and the plan handed to the model
+ * ------------------------------------------------------------------------------------------------------------------ */
+
+// The prompt bar prefixes the request with a label naming the clicked element, e.g. [<h1> "Welcome"] . It is display text.
+const SELECTION_MENTION = /^\s*\[<[a-z][a-z0-9-]*>(?:\s"[\s\S]*?")?\]\s*/i;
+function stripSelectionMention(prompt = '') {
+  return String(prompt).replace(SELECTION_MENTION, '');
+}
+
+/** Human label for a clicked element (Heading, Image, Button, Card, Section, Navigation, Text, ...). */
+function describeElementRole(element = null) {
+  if (!element) return 'Element';
+  const tag = String(element.tagName || '').toLowerCase();
+  const cls = String(element.className || '').toLowerCase();
+  if (element.role) return element.role;
+  if (tag === 'img' || tag === 'picture' || tag === 'svg' || element.isImage) return 'Image';
+  if (/^h[1-6]$/.test(tag)) return 'Heading';
+  if (tag === 'button' || /\bbtn\b|\bbutton\b/.test(cls)) return 'Button';
+  if (tag === 'a') return 'Link';
+  if (tag === 'nav') return 'Navigation';
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return 'Input';
+  if (/^(?:section|header|footer|main|aside|article)$/.test(tag)) return 'Section';
+  if (/\bcard\b/.test(cls)) return 'Card';
+  if (/^(?:p|span|li|label|strong|em|small|blockquote)$/.test(tag)) return 'Text';
+  return 'Element';
+}
+
+const NUMBER_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, fifteen: 15, twenty: 20, dozen: 12, 'a dozen': 12 };
+
+/** "add 10 images", "at least ten photos", "a dozen pictures" -> 10 / 10 / 12. Null when no count is given. */
+function extractRequestedQuantity(prompt = '') {
+  const text = normalizePrompt(stripSelectionMention(prompt)).toLowerCase();
+  const match = /\b(\d{1,3}|a dozen|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty)\s*\+?\s*(?:new\s+|more\s+|different\s+|extra\s+|good\s+|relevant\s+)*(?:images?|photos?|pictures?|photographs?)\b/.exec(text);
+  if (!match) return null;
+  const value = /^\d+$/.test(match[1]) ? Number.parseInt(match[1], 10) : NUMBER_WORDS[match[1]];
+  return Number.isFinite(value) && value > 0 ? Math.min(value, 60) : null;
+}
+
+/**
+ * A request that is meant for the WHOLE website, not the page being viewed: "all over the website", "on every page",
+ * "throughout", or a count of images too large for one page ("add 10 images").
+ */
+function isSiteWideRequest(prompt = '') {
+  const text = normalizePrompt(stripSelectionMention(prompt)).toLowerCase();
+  if (/\b(?:all over|across|throughout|everywhere|on every|on all|in all|on each|in each|each page|every page|all pages|every section|all sections|(?:whole|entire|full) (?:web)?site|site-?wide|universal(?:ly)?|(?:the )?(?:web)?site)\b/.test(text) &&
+      /\b(?:all over|across|throughout|everywhere|on every|on all|in all|on each|in each|each page|every page|all pages|every section|all sections|whole|entire|full|site-?wide|universal(?:ly)?)\b/.test(text)) return true;
+  const quantity = extractRequestedQuantity(text);
+  return Boolean(quantity && quantity >= 4);
+}
+
+const INTENT_RULES = [
+  ['image_replace', /\b(?:replace|swap|change|use|put|insert|add|upload|improve|better|different|suitable|new)\b[\s\S]{0,50}\b(?:images?|photos?|pictures?|logos?|banners?|illustrations?|thumbnails?|avatars?)\b/i],
+  ['image_layout', /\b(?:images?|photos?|pictures?|logos?|banners?|thumbnails?|avatars?)\b[\s\S]{0,50}\b(?:crop|fit|stretch|position|resize|aspect|cover|contain|align|bigger|larger|smaller)\b/i],
+  ['animation', /\b(?:animat\w*|transition|hover effect|fade|slide|parallax|bounce|pulse|spin)\b/i],
+  ['behavior', /\b(?:onclick|on click|when (?:i )?click\w*|link (?:it )?to|navigate|redirect|submit|toggle|open a? ?modal|dropdown|validate|scroll to)\b/i],
+  ['responsive', /\b(?:responsive|mobile|tablet|breakpoint|small screens?|narrow screens?)\b/i],
+  ['restructure', /\b(?:split|merge|reorder|move|restructure|rearrange|convert|turn into|add (?:a |an )?(?:new )?(?:section|card|column|row|grid|button|tab|step))\b/i],
+  ['color_typography', /\b(?:colou?r\w*|font|typeface|bold|italic|underline|uppercase|lowercase|weight|typography|heading size|text size|font size|red|blue|green|yellow|orange|purple|pink|black|white|gr[ae]y|teal|cyan|indigo|violet|gold|navy)\b|#[0-9a-f]{3,8}\b/i],
+  ['spacing', /\b(?:spacing|space between|padding|margin|gap|gutter|align\w*|center\w*|distribute)\b/i],
+  ['text', /\b(?:change|replace|rename|rewrite|update|edit|make)\b[\s\S]{0,40}\b(?:to|into|say|read|says|reads)\b\s+["'`]?[^"'`]{2,}/i],
+  ['component_styling', /\b(?:shadow|border|rounded|radius|larger|bigger|smaller|modern|attractive|polish\w*|beautiful|clean|premium|elegant|professional|stylish|visually|look)\b/i]
+];
+
+/**
+ * Lightweight classification of a request: WHAT is wanted (intents, most specific first) and HOW FAR it reaches (scope).
+ * Scope is decided separately from intent, using the wording and the clicked element.
+ */
+function classifyEditRequest(prompt = '', selectedElement = null) {
+  const text = normalizePrompt(stripSelectionMention(prompt)).trim();
+  const lower = text.toLowerCase();
+  const intents = INTENT_RULES.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+  // "change this heading to blue" is a colour request, not new wording; new wording is quoted or has no style word.
+  if (intents.includes('text') && intents.includes('color_typography') && !/["'`\u201c\u201d]/.test(text)) intents.splice(intents.indexOf('text'), 1);
+  if (selectedElement?.isImage && /\b(?:replace|swap|change|better|different|suitable|new)\b/.test(lower) && !intents.includes('image_replace')) intents.unshift('image_replace');
+  const role = describeElementRole(selectedElement);
+
+  const siteWide = !selectedElement && isSiteWideRequest(text);
+  const quantity = extractRequestedQuantity(text);
+  let scope;
+  if (siteWide) scope = 'site';
+  else if (/\b(?:entire|whole|all|every|global|sitewide|site-wide|throughout|everywhere)\b[\s\S]{0,40}\b(?:site|website|project|app|pages?|theme|colou?rs?|fonts?)\b/i.test(text) ||
+      /\b(?:primary|brand|theme|accent) (?:colou?r|font)\b/i.test(text)) scope = 'project';
+  else if (/\b(?:this page|the page|whole page|entire page|current page|every section)\b/i.test(text)) scope = 'page';
+  else if (/\b(?:this component|the component|all cards|every card|each card)\b/i.test(text)) scope = 'component';
+  else if (/\b(?:section|hero|footer|header|navbar|navigation|banner|area|block)\b/i.test(text) ||
+      (selectedElement && role === 'Section' && /\b(?:look|attractive|modern|polish\w*|beautiful|premium|redesign|improve|spacing|layout)\b/i.test(text))) scope = selectedElement ? 'section' : 'page';
+  else scope = selectedElement ? 'element' : 'page';
+
+  // Only ask when the answer changes the result materially: "this/these/selected" with nothing selected.
+  let clarification = null;
+  if (!selectedElement && scope === 'page' && /\b(?:this|these|that|selected|here)\b\s+(?:element|heading|title|text|image|photo|picture|button|link|card|section|logo|icon|paragraph|word)\b/i.test(text)) {
+    clarification = 'Which part do you mean? Turn on Visual Edit and click the element in the preview first, or say where it is (for example "the hero heading").';
+  }
+  let subject = null;
+  try { subject = intents.some((name) => name.startsWith('image')) ? require('./imageSearch').extractImageSubject(text) : null; } catch { /* the lookup module is optional for classification */ }
+  let link = null;
+  try { link = require('./incrementalValidation').extractRequestedLink(text); } catch { /* validation module unavailable: the request is still handled */ }
+  if (link && !intents.includes('behavior')) intents.unshift('behavior');
+  return { intents: intents.length ? intents : ['general'], intent: intents[0] || 'general', scope, role, clarification, siteWide, quantity, link, subject };
+}
+
+const SCOPE_LABEL = {
+  element: 'the selected element only',
+  section: 'the selected section (its wrapper and the child elements that belong to it)',
+  component: 'the selected component (the one definition shared by its instances)',
+  page: 'the page being viewed',
+  project: 'the whole project (shared theme / design tokens)',
+  site: 'EVERY page of the website (not only the page being viewed)'
+};
+
+function buildEditPlanContext(plan, selectedElement = null) {
+  if (!plan) return '';
+  const lines = [`\nEDIT PLAN (classified from the request):\n- Intent: ${plan.intents.join(', ')}\n- Scope: ${SCOPE_LABEL[plan.scope] || plan.scope}${selectedElement ? `\n- Target: the ${plan.role.toLowerCase()} the user clicked` : ''}`];
+  lines.push('- Make the smallest change that fully satisfies the request, using exact SEARCH/REPLACE patches on the current source. Keep the project\'s existing design tokens, class conventions and visual language; do not add unrelated shadows, gradients, animations or colors.');
+  if (plan.scope === 'element') lines.push('- Do not edit any other element. Prefer a change on the element itself; touch a shared component or a global stylesheet only if the change is impossible otherwise, and then keep it as local as possible.');
+  if (plan.scope === 'section') lines.push('- You may change the section wrapper and the children that belong to it. Do not touch other sections.');
+  if (plan.scope === 'site') lines.push('- SITE-WIDE: the request is about the whole website. Work through EVERY page and section component you were given and apply it wherever it fits; do not stop after the page the user is looking at. Keep each page\'s existing content, layout and behaviour.');
+  if (plan.quantity && plan.intents.some((name) => name.startsWith('image'))) lines.push(`- QUANTITY: add at least ${plan.quantity} images in total, spread over different pages and sections where an image genuinely fits (hero, cards, about, gallery, team, news ...), each with meaningful alt text and its own distinct image. Every image must be a real, working, public image link you are sure exists (it is downloaded into the project), or an image already in the project; do not repeat one image everywhere. Keep the existing layout (use object-cover in fixed frames).`);
+  if (plan.scope === 'project') lines.push('- A project-wide change belongs in the shared theme / design tokens, not repeated in every component.');
+  if (plan.intents.some((name) => name.startsWith('image'))) {
+    lines.push('- IMAGE: keep the image\'s visual role (a logo stays a logo; a meaningful photo is not swapped for an unrelated one). Prefer an image already in the project assets or one the user attached. A remote image link you add is downloaded into the project (and the edit is refused if it cannot be), so use only a link you know is real; never invent stock-photo URLs or photo ids. Keep meaningful alt text, and keep the container\'s sizing so the image does not stretch, collapse to zero size or overlap neighbouring content. For fixed frames use object-cover/contain deliberately and check mobile as well as desktop.');
+    if (selectedElement?.imageInfo) lines.push(`- Current image facts: ${JSON.stringify(selectedElement.imageInfo)}`);
+  }
+  if (plan.subject) lines.push(`- NAMED IMAGE: the user wants the picture of "${plan.subject}". Use ONLY the attached image for it (its exact token), in the place they named. Never use another photo, a stock image or a remote link instead, and never invent one.`);
+  if (plan.link) {
+    const clickedText = String(selectedElement?.text || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const named = clickedText ? `the element the user clicked ("${clickedText}")` : (plan.link.words.length ? `the element named "${plan.link.words.join(' ')}"` : 'the element the user named');
+    lines.push(`- LINK: make ${named} a real, visible, clickable link to ${plan.link.url}. Use <a href="${plan.link.url}"> (or react-router <Link to="${plan.link.url}"> for a page of this site), keep its text and styling, and make sure nothing covers it. ${plan.link.newTab ? 'It must open in a new tab: target="_blank" rel="noopener noreferrer". ' : ''}Do not add a second link elsewhere and do not nest one link inside another. The rendered page is checked for exactly this link.`);
+  }
+  if (plan.intents.includes('responsive')) lines.push('- RESPONSIVE: change the breakpoint-specific classes (sm:/md:/lg:) that apply, and do not break the desktop layout.');
+  return `${lines.join('\n')}\n`;
+}
+
+
+/**
+ * The preview only knows an element's tag, text and classes; the file it came from is a guess. Find the real JSX in the
+ * project so the model is shown (and held to) the exact code of the element the user clicked.
+ */
+function locateSelectedElementInSource(element, files = []) {
+  if (!element || typeof element !== 'object') return element;
+  const sourceFiles = (files || []).map(normalizeFile).filter((file) => file && /\.(?:jsx?|tsx?)$/i.test(file.path) && typeof file.content === 'string');
+  const tag = String(element.tagName || '').toLowerCase();
+  const text = String(element.text || '').replace(/\s+/g, ' ').trim();
+  const classTokens = String(element.className || '').split(/\s+/).filter((token) => token && !/^veave-/.test(token));
+  const needle = text ? text.slice(0, 160) : '';
+  const guessedPath = element.sourceFile;
+  const guessedName = String(element.sourceComponent || '').replace(/[<>/\s]/g, '');
+  const found = [];
+
+  const lineOf = (content, index) => content.slice(0, index).split('\n').length;
+  const scoreAt = (file, content, index) => {
+    const before = content.slice(Math.max(0, index - 500), index);
+    const open = before.match(/<([A-Za-z][\w.]*)\b([^<>]*)>\s*$/);
+    let score = 1;
+    if (open && open[1].toLowerCase() === tag) score += 3;
+    const openAttrs = open ? open[2] : before.slice(-300);
+    score += Math.min(4, classTokens.filter((token) => openAttrs.includes(token)).length);
+    if (guessedPath && file.path === guessedPath) score += 2;
+    if (guessedName && file.path.split('/').pop().replace(/\.\w+$/, '') === guessedName) score += 1;
+    return score;
+  };
+
+  for (const file of sourceFiles) {
+    const content = file.content;
+    if (needle) {
+      let at = content.indexOf(needle);
+      let guard = 0;
+      while (at !== -1 && guard < 40) {
+        found.push({ path: file.path, content, index: at, score: scoreAt(file, content, at) });
+        at = content.indexOf(needle, at + 1);
+        guard += 1;
+      }
+    } else if (classTokens.length) {
+      const pattern = /className\s*=\s*(?:"([^"]*)"|'([^']*)'|\{`([^`]*)`\})/g;
+      let match;
+      let guard = 0;
+      while ((match = pattern.exec(content)) !== null && guard < 200) {
+        guard += 1;
+        const value = match[1] ?? match[2] ?? match[3] ?? '';
+        if (classTokens.every((token) => value.includes(token))) {
+          const openAt = content.lastIndexOf('<', match.index);
+          const openTag = openAt >= 0 ? content.slice(openAt + 1, openAt + 1 + tag.length).toLowerCase() : '';
+          found.push({ path: file.path, content, index: match.index, score: 2 + (openTag === tag ? 3 : 0) + (guessedPath && file.path === guessedPath ? 2 : 0) });
+        }
+      }
+    }
+  }
+  if (!found.length) return { ...element, sourceUnresolved: true };
+
+  found.sort((a, b) => b.score - a.score);
+  const top = found.filter((item) => item.score === found[0].score);
+  const excerptOf = (item) => {
+    const lines = item.content.split('\n');
+    const line = lineOf(item.content, item.index);
+    const from = Math.max(1, line - 6);
+    const to = Math.min(lines.length, line + 10);
+    return { path: item.path, line, excerpt: lines.slice(from - 1, to).map((text, i) => `${from + i}| ${text}`).join('\n') };
+  };
+  const best = excerptOf(top[0]);
+  return {
+    ...element,
+    sourceFile: best.path,
+    sourceLine: best.line,
+    sourceExcerpt: best.excerpt,
+    sourceOtherMatches: top.length > 1 ? top.slice(1, 3).map(excerptOf) : undefined,
+    sourceMatchCount: top.length
+  };
+}
+
+function formatSelectedElementContext(element) {
+  if (!element || typeof element !== 'object') return '';
+  const brief = {};
+  for (const key of ['role', 'tagName', 'text', 'className', 'id', 'fingerprint', 'route', 'sourceComponent', 'sourceFile', 'sourceLine', 'size', 'parents', 'children', 'responsiveClasses', 'imageInfo', 'isImage', 'attributes']) {
+    const value = element[key];
+    if (value === undefined || value === null || value === '' || value === false) continue;
+    brief[key] = key === 'text' ? String(value).slice(0, 300) : value;
+  }
+  const styles = {};
+  for (const key of ['fontSize', 'fontWeight', 'color', 'backgroundColor', 'textAlign', 'borderRadius', 'width', 'height', 'opacity']) {
+    if (element.computedStyles && element.computedStyles[key]) styles[key] = element.computedStyles[key];
+  }
+  const parts = [`\nSELECTED ELEMENT (the user clicked this exact element in the live preview; AUTHORITATIVE TARGET):\n${JSON.stringify(brief, null, 2)}\n`];
+  if (Object.keys(styles).length) parts.push(`Current computed styles: ${JSON.stringify(styles)}\n`);
+  if (element.sourceExcerpt) {
+    parts.push(`\nSOURCE CODE OF THE SELECTED ELEMENT (${element.sourceFile}, around line ${element.sourceLine}):\n${element.sourceExcerpt}\n`);
+    if (element.sourceMatchCount > 1) {
+      parts.push(`The same text also appears in ${element.sourceMatchCount - 1} other equally likely place(s):\n${(element.sourceOtherMatches || []).map((other) => `--- ${other.path} line ${other.line} ---\n${other.excerpt}`).join('\n')}\nUse the clicked element's tag, classes and component to decide which one it is; change only that one.\n`);
+    }
+  } else if (element.sourceUnresolved) {
+    parts.push('\nThe exact source line of this element could not be located automatically; find it from its tag, text and classes.\n');
+  }
+  parts.push('\nApply the user\'s request to THIS element only: edit the JSX of the element shown above. Do not change other elements, other pages or global styles unless the request cannot be done on this element. The request starts with a [<tag> "text"] label that only names the clicked element; it is not text to add to the page.\n');
+  return parts.join('');
+}
+
+
 function buildSelectedElementPatch(prompt = '', selectedElement = null, files = []) {
   const normalizedPrompt = normalizePrompt(prompt);
   const request = normalizedPrompt.toLowerCase();
@@ -340,7 +577,7 @@ function buildColorCascadeCleanupOperations(prompt = '', files = []) {
 
 function buildTargetStyleVerification(prompt = '', selectedElement = null) {
   if (!selectedElement?.text || !selectedElement?.tagName) return null;
-  const request = String(prompt).toLowerCase();
+  const request = stripSelectionMention(prompt).toLowerCase();
   const color = extractRequestedColor(request);
   if (!color?.verifiableCss) return null;
   return {
@@ -349,6 +586,26 @@ function buildTargetStyleVerification(prompt = '', selectedElement = null) {
     property: 'color',
     cssValue: color.verifiableCss
   };
+}
+
+/**
+ * Decides whether the rendered page can be checked for this edit. Only an unambiguous case is verified in the browser:
+ * a colour change on ONE clicked element whose text is short, unique in the source and shown on the home route. Anything
+ * fuzzier (several equal texts, other routes, redesigns) is left to the existing build/preview validation, so a valid edit
+ * is never rejected by a check that cannot find its target.
+ */
+function planTargetVerification({ prompt = '', plan = null, selectedElement = null, files = [], viewingRoute = null } = {}) {
+  if (!selectedElement || !plan || plan.scope !== 'element' || !plan.intents.includes('color_typography')) return null;
+  if (plan.intents.some((name) => ['text', 'restructure', 'image_replace', 'behavior'].includes(name))) return null;
+  if (viewingRoute && viewingRoute !== '/') return null;
+  const verification = buildTargetStyleVerification(prompt, selectedElement);
+  if (!verification || verification.targetText.length > 80) return null;
+  let occurrences = 0;
+  for (const file of files.map(normalizeFile).filter((item) => item && /\.(?:jsx?|tsx?)$/i.test(item.path))) {
+    occurrences += file.content.split(verification.targetText).length - 1;
+    if (occurrences > 1) return null;
+  }
+  return occurrences === 1 ? verification : null;
 }
 
 /**
@@ -412,6 +669,16 @@ function validateSourceFidelity(operations = [], facts = null) {
 function validateStrictScopeOperations(prompt = '', operations = [], existingFiles = [], selectedElement = null, options = {}) {
   if (options.sourceFocused) { validateSourceFocusedOperations(operations, existingFiles); return validateSourceFidelity(operations, options.sourceFacts); }
   if (!isElementScopedRequest(prompt)) return;
+  // A change may need a few related patches (the element plus an import or a shared style it depends on); each one is still
+  // checked on its own, as small exact patches against existing files.
+  if (Array.isArray(operations) && operations.length > 1 && operations.length <= 3 && selectedElement && !options._related) {
+    const patched = operations.every((candidate) => ['patch', 'patch_file'].includes(String(candidate?.operation || candidate?.type || '').toLowerCase()));
+    const touched = new Set(operations.map((candidate) => candidate?.path));
+    if (patched && touched.size <= 2) {
+      operations.forEach((candidate, index) => validateStrictScopeOperations(prompt, [candidate], existingFiles, selectedElement, { ...options, _related: index > 0 }));
+      return;
+    }
+  }
   if (!Array.isArray(operations) || operations.length !== 1) {
     throw new Error('Strict scope violation: a single-element request must produce exactly one surgical patch.');
   }
@@ -442,7 +709,7 @@ function validateStrictScopeOperations(prompt = '', operations = [], existingFil
   }
   const selectedText = typeof selectedElement?.text === 'string' ? selectedElement.text.trim() : '';
   const plainSearch = operation.search.replace(/<[^>]+>/g, '').trim();
-  if (selectedText && /\b(?:this|selected|specific)\b/i.test(prompt) &&
+  if (selectedText && !options._related && /\b(?:this|selected|specific)\b/i.test(prompt) &&
       !operation.search.includes(selectedText) && !selectedText.includes(plainSearch)) {
     throw new Error('Strict scope violation: patch search does not contain the selected element text.');
   }
@@ -585,6 +852,72 @@ function uploadedImageSlug(name = '') {
   return base || 'image';
 }
 
+// Files other than images that can be attached and opened/downloaded from a word: documents, sheets, slides, archives, media, data.
+// Executables and anything that runs in the browser (html, js, exe, sh, ...) are never accepted.
+const ATTACHABLE_FILE_TYPES = {
+  pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  odt: 'application/vnd.oasis.opendocument.text', ods: 'application/vnd.oasis.opendocument.spreadsheet', odp: 'application/vnd.oasis.opendocument.presentation',
+  rtf: 'application/rtf', epub: 'application/epub+zip', zip: 'application/zip', rar: 'application/vnd.rar', '7z': 'application/x-7z-compressed',
+  mp3: 'audio/mpeg', wav: 'audio/wav', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+  csv: 'text/csv', txt: 'text/plain', json: 'application/json', xml: 'application/xml', md: 'text/markdown'
+};
+const MAX_UPLOADED_FILES = 6;
+const MAX_UPLOADED_FILE_BYTES = 15 * 1024 * 1024;
+const TEXT_ATTACHMENTS = new Set(['csv', 'txt', 'json', 'xml', 'md']);
+const LINK_INTENT = /\b(?:link|links|linked|redirect|redirects|open|opens|download|downloads|attach|attached|href|navigate|click|clicking|button|word)\b/i;
+
+/**
+ * Text files the editor reads as CODE CONTEXT (json, md ...) are stored as project files only when the request is about
+ * linking/downloading them. Call once per job so every later step sees the same decision.
+ */
+function markLinkableAttachments(uploadedFiles = [], prompt = '') {
+  if (!Array.isArray(uploadedFiles) || !LINK_INTENT.test(stripSelectionMention(prompt))) return uploadedFiles;
+  for (const file of uploadedFiles) {
+    if (file && !file.isImage && typeof file.content === 'string') file.asAsset = true;
+  }
+  return uploadedFiles;
+}
+
+/** Documents and other files attached to this edit: each becomes a real project file under public/assets/files/. */
+function getUploadedDocumentAssets(uploadedFiles = []) {
+  const assets = [];
+  const seen = new Set();
+  for (const file of Array.isArray(uploadedFiles) ? uploadedFiles : []) {
+    if (assets.length >= MAX_UPLOADED_FILES) break;
+    if (!file || file.isImage) continue;
+    const extension = (String(file.name || '').match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
+    if (!extension || !ATTACHABLE_FILE_TYPES[extension]) continue;
+    let body = null;
+    const dataUrl = /^data:[^;,]*(?:;[^;,]*)*;base64,([a-z0-9+/=\s]+)$/i.exec(String(file.dataUrl || ''));
+    if (dataUrl) body = Buffer.from(dataUrl[1].replace(/\s+/g, ''), 'base64');
+    else if (typeof file.content === 'string' && file.asAsset && TEXT_ATTACHMENTS.has(extension)) body = Buffer.from(file.content, 'utf8');
+    if (!body || !body.length || body.length > MAX_UPLOADED_FILE_BYTES) continue;
+    const hash = createHash('sha256').update(body).digest('hex').slice(0, 10);
+    if (seen.has(hash)) continue;
+    seen.add(hash);
+    const filePath = `public/assets/files/${uploadedImageSlug(file.name)}-${hash}.${extension}`;
+    assets.push({
+      token: `__VEAVE_UPLOADED_FILE_${assets.length}__`,
+      name: String(file.name),
+      type: ATTACHABLE_FILE_TYPES[extension],
+      extension,
+      bytes: body.length,
+      filePath,
+      publicPath: `/${filePath.slice('public/'.length)}`,
+      base64: body.toString('base64'),
+      isDocument: true
+    });
+  }
+  return assets;
+}
+
+/** Everything attached to this edit that can become a project file: images and documents. */
+function getUploadedAttachments(uploadedFiles = []) {
+  return [...getUploadedImageAssets(uploadedFiles), ...getUploadedDocumentAssets(uploadedFiles)];
+}
+
 /**
  * Valid images the user attached to this edit. Each one becomes a real project asset
  * (public/assets/uploads/<name>-<hash>.<ext>, referenced as /assets/uploads/...), never base64 pasted into source code.
@@ -647,7 +980,8 @@ function compactAssetReferences(value, assets = []) {
 
 function hydrateUploadedImageOperations(operations = [], uploadedFiles = [], existingAssets = []) {
   const uploaded = getUploadedImageAssets(uploadedFiles);
-  if (!uploaded.length && !existingAssets.length) return operations;
+  const documents = getUploadedDocumentAssets(uploadedFiles);
+  if (!uploaded.length && !documents.length && !existingAssets.length) return operations;
   const fields = ['search', 'replace', 'content'];
   const usesUploaded = operations.some((operation) => fields.some((field) => typeof operation?.[field] === 'string' && uploaded.some((asset) => operation[field].includes(asset.token))));
   if (uploaded.length && !usesUploaded) {
@@ -658,7 +992,7 @@ function hydrateUploadedImageOperations(operations = [], uploadedFiles = [], exi
     for (const field of fields) {
       if (typeof hydrated[field] !== 'string') continue;
       // Uploaded images become a normal public asset path; images already embedded in source keep their exact data.
-      for (const asset of uploaded) hydrated[field] = hydrated[field].split(asset.token).join(asset.publicPath);
+      for (const asset of [...uploaded, ...documents]) hydrated[field] = hydrated[field].split(asset.token).join(asset.publicPath);
       for (const asset of existingAssets) hydrated[field] = hydrated[field].split(asset.token).join(asset.dataUrl);
     }
     return hydrated;
@@ -670,7 +1004,7 @@ function hydrateUploadedImageOperations(operations = [], uploadedFiles = [], exi
  * @returns {{files: object[], added: object[]}}
  */
 function attachUploadedImageFiles(files = [], uploadedFiles = []) {
-  const assets = getUploadedImageAssets(uploadedFiles);
+  const assets = getUploadedAttachments(uploadedFiles);
   if (!assets.length) return { files, added: [] };
   const normalized = files.map(normalizeFile).filter(Boolean);
   const sources = normalized.filter((file) => file.encoding !== 'base64' && !file.blob).map((file) => file.content).join('\n');
@@ -917,7 +1251,7 @@ async function selectTargetFilesLsp({ prompt = '', files = [], conversation = nu
         selectTargetFiles,
         selectTargetFilesRaw,
         isElementScoped: isElementScopedRequest,
-        isBroadRequest: (text, normalized) => PROJECT_WIDE_REQUEST.test(String(text || '')) || isPageCreationRequest(text) || isProjectWideColorReplacement(text, normalized)
+        isBroadRequest: (text, normalized) => PROJECT_WIDE_REQUEST.test(String(text || '')) || isSiteWideRequest(text) || isPageCreationRequest(text) || isProjectWideColorReplacement(text, normalized)
       }
     });
     return resolved;
@@ -940,7 +1274,7 @@ async function selectTargetFilesHybrid({ prompt = '', files = [], conversation =
       embedder: embedder || require('../search/embedder'),
       deps: {
         normalizeFile, resolveImportPath, selectTargetFiles, selectTargetFilesRaw, isElementScoped: isElementScopedRequest,
-        isBroadRequest: (text, normalized) => PROJECT_WIDE_REQUEST.test(String(text || '')) || isPageCreationRequest(text) || isProjectWideColorReplacement(text, normalized)
+        isBroadRequest: (text, normalized) => PROJECT_WIDE_REQUEST.test(String(text || '')) || isSiteWideRequest(text) || isPageCreationRequest(text) || isProjectWideColorReplacement(text, normalized)
       }
     });
   } catch (error) {
@@ -1064,6 +1398,14 @@ function selectTargetFilesRaw(prompt = '', files = [], conversation = null) {
         (/(?:^|\/)src\//i.test(file.path) || /(?:tokens?|tailwind\.config)\b/i.test(file.path)))
       .sort((a, b) => Number(sourcePattern.test(b.content)) - Number(sourcePattern.test(a.content)))
       .slice(0, 30);
+  }
+
+  if (isSiteWideRequest(prompt)) {
+    // Every page and section component, so the model can place the change across the site (not only the viewed page).
+    const components = candidates
+      .filter((file) => /\.(?:jsx|tsx)$/i.test(file.path) && /(?:^|\/)src\//i.test(file.path) && !/(?:^|\/)(?:main|index)\.(?:jsx|tsx)$/i.test(file.path))
+      .sort((a, b) => Number(/(?:^|\/)pages?\//i.test(b.path)) - Number(/(?:^|\/)pages?\//i.test(a.path)) || a.path.localeCompare(b.path));
+    if (components.length) return components.slice(0, 40);
   }
 
   if (isPageCreationRequest(prompt)) {
@@ -1503,7 +1845,7 @@ const SCOPE_EXEMPT_PATH = /^(?:package(?:-lock)?\.json|tsconfig[^/]*\.json|vite\
 
 function enforceEditScope(beforeFiles = [], changedFiles = [], targetFiles = [], prompt = '', options = {}) {
   const protocol = require('./aiProtocol');
-  if (options?.strict && !PROJECT_WIDE_REQUEST.test(String(prompt || ''))) {
+  if (options?.strict && !PROJECT_WIDE_REQUEST.test(String(prompt || '')) && !isSiteWideRequest(prompt)) {
     // LSP found that the request is specific to one page/instance of a shared component: only the resolved files (plus
     // new files, config and non-code files) may change. Importers of a shared component are NOT pulled into scope.
     const allowed = new Set(targetFiles.map((file) => file.path));
@@ -1517,7 +1859,7 @@ function enforceEditScope(beforeFiles = [], changedFiles = [], targetFiles = [],
     }
     return { files: kept, reverted, wide: false, strict: true };
   }
-  if (PROJECT_WIDE_REQUEST.test(String(prompt || '')) || isProjectWideColorReplacement(prompt, beforeFiles)) {
+  if (PROJECT_WIDE_REQUEST.test(String(prompt || '')) || isSiteWideRequest(prompt) || isProjectWideColorReplacement(prompt, beforeFiles)) {
     return { files: changedFiles, reverted: [], wide: true };
   }
   const before = new Map(beforeFiles.map((file) => [file.path, file]));
@@ -1633,9 +1975,8 @@ function buildIncrementalPrompt({ prompt, targetFiles: allTargetFiles, projectFi
   const viewingNote = viewingRoute
     ? `\nCURRENT PAGE: the user is looking at the page "${viewingRoute}"${lspContext?.viewing?.file ? `, which is rendered by ${lspContext.viewing.file}` : ''}. When the request says "this page" or names no other page, it is about THIS page: change the file that renders it (and only what it needs), never a different page.\n`
     : '';
-  const selectionContext = selectedElement
-    ? `\nSELECTED ELEMENT (AUTHORITATIVE TARGET):\n${JSON.stringify(selectedElement, null, 2)}\nPatch only this exact instance.\n`
-    : '';
+  const editPlan = classifyEditRequest(prompt, selectedElement);
+  const selectionContext = (selectedElement ? formatSelectedElementContext(selectedElement) : '') + buildEditPlanContext(editPlan, selectedElement);
   const recentConversation = Array.isArray(conversation?.messages)
     ? conversation.messages
       .filter((message) => message?.role === 'user' || message?.role === 'assistant')
@@ -1652,6 +1993,10 @@ function buildIncrementalPrompt({ prompt, targetFiles: allTargetFiles, projectFi
       .join('\n')
     : '';
   const uploadedImageAssets = getUploadedImageAssets(uploadedFiles);
+  const uploadedDocumentAssets = getUploadedDocumentAssets(uploadedFiles);
+  const uploadedDocumentContext = uploadedDocumentAssets.length
+    ? `\nUPLOADED FILES (attached by the user for THIS request):\n${uploadedDocumentAssets.map((asset) => `- ${asset.token}: ${asset.name} (${asset.type}, ${Math.round(asset.bytes / 1024)} KB)`).join('\n')}\nTo make a word, button or image open one of these files, use its exact token as the href: <a href="${uploadedDocumentAssets[0].token}" target="_blank" rel="noopener noreferrer">word</a>. Add the HTML download attribute (<a href="..." download>) for archives, office documents and data files; PDFs, images, audio and video open in a new tab. The token is saved as a project file and replaced by its public path automatically: never invent a path, never paste file contents, and never use a base64 data URL. Keep the word's text and styling.\n`
+    : '';
   const existingImageTokens = [...new Set((targetCodeBlocks + supportingCode).match(/__VEAVE_EXISTING_IMAGE_\d+__/g) || [])];
   const existingAssetContext = existingImageTokens.length
     ? `\nEXISTING EMBEDDED IMAGE TOKENS:\n${existingImageTokens.map((token) => `- ${token}`).join('\n')}\nThese tokens are exact compact representations of current image src values. Copy the relevant token verbatim in SEARCH; it will be restored before patch application.\n`
@@ -1745,7 +2090,7 @@ ${supportingCode ? `\nFULL PROJECT SOURCE (READ-ONLY CONTEXT; modify only TARGET
 ${selectionContext}${viewingNote}${lspNotes}${rangeBlocks}${unusedNote}
 ${cloneSourceContext}
 ${existingAssetContext}
-${uploadedAssetContext}
+${uploadedAssetContext}${uploadedDocumentContext}
 ${sourceContext}
 ${recentConversation ? `RECENT CONVERSATION (context only; the current request still has priority):\n${recentConversation}\n` : ''}
 
@@ -1776,11 +2121,20 @@ module.exports = {
   classifyIntent,
   isPageCreationRequest,
   isElementScopedRequest,
+  stripSelectionMention,
+  extractRequestedQuantity,
+  isSiteWideRequest,
+  describeElementRole,
+  classifyEditRequest,
+  buildEditPlanContext,
+  locateSelectedElementInSource,
+  formatSelectedElementContext,
   buildSelectedElementPatch,
   buildSelectedTextPatch,
   buildTextOutcomeVerification,
   buildColorCascadeCleanupOperations,
   buildTargetStyleVerification,
+  planTargetVerification,
   validateStrictScopeOperations,
   validateSourceFidelity,
   reachableFromEntry,
@@ -1792,6 +2146,10 @@ module.exports = {
   hydrateUploadedImageOperations,
   attachUploadedImageFiles,
   getUploadedImageAssets,
+  getUploadedDocumentAssets,
+  getUploadedAttachments,
+  markLinkableAttachments,
+  ATTACHABLE_FILE_TYPES,
   isAmbiguous,
   normalizeFile,
   selectTargetFiles,

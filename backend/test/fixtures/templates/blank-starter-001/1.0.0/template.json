@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "id": "blank-starter-001",
+  "version": "1.0.0",
+  "name": "Blank Starter",
+  "status": "published",
+  "hidden": true,
+  "blank": true,
+  "featured": false,
+  "popularity": 0,
+  "releasedAt": "2026-11-10",
+  "description": "A completely blank website with a header, a footer, a Home page and a neutral design system. It contains no content, images or sections of any other template.",
+  "category": "Business",
+  "tags": [],
+  "styleTags": [
+    "Blank",
+    "Neutral"
+  ],
+  "access": {
+    "visibility": "public"
+  },
+  "previewImage": "preview.svg",
+  "designTokens": {
+    "mood": "Clean Neutral",
+    "colors": {
+      "bg": "#FFFFFF",
+      "surface": "#F7F7F5",
+      "surface2": "#EFEFEA",
+      "line": "#E2E2DC",
+      "fg": "#1A1A1A",
+      "muted": "#6B6B66",
+      "brand": "#3B5BDB",
+      "onBrand": "#FFFFFF",
+      "accent": "#3B5BDB"
+    },
+    "radius": {
+      "card": "8px",
+      "button": "8px"
+    }
+  },
+  "typography": {
+    "headingFont": "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif",
+    "bodyFont": "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif",
+    "scale": "Hero 36 to 56px bold, section titles 28 to 36px semibold, body 16 to 18px."
+  },
+  "layout": {
+    "summary": "Static header, centred content sections on one clean container, simple footer",
+    "container": "max-w-5xl centred with 16/24/32px side padding",
+    "navigation": "static"
+  },
+  "spacing": {
+    "section": "py-16 sm:py-24",
+    "gap": "gap-6",
+    "scale": "4px base"
+  },
+  "responsive": {
+    "summary": "Single column below 768px with a hamburger menu; wider layouts from 768px.",
+    "breakpoints": {
+      "md": 768,
+      "lg": 1024
+    }
+  },
+  "components": [
+    {
+      "name": "Navbar",
+      "path": "src/components/Navbar.jsx",
+      "role": "Static header with active link underline and a mobile menu, driven by src/data/site.js",
+      "shared": true
+    },
+    {
+      "name": "Footer",
+      "path": "src/components/Footer.jsx",
+      "role": "Footer with brand, link groups and email, driven by src/data/site.js",
+      "shared": true
+    },
+    {
+      "name": "Section",
+      "path": "src/components/Section.jsx",
+      "role": "Section wrapper, container and heading primitives",
+      "shared": true
+    }
+  ],
+  "pages": [
+    {
+      "path": "/",
+      "file": "src/pages/Home.jsx",
+      "title": "Home",
+      "sections": [
+        "Introduction"
+      ]
+    }
+  ],
+  "features": [
+    "Responsive layout",
+    "Mobile navigation",
+    "Client-side routing"
+  ],
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "lucide-react": "^0.400.0"
+  },
+  "scaffold": {
+    "dir": "files",
+    "themeFile": "src/index.css",
+    "requiredFiles": [
+      "package.json",
+      "index.html",
+      "src/main.jsx",
+      "src/App.jsx",
+      "src/index.css",
+      "src/data/site.js",
+      "tailwind.config.js"
+    ],
+    "protectedFiles": [
+      "package.json",
+      "vite.config.js",
+      "postcss.config.js"
+    ],
+    "sharedFiles": [
+      "src/components/Navbar.jsx",
+      "src/components/Footer.jsx",
+      "src/components/Section.jsx"
+    ],
+    "promptFiles": [
+      "src/App.jsx",
+      "src/data/site.js",
+      "src/index.css"
+    ]
+  }
+}

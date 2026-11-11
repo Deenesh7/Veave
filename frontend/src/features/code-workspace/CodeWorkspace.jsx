@@ -23,7 +23,10 @@ export function CodeWorkspace({
   projectName = null,
   showToolbar = true,
   embedded = false,
-  onFilesChange = null
+  onFilesChange = null,
+  // Embedded in the Visual Editor: the host shows the Save button, so it needs the save state and a way to save.
+  onSaveStateChange = null,
+  saveHandleRef = null
 }) {
   const navigate = useNavigate();
   const goBack = useSmartBack('/dashboard');
@@ -150,7 +153,6 @@ export function CodeWorkspace({
 
   const filesRef = useRef(files);
   const unsavedMapRef = useRef(unsavedMap);
-  const autoSaveTimeoutRef = useRef(null);
 
   useEffect(() => {
     filesRef.current = files;
@@ -247,26 +249,6 @@ export function CodeWorkspace({
       return remaining;
     });
   }, [activeFilePath, handleSave]);
-
-  // Debounced auto-save: automatically persists changes to the database 1 second after user stops typing
-  useEffect(() => {
-    const hasUnsaved = Object.keys(unsavedMap).length > 0;
-    if (!hasUnsaved) return;
-
-    if (autoSaveTimeoutRef.current) {
-      clearTimeout(autoSaveTimeoutRef.current);
-    }
-
-    autoSaveTimeoutRef.current = setTimeout(() => {
-      handleSave();
-    }, 1000);
-
-    return () => {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-      }
-    };
-  }, [unsavedMap, handleSave]);
 
   // Unmount flush: immediately write any pending unsaved changes to the database when leaving
   useEffect(() => {
@@ -477,6 +459,28 @@ export function CodeWorkspace({
 
   const isDirty = Object.keys(unsavedMap).length > 0;
 
+  // Standalone code editor: closing the tab with unsaved edits saves them and lets the browser ask first.
+  useEffect(() => {
+    if (onSaveStateChange || !isDirty) return undefined;
+    const onBeforeUnload = (e) => {
+      handleSave();
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [isDirty, onSaveStateChange, handleSave]);
+
+  useEffect(() => {
+    if (onSaveStateChange) onSaveStateChange({ isDirty, isSaving });
+  }, [isDirty, isSaving, onSaveStateChange]);
+
+  useEffect(() => {
+    if (!saveHandleRef) return undefined;
+    saveHandleRef.current = { save: () => handleSave() };
+    return () => { saveHandleRef.current = null; };
+  }, [saveHandleRef, handleSave]);
+
   return (
     <div className={`flex flex-col ${embedded ? 'h-full w-full' : 'h-screen w-screen'} bg-[#FAFBFD] text-zinc-900 overflow-hidden select-none font-sans`}>
       {/* 1. TOP EDITOR TOOLBAR (Rendered only when standalone) */}
@@ -564,6 +568,7 @@ export function CodeWorkspace({
         isSaving={isSaving}
         cursorPos={cursorPos}
         onSave={handleSave}
+        hideSave={Boolean(onSaveStateChange)}
       />
 
       {/* 4. QUICK FILE SEARCH COMMAND PALETTE (Ctrl+P) */}

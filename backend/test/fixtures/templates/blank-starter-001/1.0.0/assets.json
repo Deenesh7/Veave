@@ -1,0 +1,17 @@
+{
+  "assets": [
+    {
+      "path": "preview.svg",
+      "blob": {
+        "provider": "s3",
+        "bucket": "veave-uploads",
+        "key": "veave/blobs/sha256/1c/1c569194d2a787650ee2dffcc3020bec80ebc0979fe9f8ec2481800c4040fe9c",
+        "etag": "\"47bc749d0cfd386c0a1268f51a47f363\"",
+        "versionId": null,
+        "sha256": "1c569194d2a787650ee2dffcc3020bec80ebc0979fe9f8ec2481800c4040fe9c",
+        "size": 1197,
+        "contentType": "image/svg+xml"
+      }
+    }
+  ]
+}

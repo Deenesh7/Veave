@@ -26,7 +26,12 @@ function loadRuntimeAssets() {
     runtimeAssets = {
       react: fs.readFileSync(resolveFrom('react/umd/react.development.js')),
       reactDom: fs.readFileSync(resolveFrom('react-dom/umd/react-dom.development.js')),
-      babel: fs.readFileSync(require.resolve('@babel/standalone/babel.min.js'))
+      babel: fs.readFileSync(require.resolve('@babel/standalone/babel.min.js')),
+      // The preview loads these from unpkg too. This verifier blocks the network, so they are served from the backend's
+      // own packages; otherwise every generated site that uses GSAP or Framer Motion fails to render here.
+      gsap: fs.readFileSync(resolveFrom('gsap/dist/gsap.min.js')),
+      scrollTrigger: fs.readFileSync(resolveFrom('gsap/dist/ScrollTrigger.min.js')),
+      framerMotion: fs.readFileSync(resolveFrom('framer-motion/dist/framer-motion.js'))
     };
   }
   return runtimeAssets;
@@ -186,6 +191,12 @@ async function routeLocalPreviewDependencies(context, previewHtml = '') {
       await route.fulfill({ status: 200, contentType: 'application/javascript', body: assets.react });
     } else if (url.hostname === 'unpkg.com' && /^\/react-dom@/i.test(url.pathname)) {
       await route.fulfill({ status: 200, contentType: 'application/javascript', body: assets.reactDom });
+    } else if (url.hostname === 'unpkg.com' && /^\/gsap@[^/]+\/dist\/gsap(?:\.min)?\.js$/i.test(url.pathname)) {
+      await route.fulfill({ status: 200, contentType: 'application/javascript', body: assets.gsap });
+    } else if (url.hostname === 'unpkg.com' && /^\/gsap@[^/]+\/dist\/ScrollTrigger(?:\.min)?\.js$/i.test(url.pathname)) {
+      await route.fulfill({ status: 200, contentType: 'application/javascript', body: assets.scrollTrigger });
+    } else if (url.hostname === 'unpkg.com' && /^\/framer-motion@[^/]+\/dist\/framer-motion(?:\.dev)?\.js$/i.test(url.pathname)) {
+      await route.fulfill({ status: 200, contentType: 'application/javascript', body: assets.framerMotion });
     } else if (url.hostname === 'unpkg.com' && /\/babel(?:\.min)?\.js$/i.test(url.pathname)) {
       await route.fulfill({ status: 200, contentType: 'application/javascript', body: assets.babel });
     } else if (url.hostname === 'cdn.tailwindcss.com') {
@@ -678,9 +689,20 @@ async function verifyRenderedTarget(files, verification, { signal } = {}) {
           return computed;
         }, { property: verification.property, cssValue: verification.cssValue })
       : verification.value;
-    const actual = await exact.evaluate((element, property) => getComputedStyle(element).getPropertyValue(property), verification.property);
-    if (!expectedValue || actual.trim().toLowerCase() !== expectedValue.trim().toLowerCase()) {
-      throw new Error(`Rendered ${verification.property} for "${verification.targetText}" is "${actual.trim()}", expected "${expectedValue || verification.cssValue}".`);
+    // The colour may legitimately sit on the element itself or on an inner element that wraps its text (for example a span).
+    const values = await exact.evaluate((element, { property, targetText }) => {
+      const read = (node) => getComputedStyle(node).getPropertyValue(property).trim();
+      const own = read(element);
+      const inner = [...element.querySelectorAll('*')]
+        .filter((node) => (node.innerText || node.textContent || '').trim() === targetText)
+        .map(read);
+      return { own, inner };
+    }, { property: verification.property, targetText: verification.targetText });
+    const wanted = String(expectedValue || '').trim().toLowerCase();
+    const matched = wanted && [values.own, ...values.inner].some((value) => value.toLowerCase() === wanted);
+    const actual = matched ? wanted : values.own;
+    if (!matched) {
+      throw new Error(`Rendered ${verification.property} for "${verification.targetText}" is "${values.own}", expected "${expectedValue || verification.cssValue}".`);
     }
     await context.close();
     return { status: 'passed', actual: actual.trim(), ...verification };

@@ -4,7 +4,7 @@ import {
   Home, 
   BookOpen, 
   Settings, 
-  Building2, 
+  
   CreditCard, 
   LogOut 
 } from 'lucide-react';
@@ -144,12 +144,6 @@ export function ProfileMenu() {
               icon={Settings}
               label="Settings"
               onClick={() => handleNavigate('/settings')}
-            />
-
-            <ProfileMenuItem
-              icon={Building2}
-              label="Manage Workspace"
-              onClick={() => handleNavigate('/workspace')}
             />
 
             <ProfileMenuItem

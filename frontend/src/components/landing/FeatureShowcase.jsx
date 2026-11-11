@@ -22,15 +22,15 @@ export default function FeatureShowcase() {
       large
       category="AI PROTOTYPING"
       title="Prototype new ideas with AI"
-      description="Turn your ideas and product requirements into high-fidelity interfaces in minutes. Explore concepts quickly before committing development resources."
+      description="Describe what you want in plain English and get a working React interface with a live preview. Refine it by chatting with the AI agent."
       illustration={<AudioPlayerIllustration />}
     />,
     <FeatureCard
       key="card-2"
       large
-      category="DESIGN SYSTEM"
-      title="Match your existing designs"
-      description="Bring your existing components, styles, and design-system rules into your workflow for consistent product experiences."
+      category="DESIGN SYSTEMS"
+      title="Set your brand colors and fonts"
+      description="Create color palettes and upload custom fonts so every generated screen matches your brand."
       illustration={<DesignSystemIllustration />}
     />,
   ];
@@ -38,23 +38,23 @@ export default function FeatureShowcase() {
   const bottomCards = [
     <FeatureCard
       key="card-3"
-      category="RAPID PROTOTYPING"
-      title="Show, don't tell"
-      description="Prototype new features and test them directly with your customers."
+      category="START ANYWHERE"
+      title="Recreate what you already have"
+      description="Start from a prompt, a screenshot, a website to clone, a GitHub repository, or a Figma file."
       illustration={<RapidPrototypingIllustration />}
     />,
     <FeatureCard
       key="card-4"
       category="TEAM COLLABORATION"
-      title="Design & engineering, together"
-      description="Edit, share, and iterate live on designs with your team."
+      title="Work on projects together"
+      description="Create groups, invite teammates, and share projects with viewer, editor, or admin access."
       illustration={<CollaborationIllustration />}
     />,
     <FeatureCard
       key="card-5"
-      category="SECURE & COMPLIANT"
-      title="Secure AI design for enterprise"
-      description="Keep designs secure, compliant, and ready for enterprise use."
+      category="PUBLISH"
+      title="Publish and use your own domain"
+      description="Publish your site from Veave and connect a custom domain on paid plans."
       illustration={<SecurityIllustration />}
       className="md:col-span-2 lg:col-span-1"
     />,
@@ -67,15 +67,15 @@ export default function FeatureShowcase() {
     >
       <div className="max-w-7xl mx-auto">
         {/* Section Header */}
-        <div className="max-w-3xl mx-auto text-center mb-14 md:mb-18">
+        <div data-stagger className="max-w-3xl mx-auto text-center mb-14 md:mb-18">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-100 border border-zinc-200 text-zinc-900 text-xs font-semibold uppercase tracking-wider font-mono mb-4">
             Capabilities
           </div>
           <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold text-zinc-900 tracking-tight leading-tight mb-4">
-            Crafted for speed, built for production.
+            Everything you need to build and ship.
           </h2>
           <p className="text-base sm:text-lg text-zinc-500 leading-relaxed max-w-2xl mx-auto">
-            Experience an AI-accelerated workflow from initial spark to interactive prototypes and synchronized design systems.
+            From a first prompt to a published site, with a visual editor, a code editor, and one-click export.
           </p>
         </div>
 

@@ -1,11 +1,14 @@
-import { useEffect } from 'react';
+import { useState } from 'react';
 import { useAuthStore } from '../store/authStore';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
+import ModelSelector from '../components/dashboard/ModelSelector';
+import { getPreferredModel, setPreferredModel } from '../utils/modelPreference';
 
 export default function Settings() {
   const { user, logout } = useAuthStore();
+  const [model, setModel] = useState(getPreferredModel);
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -19,6 +22,18 @@ export default function Settings() {
           <Input label="Full Name" defaultValue={user?.name} readOnly />
           <Input label="Email Address" defaultValue={user?.email} readOnly />
           <Button className="mt-2">Save Changes</Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>AI Model</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-zinc-400 mb-4">
+            The model Veave uses when generating websites from the home page.
+          </p>
+          <ModelSelector selectedModel={model} onSelectModel={(m) => { setModel(m); setPreferredModel(m); }} />
         </CardContent>
       </Card>
 

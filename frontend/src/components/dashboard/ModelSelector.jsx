@@ -1,82 +1,17 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDown, Check, Zap, Cpu, Sparkles, Sliders } from 'lucide-react';
+import { ChevronDown, Check, Cpu } from 'lucide-react';
 
+// Veave runs a single AI model.
 const MODEL_OPTIONS = [
   {
-    category: 'Default',
+    category: 'Model',
     items: [
       {
-        id: 'GPT-6 Luna',
-        name: 'GPT-6 Luna',
-        desc: 'Long-context model for complete multi-page website cloning',
-        badge: 'Clone Recommended',
-        badgeColor: 'bg-blue-50 text-blue-700 border border-blue-200/60 font-semibold'
-      },
-      {
-        id: 'Gemini Flash 3.8',
-        name: 'Gemini Flash 3.8',
-        desc: 'Google DeepMind high-speed UI synthesis & crisp layout generation',
-        badge: 'Default Model',
+        id: 'Veave AI',
+        name: 'Veave AI',
+        desc: 'Used for creating websites, cloning, and editing',
+        badge: 'Default',
         badgeColor: 'bg-zinc-50 text-zinc-700 border border-zinc-200/60 font-semibold'
-      },
-      {
-        id: 'Auto',
-        name: 'Auto',
-        desc: 'Automatically choose the best model for your prompt',
-        badge: 'Smart Route',
-        badgeColor: 'bg-zinc-100 text-zinc-700'
-      },
-    ]
-  },
-  {
-    category: 'Available Models',
-    items: [
-      {
-        id: 'GPT',
-        name: 'GPT-4o',
-        desc: 'Best for general UI generation & component layout',
-        badge: 'High Fidelity',
-        badgeColor: 'bg-emerald-50 text-emerald-700 border border-emerald-200/50'
-      },
-      {
-        id: 'Claude',
-        name: 'Claude Sonnet 5.5',
-        desc: 'Best for multi-page cloning, long contexts & architecture',
-        badge: 'Deep Logic',
-        badgeColor: 'bg-amber-50 text-amber-700 border border-amber-200/50'
-      },
-      {
-        id: 'Gemini',
-        name: 'Gemini 1.5 Pro',
-        desc: 'Best for multimodal workflows & large code contexts',
-        badge: 'Multimodal',
-        badgeColor: 'bg-indigo-50 text-indigo-700 border border-indigo-200/50'
-      },
-    ]
-  },
-  {
-    category: 'Performance Tuning',
-    items: [
-      {
-        id: 'Fast',
-        name: 'Fast',
-        desc: 'Optimized for sub-second rapid prototyping & mockups',
-        badge: 'Lightning',
-        badgeColor: 'bg-yellow-50 text-yellow-700 border border-yellow-200/50'
-      },
-      {
-        id: 'Balanced',
-        name: 'Balanced',
-        desc: 'Great balance of speed & visual component accuracy',
-        badge: 'Optimal',
-        badgeColor: 'bg-cyan-50 text-cyan-700 border border-cyan-200/50'
-      },
-      {
-        id: 'High Quality',
-        name: 'High Quality',
-        desc: 'Maximum polish, pixel-perfect spacing, rich animations',
-        badge: 'Studio Grade',
-        badgeColor: 'bg-purple-50 text-purple-700 border border-purple-200/50'
       },
     ]
   }

@@ -35,7 +35,7 @@ Respond with ONLY a JSON object:
 }`;
 
 function resolveBuilderModel(override) {
-  return override || process.env.BUILDER_MODEL || process.env.CLAUDE_GENERATION_MODEL || 'anthropic/claude-sonnet-5.5';
+  return override || openRouterService.model; // GPT-6 Luna, the only model Veave uses
 }
 
 function buildFileContext(files, task) {

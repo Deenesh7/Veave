@@ -52,6 +52,22 @@ function buildRepairMessages({ prompt, attempt, issues = [], files = [], changed
     }
   }
 
+  // A theme that is not applied is painted by files the edit never touched (App.jsx, index.css, shared components): show them
+  // and allow patches to them, within a size budget.
+  let themeText = '';
+  const ownerPaths = [...new Set(issues.flatMap((issue) => (Array.isArray(issue?.ownerFiles) ? issue.ownerFiles : [])))];
+  if (ownerPaths.length) {
+    let budget = 120000;
+    for (const filePath of ownerPaths.slice(0, 14)) {
+      const file = files.find((item) => item.path === filePath);
+      if (!file || file.encoding === 'base64' || typeof file.content !== 'string' || file.content.length > 40000 || file.content.length > budget) continue;
+      budget -= file.content.length;
+      editablePaths.add(filePath);
+      related.push({ path: filePath, snippets: 1 });
+      themeText += `--- THEME FILE: ${filePath} (complete) ---\n${file.content}\n\n`;
+    }
+  }
+
   const system = `${delimiterInstructions}\n\nYou are correcting visual defects found by rendering a page AFTER an edit. Change the SMALLEST amount of code that fixes the listed issues. Output ONLY <PATCH path="..."><SEARCH>..</SEARCH><REPLACE>..</REPLACE></PATCH> blocks (a <FILE> only for a genuinely new file). Patch ONLY the files shown. Never touch anything unrelated, never add global resets or !important hacks to hide a symptom (exception: when the issue says the requested arrangement is missing, rules scoped to the changed container may use !important because the captured stylesheet is very specific), never remove existing functionality. Copy SEARCH text verbatim.\nWhen DIAGNOSTICS are given they were MEASURED in the browser: fix the stated cause (the culprit element and the rule or layout that removes its width). Do not simply enlarge the image, do not hide the problem, and keep the image's aspect ratio, source and the requested arrangement. When PREVIOUS ATTEMPTS are listed, your patch must differ from them in substance: they did not change the measurements.`;
 
   const plainIssues = issues.slice(0, 12).map(({ diagnostic, ...rest }) => rest);
@@ -64,6 +80,7 @@ function buildRepairMessages({ prompt, attempt, issues = [], files = [], changed
     parts.push(`PREVIOUS ATTEMPTS (do NOT repeat these; each shows what it changed and what was still wrong afterwards):\n${history.map((entry) => `- attempt ${entry.attempt}: ${entry.result}${entry.patchedFiles?.length ? ` | changed ${entry.patchedFiles.join(', ')}` : ''}${entry.patchPreview ? ` | patch: ${String(entry.patchPreview).slice(0, 420)}` : ''}${entry.remaining?.length ? ` | still failing: ${entry.remaining.join('; ')}` : ''}${entry.ineffective ? ' | INEFFECTIVE: the measurements did not change, so the cause was not touched' : ''}`).join('\n')}${widen ? '\nBecause earlier attempts did not help, more source is supplied below (stylesheets and parent components that mention the culprit). The cause may be there, not in the file you kept editing.' : ''}`);
   }
   parts.push(`FILES THIS EDIT CHANGED (current content; patch these first):\n${changed.map((file) => `--- FILE: ${file.path} ---\n${viewOf(file.content)}`).join('\n\n').slice(0, 260000)}`);
+  if (themeText) parts.push(`FILES THAT PAINT THE PAGE (you may patch these; a theme change usually needs several patches across them, one per hard-coded colour):\n${themeText}`);
   if (relatedText) parts.push(`FILES THAT DEFINE THE CULPRIT (you may patch these too):\n${relatedText}`);
   if (sourceContext) parts.push(sourceContext);
   const tail = `${previousError ? `\n\nYOUR PREVIOUS ANSWER COULD NOT BE APPLIED: ${previousError}\nCopy each SEARCH block character for character from the file content above (no <REPLACE>/<SEARCH> tags inside code); choose a short, unique line.` : ''}${layoutHint(issues)}\nFind the root cause in these files and return the minimal PATCH blocks.`;

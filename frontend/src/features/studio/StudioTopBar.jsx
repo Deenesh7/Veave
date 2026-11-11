@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSmartBack } from '../../hooks/useSmartBack';
 import { 
-  Sparkles, 
   Monitor, 
   Tablet, 
   Smartphone, 
@@ -15,8 +14,6 @@ import {
   ChevronDown, 
   Check, 
   Columns,
-  Sliders,
-  Loader2
 } from 'lucide-react';
 import { useProjectStore } from '../../store/projectStore';
 import { useAuthStore } from '../../store/authStore';
@@ -31,8 +28,6 @@ export function StudioTopBar({
   setViewMode,
   onRefresh,
   onOpenHistory,
-  onOpenVisualEdit,
-  isOpeningVisualEditor = false,
   isGenerating
 }) {
   const navigate = useNavigate();
@@ -75,12 +70,7 @@ export function StudioTopBar({
       {/* Left Area: Brand Logo, App Name, Project Dropdown */}
       <div className="flex items-center gap-3 min-w-0">
         <button type="button" onClick={goBack} title="Back to Dashboard" aria-label="Back to Dashboard" className="flex items-center gap-2.5 cursor-pointer">
-          <div className="w-7 h-7 rounded-xl bg-zinc-900 flex items-center justify-center text-white shadow-xs">
-            <Sparkles className="w-4 h-4" />
-          </div>
-          <span className="font-extrabold text-sm tracking-tight text-[#111827] hidden md:inline">
-            Veave
-          </span>
+          <img src="/veave-logo.png" alt="Veave" className="w-10 h-10 object-contain" />
         </button>
 
         <div className="h-4 w-px bg-zinc-200 hidden sm:block mx-0.5" />
@@ -201,23 +191,6 @@ export function StudioTopBar({
             <span className="hidden xl:inline text-[11px]">Code</span>
           </button>
         </div>
-
-        {/* Visual Edit / Edit Design Button */}
-        <button
-          onClick={() => onOpenVisualEdit?.('editor')}
-          disabled={isOpeningVisualEditor}
-          className="px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 transition-all cursor-pointer bg-zinc-50 text-zinc-600 border-zinc-200 hover:bg-zinc-100 hover:border-zinc-300 shadow-2xs active:scale-95 disabled:opacity-75"
-          title="Open Full Visual Design Editor (Inspect & customize styling)"
-        >
-          {isOpeningVisualEditor ? (
-            <Loader2 className="w-3.5 h-3.5 text-zinc-600 animate-spin" />
-          ) : (
-            <Sliders className="w-3.5 h-3.5 text-zinc-600" />
-          )}
-          <span className="hidden sm:inline">
-            {isOpeningVisualEditor ? 'Opening...' : 'Visual Edit'}
-          </span>
-        </button>
 
         {/* Refresh Preview */}
         <button

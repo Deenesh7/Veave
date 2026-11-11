@@ -1,0 +1,187 @@
+{
+  "schemaVersion": 1,
+  "id": "business-corporate-001",
+  "version": "1.0.0",
+  "name": "Meridian Business",
+  "status": "published",
+  "featured": false,
+  "popularity": 74,
+  "releasedAt": "2026-02-20",
+  "description": "A professional corporate site with a hero, stats strip, services, process steps, team and a validated contact form.",
+  "category": "Business",
+  "tags": [
+    "business",
+    "corporate",
+    "consulting",
+    "services",
+    "agency",
+    "professional"
+  ],
+  "styleTags": [
+    "Light",
+    "Professional",
+    "Teal",
+    "Structured"
+  ],
+  "access": {
+    "visibility": "public"
+  },
+  "previewImage": "preview.svg",
+  "designTokens": {
+    "mood": "Corporate Teal",
+    "colors": {
+      "bg": "#F8FAFC",
+      "surface": "#FFFFFF",
+      "surface2": "#EEF2F6",
+      "line": "#D9E0E8",
+      "fg": "#0F172A",
+      "muted": "#526173",
+      "brand": "#0F766E",
+      "onBrand": "#FFFFFF",
+      "accent": "#B45309"
+    },
+    "radius": {
+      "card": "8px",
+      "button": "6px"
+    }
+  },
+  "typography": {
+    "headingFont": "ui-sans-serif, system-ui, sans-serif",
+    "bodyFont": "ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif",
+    "scale": "Hero 36 to 48px extra bold, section titles 30 to 36px bold, body 16 to 18px, labels 14px uppercase."
+  },
+  "layout": {
+    "summary": "Sticky white header with shadow, split hero on a tinted band, stats strip, three-column service cards, dark footer",
+    "container": "max-w-7xl centred with 16/24/32px side padding",
+    "navigation": "sticky"
+  },
+  "spacing": {
+    "section": "py-16 sm:py-20",
+    "gap": "gap-6 (cards) and gap-12 (hero)",
+    "scale": "4px base"
+  },
+  "responsive": {
+    "summary": "Single column on mobile with a hamburger menu; stats go 2 to 4 columns at 1024px; card grids go 1, 2 and 3 columns.",
+    "breakpoints": {
+      "sm": 640,
+      "md": 768,
+      "lg": 1024
+    }
+  },
+  "components": [
+    {
+      "name": "Navbar",
+      "path": "src/components/Navbar.jsx",
+      "role": "Sticky header with active links and a mobile menu, driven by src/data/site.js",
+      "shared": true
+    },
+    {
+      "name": "Footer",
+      "path": "src/components/Footer.jsx",
+      "role": "Dark footer with brand, link groups and email, driven by src/data/site.js",
+      "shared": true
+    },
+    {
+      "name": "Section",
+      "path": "src/components/Section.jsx",
+      "role": "Section wrapper, container and heading primitives",
+      "shared": true
+    },
+    {
+      "name": "FeatureCard",
+      "path": "src/components/FeatureCard.jsx",
+      "role": "Card with optional image, icon, title and text",
+      "shared": false
+    },
+    {
+      "name": "CTA",
+      "path": "src/components/CTA.jsx",
+      "role": "Closing call-to-action on a brand-coloured panel",
+      "shared": false
+    }
+  ],
+  "pages": [
+    {
+      "path": "/",
+      "file": "src/pages/Home.jsx",
+      "title": "Home",
+      "sections": [
+        "Hero with image",
+        "Stats strip",
+        "Services overview",
+        "Testimonials",
+        "Call to action"
+      ]
+    },
+    {
+      "path": "/services",
+      "file": "src/pages/Services.jsx",
+      "title": "Services",
+      "sections": [
+        "Service cards",
+        "Process steps"
+      ]
+    },
+    {
+      "path": "/about",
+      "file": "src/pages/About.jsx",
+      "title": "About",
+      "sections": [
+        "Company story",
+        "Values",
+        "Team"
+      ]
+    },
+    {
+      "path": "/contact",
+      "file": "src/pages/Contact.jsx",
+      "title": "Contact",
+      "sections": [
+        "Contact details",
+        "Validated contact form"
+      ]
+    }
+  ],
+  "features": [
+    "Responsive layout",
+    "Mobile navigation",
+    "Stats strip",
+    "Contact form validation",
+    "Active link states",
+    "Client-side routing"
+  ],
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "lucide-react": "^0.400.0"
+  },
+  "scaffold": {
+    "dir": "files",
+    "themeFile": "src/index.css",
+    "requiredFiles": [
+      "package.json",
+      "index.html",
+      "src/main.jsx",
+      "src/App.jsx",
+      "src/index.css",
+      "src/data/site.js",
+      "tailwind.config.js"
+    ],
+    "protectedFiles": [
+      "package.json",
+      "vite.config.js",
+      "postcss.config.js"
+    ],
+    "sharedFiles": [
+      "src/components/Navbar.jsx",
+      "src/components/Footer.jsx",
+      "src/components/Section.jsx"
+    ],
+    "promptFiles": [
+      "src/App.jsx",
+      "src/data/site.js",
+      "src/index.css"
+    ]
+  }
+}

@@ -9,7 +9,7 @@ const {
 
 /**
  * Standard structured tool schema for OpenRouter / LLM function calling.
- * Supported by modern OpenAI, Gemini, Claude, and Llama 3 models.
+ * Used with GPT-6 Luna through OpenRouter.
  */
 const FILE_OPERATIONS_TOOL = {
   type: 'function',
@@ -137,6 +137,11 @@ function validatePath(filePath) {
 
   const normalized = path.normalize(filePath.replace(/\\/g, '/')).replace(/^\.\//, '');
 
+  // The project root itself ("." / "src/..") is not a file.
+  if (normalized === '.' || normalized === '' || normalized === './') {
+    throw new AIResponseValidationError(`Invalid file path: "${filePath}" does not name a file inside the project.`);
+  }
+
   // Reject path traversal
   if (
     normalized.startsWith('../') ||
@@ -148,14 +153,19 @@ function validatePath(filePath) {
     throw new AIResponseValidationError(`Path traversal detected: "${filePath}". Paths must remain inside project root.`);
   }
 
-  // Reject reserved names and protected files
+  // Reject reserved names, secrets and protected files. Comparison is case-insensitive: ".ENV" is the same secret on many systems.
   const parts = normalized.split('/');
   for (const part of parts) {
+    const lower = part.toLowerCase();
     if (
-      part === '.env' ||
-      part === '.git' ||
-      part === 'node_modules' ||
-      part === '.npmrc'
+      (lower === '.env' || (lower.startsWith('.env.') && !/^\.env\.(?:example|sample|template)$/.test(lower))) ||
+      lower === '.git' ||
+      lower === '.gitconfig' ||
+      lower === '.ssh' ||
+      lower === 'node_modules' ||
+      lower === '.npmrc' ||
+      lower === '.yarnrc' ||
+      lower === '.netrc'
     ) {
       throw new AIResponseValidationError(`Modifying protected file or directory is forbidden: "${filePath}".`);
     }
@@ -163,6 +173,10 @@ function validatePath(filePath) {
     if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)) {
       throw new AIResponseValidationError(`Reserved device name in path: "${filePath}".`);
     }
+  }
+  const baseName = parts[parts.length - 1].toLowerCase();
+  if (/\.(?:sh|bash|zsh|bat|cmd|exe|dll|so|dylib|ps1|vbs|jar|node|php|pl|rb|py)$/.test(baseName) || /^(?:dockerfile|docker-compose[\w.-]*|makefile)$/.test(baseName)) {
+    throw new AIResponseValidationError(`Executable or build-infrastructure file is not allowed in a generated website: "${filePath}".`);
   }
 
   // Reject invalid filesystem characters
@@ -314,6 +328,17 @@ function extractResponseText(responseInput) {
   return '';
 }
 
+/** Collapses operations that are exact repeats (what a continuation that restarted a block produces); conflicting ones are left for validation to reject. */
+function dedupeOperations(operations = []) {
+  const seen = new Set();
+  return operations.filter((operation) => {
+    const key = JSON.stringify([operation.operation, operation.path, operation.content, operation.search, operation.replace, operation.newPath || operation.to || null]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function hasCompleteStructuredResponse(responseInput) {
   const toolCalls = Array.isArray(responseInput?.tool_calls)
     ? responseInput.tool_calls
@@ -350,6 +375,40 @@ function hasCompleteStructuredResponse(responseInput) {
     }
   }
   return false;
+}
+
+/**
+ * True when a structured response was cut off even though the provider did not say so (finish_reason is not always "length"):
+ * tool-call arguments that are not valid JSON, or <FILE>/<PATCH> blocks that were opened and never closed.
+ */
+function isIncompleteStructuredResponse(responseInput) {
+  const toolCalls = Array.isArray(responseInput?.tool_calls) ? responseInput.tool_calls : [];
+  if (toolCalls.length) {
+    return toolCalls.some((call) => {
+      const args = call.function?.arguments ?? call.arguments;
+      if (args === undefined || args === null || args === '') return true;
+      if (typeof args !== 'string') return false;
+      try { JSON.parse(args); return false; } catch { return true; }
+    });
+  }
+  return unterminatedBlocks(extractResponseText(responseInput)).length > 0;
+}
+
+/** Paths (or tag names) of <FILE>/<PATCH> blocks that were opened and not closed. */
+function unterminatedBlocks(text) {
+  const source = String(text || '');
+  const problems = [];
+  const files = [...source.matchAll(/<FILE\b[^>]*?(\/?)>/gi)].filter((match) => match[1] !== '/');
+  const fileCloses = (source.match(/<\/FILE>/gi) || []).length;
+  if (files.length > fileCloses) {
+    const last = files[files.length - 1];
+    problems.push((/path=["']([^"']*)["']/i.exec(last[0]) || [])[1] || 'FILE');
+  }
+  const patchOpens = (source.match(/<PATCH\b/gi) || []).length;
+  if (patchOpens > (source.match(/<\/PATCH>/gi) || []).length) problems.push('PATCH');
+  // An unfinished tag at the very end ("<FILE path=\"src/a.jsx\"") is also a cut-off.
+  if (/<(?:FILE|PATCH|SEARCH|REPLACE)\b[^>]*$/i.test(source)) problems.push('unfinished tag');
+  return problems;
 }
 
 function appendResponseContinuation(existing, continuation) {
@@ -414,6 +473,7 @@ function parseAIResponse(responseInput, defaultTarget = null) {
     toolCalls = responseInput;
   }
 
+  let toolArgumentError = null;
   if (toolCalls && toolCalls.length > 0) {
     for (const call of toolCalls) {
       const argsRaw = call.function?.arguments || call.arguments;
@@ -445,19 +505,24 @@ function parseAIResponse(responseInput, defaultTarget = null) {
           }
         }
       } catch (err) {
-        // Fall through to text parsing if tool call arguments failed to parse
+        // Truncated or invalid tool-call JSON: remember it so the failure is reported precisely instead of as "empty content".
+        toolArgumentError = err;
       }
     }
     if (operations.length > 0) {
-      return { action, reason, files: operations };
+      return { action, reason, files: dedupeOperations(operations) };
     }
   }
 
   const rawText = extractResponseText(responseInput);
 
   if (!rawText) {
+    if (toolArgumentError) throw new AIResponseMalformedError(`The AI response was cut off or is not valid JSON (${String(toolArgumentError.message).slice(0, 120)}). No files were applied.`);
     throw new AIResponseMalformedError('AI returned empty content.');
   }
+  // A <FILE>/<PATCH> block that was opened and never closed is a truncated answer: say so instead of silently dropping that file.
+  const cutOff = unterminatedBlocks(rawText);
+  if (cutOff.length) throw new AIResponseMalformedError(`The AI response was cut off inside ${cutOff.map((item) => `"${item}"`).join(', ')}. No files were applied.`);
 
   // 2. Deterministic <FILE> and <PATCH> delimiters (Highest fidelity for raw code)
   const patchRegex = /<PATCH\s+path=["']([^"']*)["']\s*>([\s\S]*?)<\/PATCH>/gi;
@@ -624,6 +689,10 @@ function parseAIResponse(responseInput, defaultTarget = null) {
  * Validate parsed file operations according to Requirement 4.
  * Throws AIResponseValidationError with exact diagnostic message if invalid.
  */
+const OPERATION_ALIASES = { update: 'modify', edit: 'modify', replace: 'modify', write: 'create', add: 'create', new: 'create', remove: 'delete', move: 'rename' };
+// What a Vite/React site cannot be built without.
+const PROTECTED_PROJECT_FILES = /^(?:package\.json|index\.html|vite\.config\.(?:js|ts|mjs|cjs)|tailwind\.config\.(?:js|ts|mjs|cjs)|postcss\.config\.(?:js|cjs|mjs)|src\/(?:App|main)\.(?:jsx?|tsx?)|src\/index\.css)$/;
+
 function validateFileOperations(parsedResponse, existingFiles = []) {
   if (!parsedResponse || typeof parsedResponse !== 'object') {
     throw new AIResponseValidationError('Invalid response: response must be an object.');
@@ -646,12 +715,17 @@ function validateFileOperations(parsedResponse, existingFiles = []) {
     const safePath = validatePath(op.path);
 
     // 2. Duplicate path detection
-    const operation = String(op.operation || 'modify').toLowerCase().trim();
+    const operation = OPERATION_ALIASES[String(op.operation || 'modify').toLowerCase().trim()] || String(op.operation || 'modify').toLowerCase().trim();
     const previousOperation = seenPaths.get(safePath);
     if (previousOperation && (previousOperation !== 'patch' || operation !== 'patch')) {
       throw new AIResponseValidationError(`Duplicate file path in operations: "${safePath}". Each file can only be modified once per response.`);
     }
     seenPaths.set(safePath, operation);
+
+    // 3a. Files the project cannot run without are never deleted or moved away; they can still be modified or patched.
+    if ((operation === 'delete' || operation === 'rename') && PROTECTED_PROJECT_FILES.test(safePath)) {
+      throw new AIResponseValidationError(`"${safePath}" is required by the project and cannot be ${operation === 'delete' ? 'deleted' : 'renamed'}. Modify it instead.`);
+    }
 
     // 3. Validate Operation
     const validOperations = ['create', 'modify', 'delete', 'rename', 'patch'];
@@ -678,6 +752,15 @@ function validateFileOperations(parsedResponse, existingFiles = []) {
       const safeNewPath = validatePath(op.newPath);
       if (safeNewPath === safePath) {
         throw new AIResponseValidationError(`Rename source and destination are identical: "${safePath}".`);
+      }
+      // The destination must be free: another operation in this response, or an existing file, would be silently overwritten.
+      const claimed = parsedResponse.files.some((other, otherIndex) => otherIndex !== i && other && typeof other.path === 'string' && (() => { try { return validatePath(other.path) === safeNewPath; } catch { return false; } })());
+      const movedAway = parsedResponse.files.some((other) => other && ['delete', 'rename'].includes(OPERATION_ALIASES[String(other.operation).toLowerCase()] || String(other.operation).toLowerCase()) && (() => { try { return validatePath(other.path) === safeNewPath; } catch { return false; } })());
+      if (claimed && !movedAway) {
+        throw new AIResponseValidationError(`Rename destination "${safeNewPath}" is also used by another operation in this response.`);
+      }
+      if (!movedAway && existingFiles.some((file) => file && file.path === safeNewPath)) {
+        throw new AIResponseValidationError(`Rename destination "${safeNewPath}" already exists and would be overwritten.`);
       }
     }
 
@@ -1137,6 +1220,8 @@ INSTRUCTIONS:
 }
 
 module.exports = {
+  isIncompleteStructuredResponse,
+  unterminatedBlocks,
   relatedRepairPaths,
   compactRepairHistory,
   dependencySummary,

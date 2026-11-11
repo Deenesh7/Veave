@@ -1,8 +1,10 @@
 import React from 'react';
+import { useLocation } from 'react-router-dom';
 import { AlertTriangle, X } from 'lucide-react';
 import { useGenerationJobStore } from '../../store/generationJobStore';
 
 export default function PersistentGenerationIndicator() {
+  const { pathname } = useLocation();
   const {
     isGenerating,
     jobStatus,
@@ -12,6 +14,10 @@ export default function PersistentGenerationIndicator() {
     dismissToast,
     resetJob
   } = useGenerationJobStore();
+
+  // The editor and the home composer already show the failure inline. A second pop-up with the same text made it look like two errors,
+  // so this corner toast is only for pages that have no inline error of their own.
+  if (pathname === '/' || pathname === '/dashboard' || pathname.startsWith('/editor')) return null;
 
   // If nothing is generating and no notification toast, don't show
   if (!isGenerating && !notificationToast && jobStatus !== 'completed' && jobStatus !== 'failed') {

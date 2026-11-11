@@ -31,17 +31,6 @@ router.get('/projects/:projectId', controller.getStatus);
 router.get('/projects/:projectId/deployments', controller.listDeployments);
 router.post('/projects/:projectId/publish', publishLimiter, controller.publish);
 router.post('/projects/:projectId/unpublish', controller.unpublish);
-router.get('/domains/available', controller.domainAvailable);
-router.get('/domains/search', controller.domainSearch);
-router.post('/projects/:projectId/domain/order', publishLimiter, controller.domainOrder);
-router.get('/my-domains', controller.myDomains);
-router.get('/my-domains/:domain/renewal', controller.renewalPrice);
-router.post('/my-domains/:domain/renewal', publishLimiter, controller.renewalOrder);
-router.get('/my-domains/:domain/dns', controller.dnsList);
-router.put('/my-domains/:domain/dns', controller.dnsSet);
-router.delete('/my-domains/:domain/dns', controller.dnsDelete);
-router.get('/domain/orders/:orderId', controller.domainOrderGet);
-router.post('/projects/:projectId/domain/order/verify', publishLimiter, controller.domainOrderVerify);
 router.get('/projects/:projectId/domain', controller.getDomain);
 router.get('/domains/check', controller.checkDomain);
 router.post('/projects/:projectId/domain', publishLimiter, controller.connectDomain);
@@ -50,7 +39,6 @@ router.post('/projects/:projectId/domain/confirm-replace', publishLimiter, contr
 router.get('/projects/:projectId/domain/instructions', controller.domainInstructions);
 router.get('/projects/:projectId/domain/health', controller.domainHealth);
 router.post('/projects/:projectId/domain/verify', publishLimiter, controller.verifyDomain);
-router.post('/projects/:projectId/domain/configure', controller.configureDomain);
 router.delete('/projects/:projectId/domain', controller.removeDomain);
 router.get('/deployments/:deploymentId', controller.getDeployment);
 

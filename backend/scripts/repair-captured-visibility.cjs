@@ -1,7 +1,7 @@
 // Finds (and with --apply, repairs) projects whose captured pages have images that load but are invisible or 0px wide.
 //   node scripts/repair-captured-visibility.cjs               # report only, every project that has captured pages
 //   node scripts/repair-captured-visibility.cjs <projectId> --apply
-require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
+require('../src/config/loadEnv');
 const mongoose = require('mongoose');
 const { hydrateFiles, dehydrateFiles } = require('../src/services/storage/s3BlobStorage');
 const guard = require('../src/services/clone/capturedVisibility');

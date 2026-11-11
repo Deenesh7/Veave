@@ -33,7 +33,7 @@ const domainConnectionSchema = new mongoose.Schema({
   actionRequired: { type: mongoose.Schema.Types.Mixed, default: null },        // { type, message, records[] }
 
   verification: {
-    method: { type: String, enum: ['dns-txt', 'purchase-order', null], default: null },
+    method: { type: String, enum: ['dns-txt', null], default: null },
     nonce: { type: String, default: '' },        // bound into the challenge value together with host, user and project
     expiresAt: { type: Date, default: null },
     attempts: { type: Number, default: 0 },
@@ -41,7 +41,7 @@ const domainConnectionSchema = new mongoose.Schema({
     verifiedAt: { type: Date, default: null }
   },
   dns: {
-    provider: { type: String, default: null },          // detected from the NS records, e.g. godaddy, cloudflare, unknown
+    provider: { type: String, default: null },          // detected from the NS records, e.g. cloudflare, unknown
     authorized: { type: Boolean, default: false },      // can Veave change this zone itself?
     mode: { type: String, enum: ['automatic', 'manual', null], default: null },
     confirmReplace: { type: Boolean, default: false },  // the user agreed to replace conflicting A/AAAA/CNAME records

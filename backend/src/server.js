@@ -2,7 +2,7 @@
 process.env.NODE_NO_WARNINGS = '1';
 process.emitWarning = () => {};
 Object.defineProperty(globalThis, 'localStorage', { value: undefined, configurable: true, writable: true });
-require('dotenv').config();
+require('./config/loadEnv');
 const app = require('./app');
 const connectDB = require('./config/db');
 const logger = require('./utils/logger');
@@ -14,6 +14,14 @@ let server;
 
 const startServer = async () => {
   await connectDB();
+
+  // Templates live in MongoDB (text) and S3 (images), not in the backend source: load them before any request needs one.
+  try {
+    const templateService = require('./services/templates/templateService');
+    const loaded = await templateService.preload();
+    logger.info(`Loaded ${loaded} template version(s) from the database.`);
+    for (const problem of templateService.loadRegistry().problems || []) logger.error(`Template ${problem.id}@${problem.version} not loaded: ${problem.message}`);
+  } catch (error) { logger.error(`Templates could not be loaded: ${error.message}`); }
 
   try {
     const recoveredDeployments = await require('./services/hosting/deploymentService').recoverInterruptedDeployments();
@@ -29,9 +37,21 @@ const startServer = async () => {
   if (recovery.resumed || recovery.failedCommits) {
     logger.warn(`Recovered generation jobs after restart: resumed=${recovery.resumed}, failedCommits=${recovery.failedCommits}`);
   }
+  jobManager.startRecoverySweeper();
+  try {
+    const templateJobs = require('./services/templateSites/templateJobManager');
+    const templateRecovery = await templateJobs.recover();
+    if (templateRecovery.resumed || templateRecovery.abandoned) logger.warn(`Recovered template jobs after restart: resumed=${templateRecovery.resumed}, abandoned=${templateRecovery.abandoned}`);
+    templateJobs.startSweeper();
+  } catch (error) { logger.warn(`Template job recovery not started: ${error.message}`); }
   
   server = app.listen(PORT, () => {
     logger.info(`Server running on port ${PORT}`);
+    // Confirm at startup that OpenRouter and GPT-6 Luna are reachable, so a bad key shows up in the logs right away.
+    require('./services/ai/openrouterService').checkConnection().then((r) => {
+      if (r.ok) logger.info(`OpenRouter: ${r.message}`);
+      else logger.error(`OpenRouter NOT connected (${r.status}): ${r.message} AI generation will fail until this is fixed.`);
+    }).catch((e) => logger.error(`OpenRouter check failed: ${e.message}`));
   });
 
   server.on('error', (err) => {

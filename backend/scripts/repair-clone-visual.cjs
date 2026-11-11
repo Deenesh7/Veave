@@ -1,7 +1,7 @@
 // Runs the same compare-with-the-real-site-and-repair loop a clone job runs, on a saved project.
 //   node scripts/repair-clone-visual.cjs <projectId>            # dry run: prints what it found and what the model changed
 //   node scripts/repair-clone-visual.cjs <projectId> --apply    # also saves the CSS the loop kept
-require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
+require('../src/config/loadEnv');
 const mongoose = require('mongoose');
 const { hydrateFiles, dehydrateFiles } = require('../src/services/storage/s3BlobStorage');
 const repair = require('../src/services/clone/cloneVisualRepair');

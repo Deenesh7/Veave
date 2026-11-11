@@ -7,22 +7,22 @@ export default function WorkflowSteps() {
       step: '01',
       icon: MessageSquare,
       title: 'Prompt your requirement',
-      description: 'Describe any screen, workflow, or dashboard in natural English. Provide layout preferences or design tokens.',
-      tag: 'Zero boilerplate',
+      description: 'Describe any screen or site in plain English, or start from a screenshot, website, GitHub repository, or Figma file.',
+      tag: 'Prompt, import, or clone',
     },
     {
       step: '02',
       icon: Sliders,
       title: 'Refine visually or via chat',
-      description: 'Ask the AI agent to adjust spacing, swap icons, or switch color schemes with immediate hot-reloaded visual feedback.',
-      tag: 'Real-time sync',
+      description: 'Ask the AI agent for changes, edit elements in the visual editor, or open the code editor, and see results in the live preview.',
+      tag: 'Live preview',
     },
     {
       step: '03',
       icon: Download,
       title: 'Ship clean React & Tailwind',
-      description: 'Export clean, dependency-free React components formatted with Tailwind CSS directly into your existing repository.',
-      tag: '100% code ownership',
+      description: 'Download your project as a ZIP, a complete Vite + React + Tailwind app you can run locally, or publish it from Veave.',
+      tag: 'Export or publish',
     },
   ];
 
@@ -30,7 +30,7 @@ export default function WorkflowSteps() {
     <section className="w-full py-20 sm:py-28 bg-white border-t border-[#DDE2E5]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Section Header */}
-        <div className="max-w-3xl mx-auto text-center mb-16">
+        <div data-stagger className="max-w-3xl mx-auto text-center mb-16">
           <span className="inline-block text-[11px] font-bold uppercase tracking-wider text-zinc-900 font-mono mb-3 bg-zinc-100 px-3 py-1 rounded-full border border-zinc-200">
             Workflow
           </span>
@@ -38,12 +38,12 @@ export default function WorkflowSteps() {
             From prompt to production in three effortless steps
           </h2>
           <p className="text-base sm:text-lg text-zinc-500 max-w-2xl mx-auto">
-            Eliminate design handoff bottlenecks and prototype directly in the language of the web.
+            Go from an idea to a working React project.
           </p>
         </div>
 
         {/* 3 Step Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
+        <div data-stagger="x" className="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
           {steps.map((item, idx) => {
             const Icon = item.icon;
             return (

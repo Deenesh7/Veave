@@ -154,8 +154,8 @@ const promptRunSchema = new mongoose.Schema({
   userPrompt: { type: String, required: true, trim: true, minlength: 1, maxlength: 8000 },
   framework: { type: String, default: 'react' },
   designSystemName: { type: String, default: 'veave' },
-  requestedModel: { type: String, default: 'auto' },        // Auto | GPT | Claude | Gemini
-  provider: { type: String, default: '' },                  // resolved provider (openrouter, openai, anthropic, gemini)
+  requestedModel: { type: String, default: 'auto' },        // always GPT-6 Luna
+  provider: { type: String, default: '' },                  // always openrouter
   resolvedModel: { type: String, default: '' },             // exact model id used
   referenceImage: { type: referenceImageSchema, default: () => ({}) },
 

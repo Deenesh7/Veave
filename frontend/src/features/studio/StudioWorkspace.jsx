@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { X } from 'lucide-react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useSmartBack } from '../../hooks/useSmartBack';
 import { StudioTopBar } from './StudioTopBar';
@@ -11,7 +12,8 @@ import { VisualEditor } from '../visual-editor/VisualEditor';
 import { useVisualEditorStore } from '../visual-editor/visualEditorStore';
 import { useProjectStore } from '../../store/projectStore';
 import { useEditorStore } from '../../store/editorStore';
-import { useGenerationJobStore } from '../../store/generationJobStore';
+import { useGenerationJobStore, FAILURE_TITLES } from '../../store/generationJobStore';
+import GenerationNotice from '../../components/dashboard/GenerationNotice';
 
 export function StudioWorkspace() {
   const { id } = useParams();
@@ -31,12 +33,14 @@ export function StudioWorkspace() {
     jobStatus,
     jobResult,
     error: jobError,
+    errorCode: jobErrorCode,
     validation: jobValidation,
     fetchConversation,
     undoLastChange,
     redoLastChange,
     rollbackToGeneration,
-    conversationId
+    conversationId,
+    resetJob
   } = useGenerationJobStore();
 
   const [localGenerating, setLocalGenerating] = useState(false);
@@ -67,10 +71,21 @@ export function StudioWorkspace() {
   const [celebrationVisible, setCelebrationVisible] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const urlMode = searchParams.get('mode');
+  // Any ?mode= (visual, editor, preview, screens, code), for example from "Visual Edit" on a Recents card, opens the
+  // main Visual Editor with the full inspector (typography, colors, layout, spacing, border) and the layers panel.
   const isVisualEditorUrlMode = ['visual', 'editor', 'preview', 'screens', 'code'].includes(urlMode);
-  const [visualEditorOpen, setVisualEditorOpen] = useState(
-    isVisualEditorUrlMode || viewMode === 'visual'
-  );
+  const [sidePane, setSidePane] = useState('studio');
+  const [mentionRequest, setMentionRequest] = useState(null);
+  const [clearSelectionToken, setClearSelectionToken] = useState(0);
+  const [selectedPreviewElement, setSelectedPreviewElement] = useState(null);
+  const [visualEditorOpen, setVisualEditorOpen] = useState(() => {
+    // Start the editor on the mode named in the URL. Without this the editor begins in Visual Edit and overwrites
+    // ?mode=screens (or preview / code) in the address bar before it can read it, so those links never worked.
+    if (isVisualEditorUrlMode) {
+      useVisualEditorStore.getState().setActiveMode(urlMode === 'visual' ? 'editor' : urlMode);
+    }
+    return isVisualEditorUrlMode || viewMode === 'visual';
+  });
   const [isOpeningVisualEditor, setIsOpeningVisualEditor] = useState(false);
 
   const handleOpenVisualEditor = (requestedMode = 'editor') => {
@@ -201,9 +216,9 @@ export function StudioWorkspace() {
       if (res?.project) {
         setCurrentProject(res.project);
         setPreviewKey((k) => k + 1);
-        setStatusMessage('Rolled back generation state.');
+        setStatusMessage('Checkpoint restored.');
       } else {
-        setStatusMessage('Rollback returned no project.');
+        setStatusMessage(res?.error ? `Restore failed: ${res.error}` : 'Restore failed. Please try again.');
       }
     } catch (e) {
       console.warn('Rollback failed:', e);
@@ -251,7 +266,7 @@ export function StudioWorkspace() {
   };
 
   // Natural language modification submission (Voice or Text) using persistent job
-  const handleModificationSubmit = async (modificationText, chosenModel = 'Gemini Flash 3.8', uploadedFiles = [], options = {}) => {
+  const handleModificationSubmit = async (modificationText, chosenModel = 'Veave AI', uploadedFiles = [], options = {}) => {
     if (!currentProject?._id || !modificationText.trim()) return;
 
     setCelebrationVisible(false);
@@ -316,6 +331,28 @@ export function StudioWorkspace() {
     }
   };
 
+  // An element was clicked (or deselected) in the preview while the Visual Edit tab is active: remember it as the
+  // selection sent with the next request and mention it in the prompt box.
+  const handleElementSelected = useCallback((element) => {
+    try {
+      useVisualEditorStore.getState().setSelectedElement(element ? { ...element, tag: element.tagName } : null);
+    } catch (e) {}
+    setSelectedPreviewElement(element || null);
+    if (element) {
+      const text = String(element.text || '').replace(/\s+/g, ' ').trim();
+      const label = text ? ` "${text.length > 40 ? `${text.slice(0, 40)}...` : text}"` : '';
+      setMentionRequest({ id: Date.now(), text: `[<${element.tagName}>${label}] ` });
+      setIsFeedOpen(true);
+    } else {
+      setMentionRequest({ id: Date.now(), text: '' });
+    }
+  }, []);
+
+  const handleSidePaneChange = (pane) => {
+    setSidePane(pane);
+    if (pane !== 'visual') { setClearSelectionToken((t) => t + 1); handleElementSelected(null); }
+  };
+
   const handleVisualElementAiPrompt = (promptText) => {
     setUserPrompt(promptText);
     setIsFeedOpen(true);
@@ -366,15 +403,24 @@ export function StudioWorkspace() {
         setViewMode={setViewMode}
         onRefresh={() => setPreviewKey((k) => k + 1)}
         onOpenHistory={() => setHistoryOpen(true)}
-        onOpenVisualEdit={handleOpenVisualEditor}
-        isOpeningVisualEditor={isOpeningVisualEditor}
         isGenerating={isGenerating}
       />
 
+      <GenerationNotice />
+
       {(runtimeErrorMessage || terminalJobError) && (
         <section aria-label="Studio validation and errors" className="shrink-0 max-h-52 overflow-auto border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-xs select-text">
-          <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-red-800">
-            {terminalJobError && <><p className="font-semibold">Generation {jobStatus === 'blocked' ? 'blocked' : 'failed'}</p><pre className="whitespace-pre-wrap break-words font-mono mt-1">{typeof terminalJobError === 'string' ? terminalJobError : JSON.stringify(terminalJobError, null, 2)}</pre></>}
+          <div role="alert" className="relative rounded-lg border border-red-200 bg-red-50 p-3 pr-9 text-red-800">
+            <button
+              type="button"
+              onClick={() => { setRuntimeError(null); if (terminalJobError) resetJob(); }}
+              className="absolute top-2 right-2 p-1 rounded-md text-red-400 hover:text-red-700 hover:bg-red-100 cursor-pointer"
+              title="Dismiss"
+              aria-label="Dismiss error"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+            {terminalJobError && <><p className="font-semibold">{FAILURE_TITLES[jobErrorCode] || `Generation ${jobStatus === 'blocked' ? 'blocked' : 'failed'}`}</p><pre className="whitespace-pre-wrap break-words font-mono mt-1">{typeof terminalJobError === 'string' ? terminalJobError : JSON.stringify(terminalJobError, null, 2)}</pre></>}
             {runtimeErrorMessage && <><p className="font-semibold mt-1">Preview runtime error</p><pre className="whitespace-pre-wrap break-words font-mono mt-1">{runtimeErrorMessage}</pre></>}
           </div>
         </section>
@@ -406,7 +452,9 @@ export function StudioWorkspace() {
                   isGenerating={isGenerating}
                   previewKey={previewKey}
                   projectId={currentProject?._id}
-                  inspectionEnabled={true}
+                  inspectionEnabled={sidePane === 'visual'}
+                  onElementSelected={handleElementSelected}
+                clearSelectionToken={clearSelectionToken}
                 />
               </div>
               <div className="w-1 bg-zinc-200 cursor-col-resize shrink-0" />
@@ -470,7 +518,9 @@ export function StudioWorkspace() {
                 isGenerating={isGenerating}
                 previewKey={previewKey}
                 projectId={currentProject?._id}
-                inspectionEnabled={false}
+                inspectionEnabled={sidePane === 'visual'}
+                onElementSelected={handleElementSelected}
+                clearSelectionToken={clearSelectionToken}
               />
             </div>
           )}
@@ -502,6 +552,11 @@ export function StudioWorkspace() {
           onRedo={handleRedoLastChange}
           onRollback={handleRollbackGeneration}
           onOpenFile={handleOpenFile}
+          sidePane={sidePane}
+          onSidePaneChange={handleSidePaneChange}
+          selectedElement={selectedPreviewElement}
+          mentionRequest={mentionRequest}
+          onOpenFullEditor={() => handleOpenVisualEditor('editor')}
         />
       </div>
 

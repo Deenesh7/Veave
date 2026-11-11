@@ -65,6 +65,17 @@ class OpenRouterRateLimitError extends OpenRouterError {
   }
 }
 
+// Out of credits (HTTP 402): permanent until the account is topped up, so it is never retried. It extends the rate-limit error
+// so existing `instanceof OpenRouterRateLimitError` handling (which stops the job) keeps working.
+class OpenRouterCreditError extends OpenRouterRateLimitError {
+  constructor(message = 'The AI service is out of credits. Please try again later.') {
+    super(message);
+    this.statusCode = 402;
+    this.code = 'OPENROUTER_INSUFFICIENT_CREDITS';
+    this.permanent = true;
+  }
+}
+
 class OpenRouterModelError extends OpenRouterError {
   constructor(message = 'Selected AI model is unavailable or not found') {
     super(message, 503, 'OPENROUTER_MODEL_UNAVAILABLE');
@@ -126,7 +137,14 @@ class RepairExhaustedError extends AppError {
   }
 }
 
+/** Errors that retrying cannot fix (bad key, no credits, unknown model) and that must never be hidden behind a fallback site. */
+function isPermanentProviderError(error) {
+  return Boolean(error && (error.permanent === true || error instanceof OpenRouterAuthError || error instanceof OpenRouterCreditError || error instanceof OpenRouterModelError));
+}
+
 module.exports = {
+  isPermanentProviderError,
+  OpenRouterCreditError,
   AppError,
   NotFoundError,
   ValidationError,

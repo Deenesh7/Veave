@@ -98,6 +98,25 @@ function prepareLocalizedAssets(assets = []) {
   return [...byHash.values()].map((asset, index) => ({ ...asset, token: `__VEAVE_CLONE_ASSET_${index}__` }));
 }
 
+// A reference counts only as a WHOLE path or URL: "/logo.png" must not match inside "/brand/logo.png" or "/logo.png.bak",
+// otherwise one asset's alias rewrites a different asset's reference and the images get swapped.
+const PATH_CHAR = /[A-Za-z0-9_\-.%]/;
+function replaceWholeReference(text, needle, replacement) {
+  if (!needle || !text.includes(needle)) return text;
+  let result = '';
+  let from = 0;
+  for (let index = text.indexOf(needle); index !== -1; index = text.indexOf(needle, from)) {
+    const before = index === 0 ? '' : text[index - 1];
+    const after = text[index + needle.length] || '';
+    const startsLikeUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(needle);
+    const leftOk = startsLikeUrl ? !PATH_CHAR.test(before) : (!before || (!PATH_CHAR.test(before) && before !== '/'));
+    const rightOk = !after || !PATH_CHAR.test(after);
+    result += text.slice(from, index) + (leftOk && rightOk ? replacement : needle);
+    from = index + needle.length;
+  }
+  return result + text.slice(from);
+}
+
 function replaceAssetReferences(content, assets) {
   let result = String(content || '');
   const pathOwners = new Map();
@@ -107,13 +126,17 @@ function replaceAssetReferences(content, assets) {
       pathOwners.get(sourcePath).add(asset.publicPath);
     }
   }
+  for (const asset of assets) result = result.split(asset.token).join(asset.publicPath);
+  // Longest reference first, so a full URL is replaced before any shorter path inside it can be.
+  const references = [];
   for (const asset of assets) {
-    result = result.split(asset.token).join(asset.publicPath);
-    for (const sourceUrl of asset.sourceUrls) result = result.split(sourceUrl).join(asset.publicPath);
+    for (const sourceUrl of asset.sourceUrls) references.push([sourceUrl, asset.publicPath]);
     for (const sourcePath of assetReferenceAliases(asset)) {
-      if (pathOwners.get(sourcePath)?.size === 1) result = result.split(sourcePath).join(asset.publicPath);
+      if (pathOwners.get(sourcePath)?.size === 1) references.push([sourcePath, asset.publicPath]);
     }
   }
+  references.sort((a, b) => b[0].length - a[0].length);
+  for (const [needle, publicPath] of references) result = replaceWholeReference(result, needle, publicPath);
   return result;
 }
 
@@ -166,7 +189,11 @@ function materializeLocalizedAssets(files = [], assets = [], placementQueue = []
     : { ...file, content: replaceAssetReferences(file.content, assets) });
   // The manifest says which file is which and where it is used. Lists are capped: it used to repeat every URL, alias and
   // association of every asset, which for a large site was several megabytes of JSON.
+  const manifestLib = require('./assetManifest');
   const mappings = assets.map((asset) => ({
+    id: manifestLib.assetIdFor(asset),
+    role: manifestLib.classifyAssetRole(asset),
+    shared: manifestLib.isSharedAsset(asset),
     referenceUrls: (asset.sourceUrls || []).slice(0, 5),
     referencePaths: (asset.sourcePaths || sourcePathReferences(asset.sourceUrls)).slice(0, 5),
     referenceAliases: assetReferenceAliases(asset).slice(0, 8),
@@ -190,6 +217,7 @@ function materializeLocalizedAssets(files = [], assets = [], placementQueue = []
     content: JSON.stringify({
       generatedAt: new Date().toISOString(),
       assets: mappings,
+      unavailable: placementQueue.filter((item) => item.status === 'unavailable').slice(0, 100).map(({ sourceUrls, page, selector, alt }) => ({ originalUrl: (sourceUrls || [])[0] || null, page, selector, alt: alt || '' })),
       placementQueue: placementQueue.map((item) => {
         const usedBy = sourceFiles
           .filter((file) => item.publicPath && file.encoding !== 'base64' && String(file.content).includes(item.publicPath))
@@ -238,18 +266,23 @@ function removeRemoteStylesheetImports(files = []) {
   });
 }
 
-function repairMissingLocalImageReferences(files = [], assets = [], pagePath = '/') {
+function repairMissingLocalImageReferences(files = [], assets = [], pagePath = '/', report = null) {
   const availablePaths = new Set(files
     .filter((file) => file.encoding === 'base64' && file.path?.startsWith('public/'))
     .map((file) => `/${file.path.slice('public/'.length)}`));
+  const { neutralPlaceholder } = require('./assetManifest');
+  let currentFile = '';
   const validPathFor = (localPath) => {
     if (availablePaths.has(localPath)) return localPath;
-    // Never preserve an invented path or substitute an unrelated image.
-    return '';
+    // Never keep an invented path and never swap in another image: use a neutral blank so the layout keeps its place,
+    // and report the missing asset.
+    if (report) report.push({ file: currentFile, reference: localPath, page: pagePath, reason: 'the referenced asset was not captured' });
+    return neutralPlaceholder(0, 0);
   };
 
   return files.map((file) => {
     if (file.encoding === 'base64' || file.path === 'src/assets/asset-map.json') return file;
+    currentFile = file.path;
     let content = String(file.content || '');
     content = content.replace(/(\b(?:src|poster)\s*=\s*["'])(\/assets\/[^"']+)(["'])/gi, (_, before, localPath, after) => `${before}${validPathFor(localPath)}${after}`);
     content = content.replace(/(\b(?:src|poster)\s*=\s*\{\s*["'])(\/assets\/[^"']+)(["']\s*\})/gi, (_, before, localPath, after) => `${before}${validPathFor(localPath)}${after}`);

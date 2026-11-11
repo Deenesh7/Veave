@@ -1,0 +1,187 @@
+{
+  "schemaVersion": 1,
+  "id": "saas-modern-001",
+  "version": "1.0.0",
+  "name": "Nimbus SaaS",
+  "status": "published",
+  "featured": true,
+  "popularity": 92,
+  "releasedAt": "2026-01-15",
+  "description": "A dark, high-contrast SaaS marketing site with a product hero, feature rows, billing-toggle pricing and a validated contact form.",
+  "category": "SaaS",
+  "tags": [
+    "saas",
+    "software",
+    "startup",
+    "pricing",
+    "product",
+    "dashboard"
+  ],
+  "styleTags": [
+    "Dark",
+    "Modern",
+    "High contrast",
+    "Emerald"
+  ],
+  "access": {
+    "visibility": "public"
+  },
+  "previewImage": "preview.svg",
+  "designTokens": {
+    "mood": "Midnight Emerald",
+    "colors": {
+      "bg": "#0B1220",
+      "surface": "#111A2C",
+      "surface2": "#18243B",
+      "line": "#25324A",
+      "fg": "#F1F5F9",
+      "muted": "#94A3B8",
+      "brand": "#10B981",
+      "onBrand": "#04130D",
+      "accent": "#F59E0B"
+    },
+    "radius": {
+      "card": "16px",
+      "button": "10px"
+    }
+  },
+  "typography": {
+    "headingFont": "ui-sans-serif, system-ui, sans-serif",
+    "bodyFont": "ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif",
+    "scale": "Hero 48 to 60px bold, section titles 30 to 36px bold with tight tracking, body 16 to 18px, captions 12 to 14px."
+  },
+  "layout": {
+    "summary": "Sticky blurred header, split hero (copy left, product image right), alternating base and surface sections, three-column card grids",
+    "container": "max-w-6xl centred with 16/24/32px side padding",
+    "navigation": "sticky"
+  },
+  "spacing": {
+    "section": "py-20 sm:py-24",
+    "gap": "gap-6 (cards) and gap-12 (hero)",
+    "scale": "4px base"
+  },
+  "responsive": {
+    "summary": "Single column below 768px with a hamburger menu; two-column hero from 1024px; card grids go 1 to 3 columns at 768px.",
+    "breakpoints": {
+      "md": 768,
+      "lg": 1024
+    }
+  },
+  "components": [
+    {
+      "name": "Navbar",
+      "path": "src/components/Navbar.jsx",
+      "role": "Sticky header with active links and a mobile menu, driven by src/data/site.js",
+      "shared": true
+    },
+    {
+      "name": "Footer",
+      "path": "src/components/Footer.jsx",
+      "role": "Footer with brand, link groups and contact email, driven by src/data/site.js",
+      "shared": true
+    },
+    {
+      "name": "Section",
+      "path": "src/components/Section.jsx",
+      "role": "Section wrapper, container and section heading primitives",
+      "shared": true
+    },
+    {
+      "name": "FeatureCard",
+      "path": "src/components/FeatureCard.jsx",
+      "role": "Card with optional image, icon, title and text",
+      "shared": false
+    },
+    {
+      "name": "CTA",
+      "path": "src/components/CTA.jsx",
+      "role": "Closing call-to-action panel",
+      "shared": false
+    }
+  ],
+  "pages": [
+    {
+      "path": "/",
+      "file": "src/pages/Home.jsx",
+      "title": "Home",
+      "sections": [
+        "Hero with product image",
+        "Customer logos",
+        "Feature cards with images",
+        "Stats",
+        "Testimonials",
+        "Call to action"
+      ]
+    },
+    {
+      "path": "/features",
+      "file": "src/pages/Features.jsx",
+      "title": "Features",
+      "sections": [
+        "Feature rows with images",
+        "Integrations list"
+      ]
+    },
+    {
+      "path": "/pricing",
+      "file": "src/pages/Pricing.jsx",
+      "title": "Pricing",
+      "sections": [
+        "Billing toggle",
+        "Three plan cards",
+        "FAQ"
+      ]
+    },
+    {
+      "path": "/contact",
+      "file": "src/pages/Contact.jsx",
+      "title": "Contact",
+      "sections": [
+        "Contact details",
+        "Validated contact form"
+      ]
+    }
+  ],
+  "features": [
+    "Responsive layout",
+    "Mobile navigation",
+    "Billing toggle",
+    "Contact form validation",
+    "Active link states",
+    "Client-side routing"
+  ],
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "lucide-react": "^0.400.0"
+  },
+  "scaffold": {
+    "dir": "files",
+    "themeFile": "src/index.css",
+    "requiredFiles": [
+      "package.json",
+      "index.html",
+      "src/main.jsx",
+      "src/App.jsx",
+      "src/index.css",
+      "src/data/site.js",
+      "tailwind.config.js"
+    ],
+    "protectedFiles": [
+      "package.json",
+      "vite.config.js",
+      "postcss.config.js"
+    ],
+    "sharedFiles": [
+      "src/components/Navbar.jsx",
+      "src/components/Footer.jsx",
+      "src/components/Section.jsx"
+    ],
+    "promptFiles": [
+      "src/App.jsx",
+      "src/data/site.js",
+      "src/index.css"
+    ]
+  }
+}

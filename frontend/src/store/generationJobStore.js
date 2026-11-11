@@ -10,6 +10,38 @@ let pollTimer = null;
 let reconnectAttempts = 0;
 let pollDelay = 2500;
 const pollingJobs = new Set();
+// Consecutive failures: a missing or forbidden job is permanent and stops polling quickly; anything else backs off and gives up late.
+let permanentFailures = 0;
+const MAX_PERMANENT_FAILURES = 2;
+const MAX_TRANSIENT_FAILURES = 60;
+
+const asText = (value, fallback) => (typeof value === 'string' && value.trim() ? value : value && typeof value === 'object' ? (value.message || JSON.stringify(value)) : fallback);
+
+// A failed job's code -> a short title for the error banner.
+export const FAILURE_TITLES = {
+  JOB_TIMEOUT: 'Generation took too long',
+  JOB_LEASE_LOST: 'Generation was interrupted',
+  JOB_INTERRUPTED_COMMIT: 'Generation interrupted while saving',
+  JOB_ABANDONED: 'Generation abandoned after restarts',
+  PROVIDER_AUTH: 'AI service unavailable',
+  PROVIDER_CREDITS: 'AI service out of credits',
+  PLAN_LIMIT_REACHED: 'You are out of credits',
+  PROVIDER_RATE_LIMIT: 'AI service is busy',
+  PROVIDER_MODEL: 'AI model unavailable',
+  PROVIDER_TIMEOUT: 'AI service timed out',
+  AI_RESPONSE_MALFORMED: 'The AI response was incomplete',
+  AI_RESPONSE_INVALID: 'The AI response could not be applied',
+  IMAGE_CHECK_FAILED: 'Images could not be verified',
+  PAGE_CHECK_FAILED: 'Pages were not distinct',
+  REPAIR_EXHAUSTED: 'Automatic repair could not fix the site',
+  // Template workspace jobs
+  PAGE_VALIDATION_FAILED: 'The new version did not pass the checks',
+  BUILD_VALIDATION_FAILED: 'The new version failed the build or browser test',
+  FINAL_CHECK_FAILED: 'The new version failed the final checks',
+  MODEL_ANSWER_UNUSABLE: 'The AI answer could not be used',
+  NO_USABLE_CHANGES: 'The AI changed nothing on this page',
+  SITE_CHANGED: 'The page changed while it was being regenerated'
+};
 
 export const useGenerationJobStore = create((set, get) => ({
   activeJobId: localStorage.getItem(ACTIVE_JOB_KEY) || null,
@@ -27,6 +59,9 @@ export const useGenerationJobStore = create((set, get) => ({
   usage: null,
   validation: null,
   error: null,
+  errorCode: null, // machine-readable failure reason from the backend (JOB_TIMEOUT, PROVIDER_CREDITS, ...)
+  jobDegraded: null, // { kind, reason, message } when a starter site replaced an AI result that could not be used
+  jobEntityImages: null, // { found: [names], missing: [names] } from the named-entity image search
   isGenerating: false,
   promptText: '',
   hasUnreadCompletion: false,
@@ -34,6 +69,7 @@ export const useGenerationJobStore = create((set, get) => ({
   canRedo: false,
   currentIndex: 0,
   approval: null, // pending plan approval: { state, plan }
+  prototypeQueue: null, // "build it like this website": stages + the pages found on the site
   notificationToast: null, // { type: 'success' | 'error', message: string, projectId?: string }
 
   /**
@@ -94,13 +130,14 @@ export const useGenerationJobStore = create((set, get) => ({
     type = 'generate',
     prompt = '',
     designSystem = 'Modern',
-    model = 'Gemini Flash 3.8',
+    model = 'Veave AI',
     command = null,
     paletteId = null,
     customTokens = null,
     image = null,
     sourceUrl = null,
-    prototype = undefined,
+    // Not called `prototype`: axios silently drops a request property with that name (prototype-pollution guard).
+    prototypeSite = undefined,
     activeSkills = [],
     githubRepo = null,
     uploadedFiles = [],
@@ -110,7 +147,9 @@ export const useGenerationJobStore = create((set, get) => ({
     selectedElement = null,
     projectId = null,
     conversationId = null,
-    parentGenerationId = null
+    parentGenerationId = null,
+    templateId = null,
+    templateVersion = null
   }) => {
     const current = get();
     if (current.isGenerating && current.activeJobId) {
@@ -159,6 +198,7 @@ export const useGenerationJobStore = create((set, get) => ({
       activeJobId: clientJobId,
       jobType: type,
       jobStatus: 'queued',
+      prototypeQueue: null,
       progress: 5,
       step: 0,
       stepName: 'Queueing stateful generation job on server...',
@@ -184,7 +224,7 @@ export const useGenerationJobStore = create((set, get) => ({
         customTokens,
         image,
         sourceUrl,
-        prototype,
+        prototypeSite,
         activeSkills,
         githubRepo,
         uploadedFiles,
@@ -194,7 +234,8 @@ export const useGenerationJobStore = create((set, get) => ({
         selectedElement,
         projectId,
         conversationId: targetConvId,
-        parentGenerationId: targetParentGenId
+        parentGenerationId: targetParentGenId,
+        ...(templateId ? { templateId, templateVersion } : {})
       });
 
       if (res.data?.success) {
@@ -241,6 +282,7 @@ export const useGenerationJobStore = create((set, get) => ({
     if (!targetJobId) return;
 
     reconnectAttempts = 0;
+    permanentFailures = 0;
     pollDelay = 2500;
 
     pollTimer = setTimeout(() => {
@@ -271,7 +313,11 @@ export const useGenerationJobStore = create((set, get) => ({
     try {
       const res = await aiCreationService.getJobStatus(targetJobId);
       if (get().activeJobId !== targetJobId) return;
+
+      // A reply without a job is a failed poll, not a quiet success.
+      if (!(res.data?.success && res.data.job)) throw Object.assign(new Error('The server answered without a job.'), { emptyReply: true });
       reconnectAttempts = 0;
+      permanentFailures = 0;
       pollDelay = 2500;
 
       if (res.data?.success && res.data.job) {
@@ -279,7 +325,8 @@ export const useGenerationJobStore = create((set, get) => ({
         set({
           validation: job.validation ?? get().validation,
           usage: job.usage ?? job.result?.tokenUsage ?? get().usage,
-          approval: job.status === 'processing' && job.approval?.state === 'pending' ? job.approval : null
+          approval: job.status === 'processing' && job.approval?.state === 'pending' ? job.approval : null,
+          prototypeQueue: job.prototypeQueue ?? null
         });
 
         if (job.status === 'completed') {
@@ -304,23 +351,27 @@ export const useGenerationJobStore = create((set, get) => ({
             step: job.step || 4,
             stepName: job.stepName || 'Your interface is ready.',
             jobResult: job.result,
+            jobDegraded: job.degraded || null,
+            jobEntityImages: job.entityImages || null,
+            errorCode: null,
             activeGenerationId: job.generationId || job.result?.generationId || null,
             parentGenerationId: job.parentGenerationId || job.result?.parentGenerationId || null,
             isGenerating: false,
             hasUnreadCompletion: false,
-            notificationToast: null
+            notificationToast: job.degraded ? { type: 'warning', message: job.degraded.message || 'A starter site was created because the AI result could not be used.' } : null
           });
         } else if (['failed', 'blocked'].includes(job.status)) {
           get().stopPolling();
           localStorage.removeItem(ACTIVE_JOB_KEY);
           localStorage.removeItem(ACTIVE_JOB_META_KEY);
 
-          const error = job.error || (job.status === 'blocked' ? 'Generation blocked by validation. Review the validation report.' : 'Generation failed. Please try again.');
+          const error = asText(job.error, job.status === 'blocked' ? 'Generation blocked by validation. See the checks that failed in the project validation report.' : 'Generation failed. Please try again.');
           set({
             activeJobId: null,
             jobStatus: job.status,
             error,
-            stepName: job.status === 'blocked' ? 'Generation blocked' : 'Generation failed',
+            errorCode: job.errorCode || null,
+            stepName: FAILURE_TITLES[job.errorCode] || (job.status === 'blocked' ? 'Generation blocked' : 'Generation failed'),
             isGenerating: false,
             hasUnreadCompletion: true,
             notificationToast: {
@@ -342,8 +393,8 @@ export const useGenerationJobStore = create((set, get) => ({
         } else {
           set({
             jobStatus: job.status,
-            progress: job.progress || 10,
-            step: job.step || 1,
+            progress: job.progress ?? 10,
+            step: job.step ?? 1,
             stepName: job.stepName || 'AI Generation in progress...',
             isGenerating: true,
             error: null
@@ -353,10 +404,29 @@ export const useGenerationJobStore = create((set, get) => ({
     } catch (err) {
       if (get().activeJobId !== targetJobId) return;
       reconnectAttempts++;
-      const isRateLimited = err.response?.status === 429;
-      console.warn(`[GenerationJobStore] Temporary polling reconnect attempt ${reconnectAttempts}${isRateLimited ? ' (rate-limited, backing off)' : ''}: ${err.message}`);
-      if (isRateLimited) pollDelay = 5000;
+      const status = err.response?.status;
+      const isRateLimited = status === 429;
+      // 401/403/404: the job is gone or this user cannot see it. Retrying forever only shows "Reconnecting" for nothing.
+      if ([401, 403, 404].includes(status)) permanentFailures++;
+      console.warn(`[GenerationJobStore] Polling problem ${reconnectAttempts}${status ? ` (HTTP ${status})` : ''}: ${err.message}`);
 
+      if (permanentFailures >= MAX_PERMANENT_FAILURES) {
+        get().stopPolling();
+        localStorage.removeItem(ACTIVE_JOB_KEY);
+        localStorage.removeItem(ACTIVE_JOB_META_KEY);
+        const message = status === 404 ? 'This generation job no longer exists. Start a new generation.' : 'You no longer have access to this generation job. Sign in again or start a new generation.';
+        set({ activeJobId: null, jobStatus: 'failed', error: message, errorCode: 'JOB_NOT_FOUND', stepName: 'Generation job unavailable', isGenerating: false });
+        return;
+      }
+      if (isRateLimited) pollDelay = 5000;
+      else pollDelay = Math.min(15000, 2500 * 2 ** Math.min(reconnectAttempts - 1, 3));
+
+      if (reconnectAttempts >= MAX_TRANSIENT_FAILURES) {
+        // Long outage: stop hammering the server. The job id stays saved, so a refresh or the tab regaining focus resumes it.
+        get().stopPolling();
+        set({ isGenerating: false, error: 'Lost connection to the server. Your generation may still be running; refresh the page to check on it.', errorCode: 'CONNECTION_LOST', stepName: 'Connection lost' });
+        return;
+      }
       if (reconnectAttempts === 3) {
         set({
           isGenerating: true,
@@ -366,7 +436,7 @@ export const useGenerationJobStore = create((set, get) => ({
       }
     } finally {
       pollingJobs.delete(targetJobId);
-      if (get().activeJobId === targetJobId && !pollTimer) {
+      if (get().activeJobId === targetJobId && !pollTimer && get().isGenerating !== false) {
         pollTimer = setTimeout(() => {
           pollTimer = null;
           get().pollStatus(targetJobId);
@@ -515,7 +585,8 @@ export const useGenerationJobStore = create((set, get) => ({
         const job = res.data.job;
         set({
           validation: job.validation ?? get().validation,
-          approval: job.status === 'processing' && job.approval?.state === 'pending' ? job.approval : null
+          approval: job.status === 'processing' && job.approval?.state === 'pending' ? job.approval : null,
+          prototypeQueue: job.prototypeQueue ?? null
         });
 
         if (job.status === 'completed') {
@@ -539,16 +610,21 @@ export const useGenerationJobStore = create((set, get) => ({
             step: job.step || 4,
             stepName: job.stepName || 'Your interface is ready.',
             jobResult: job.result,
+            jobDegraded: job.degraded || null,
+            jobEntityImages: job.entityImages || null,
+            activeGenerationId: job.generationId || job.result?.generationId || null,
+            parentGenerationId: job.parentGenerationId || job.result?.parentGenerationId || null,
+            usage: job.usage ?? job.result?.tokenUsage ?? get().usage,
             isGenerating: false,
             hasUnreadCompletion: false,
-            notificationToast: null
+            notificationToast: job.degraded ? { type: 'warning', message: job.degraded.message || 'A starter site was created because the AI result could not be used.' } : null
           });
         } else if (['queued', 'processing', 'committing'].includes(job.status)) {
           set({
             activeJobId: job.jobId,
             jobStatus: job.status,
-            progress: job.progress || 15,
-            step: job.step || 1,
+            progress: job.progress ?? 15,
+            step: job.step ?? 1,
             stepName: job.stepName || 'AI Generation in progress...',
             isGenerating: true,
             error: null
@@ -558,12 +634,13 @@ export const useGenerationJobStore = create((set, get) => ({
           get().stopPolling();
           localStorage.removeItem(ACTIVE_JOB_KEY);
           localStorage.removeItem(ACTIVE_JOB_META_KEY);
-          const error = job.error || (job.status === 'blocked' ? 'Generation blocked by validation. Review the validation report.' : 'Generation failed. Please try again.');
+          const error = asText(job.error, job.status === 'blocked' ? 'Generation blocked by validation. See the checks that failed in the project validation report.' : 'Generation failed. Please try again.');
           set({
             activeJobId: null,
             jobStatus: job.status,
             error,
-            stepName: job.status === 'blocked' ? 'Generation blocked' : 'Generation failed',
+            errorCode: job.errorCode || null,
+            stepName: FAILURE_TITLES[job.errorCode] || (job.status === 'blocked' ? 'Generation blocked' : 'Generation failed'),
             isGenerating: false,
             hasUnreadCompletion: true,
             notificationToast: {
@@ -640,6 +717,9 @@ export const useGenerationJobStore = create((set, get) => ({
       jobResult: null,
       validation: null,
       error: null,
+      errorCode: null,
+      jobDegraded: null,
+      jobEntityImages: null,
       isGenerating: false,
       hasUnreadCompletion: false,
       notificationToast: null

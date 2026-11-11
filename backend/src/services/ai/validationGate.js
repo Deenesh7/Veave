@@ -141,7 +141,7 @@ class PipelineError extends AppError {
 }
 
 async function validateAndRepair(initialFiles, { repair, run = executeProject, onProgress = async () => {}, signal, maxRepairs = 3,
-  requireExecution = true, requireArtifacts = requireExecution } = {}) {
+  requireExecution = true, requireArtifacts = requireExecution, extraStaticChecks = null } = {}) {
   const report = { status: 'running', stage: 'static', history: [], checks: [], sourceHash: null, failureKind: null };
   const stop = (status, reason, kind) => {
     Object.assign(report, { status, reason, failureKind: kind });
@@ -189,6 +189,9 @@ async function validateAndRepair(initialFiles, { repair, run = executeProject, o
       const appFile = files.find(f => f.path === 'src/App.jsx' || f.path.endsWith('App.jsx'));
       if (appFile) inspectFilePreValidation(appFile);
       diagnostics = validateGeneratedFiles(files);
+      // Project-specific static rules (for example the selected template's) run after the generic ones pass and before the
+      // slow build, and feed the same bounded repair loop.
+      if (!diagnostics.length && typeof extraStaticChecks === 'function') diagnostics = extraStaticChecks(files) || [];
       if (!diagnostics.length) {
         if (requireExecution && typeof run === 'function') {
           report.stage = 'execution';

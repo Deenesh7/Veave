@@ -5,6 +5,7 @@ const {
   AIError,
   OpenRouterAuthError,
   OpenRouterRateLimitError,
+  OpenRouterCreditError,
   OpenRouterModelError,
   OpenRouterTimeoutError,
   OpenRouterNetworkError,
@@ -86,72 +87,61 @@ function fitMessagesToLimit(messages, maxBytes = MAX_INPUT_BYTES) {
   return out;
 }
 
+// Veave uses a single model, GPT-6 Luna, and reaches it only through OpenRouter.
+const LUNA_MODEL = 'openai/gpt-6-luna';
+const LUNA_LABEL = 'Veave AI';
+
 class OpenRouterService {
   constructor() {
     this.apiKey = process.env.OPENROUTER_API_KEY;
-    this.model = process.env.OPENROUTER_MODEL || 'google/gemini-3.8-flash';
+    this.model = LUNA_MODEL;
     this.baseURL = 'https://openrouter.ai/api/v1';
   }
 
   /**
    * Detect model capabilities for structured outputs, tools, or delimiter fallbacks.
    */
-  detectCapabilities(modelName) {
-    const resolved = this.resolveModel(modelName).toLowerCase();
-    const supportsTools = (
-      resolved.includes('gemini') ||
-      resolved.includes('gpt-') ||
-      resolved.includes('claude-') ||
-      resolved.includes('mistral') ||
-      resolved.includes('llama-3') ||
-      resolved.includes('qwen')
-    );
-    const supportsJsonSchema = (
-      resolved.includes('gpt-4o') ||
-      resolved.includes('gemini-2') ||
-      resolved.includes('gemini-3')
-    );
-    return {
-      supportsTools,
-      supportsJsonSchema,
-      preferredMode: supportsTools ? 'tools' : (supportsJsonSchema ? 'json_schema' : 'delimiter')
-    };
+  detectCapabilities() {
+    return { supportsTools: true, supportsJsonSchema: false, preferredMode: 'tools' };
   }
 
   /**
-   * Resolve user-selected model to corresponding OpenRouter model identifier.
-   * Defaults to Gemini Flash 3.8 (google/gemini-3.8-flash).
+   * Every request runs on GPT-6 Luna through OpenRouter. Any other requested name (old Gemini, Claude or GPT
+   * selections saved in the UI or in old jobs) is ignored.
    */
-  resolveModel(modelName) {
-    if (!modelName) return this.model;
-    const m = String(modelName).toLowerCase().trim();
-    if (
-      m === 'gemini flash 3.8' ||
-      m === 'gemini-flash-3.8' ||
-      m === 'gemini 3.8 flash' ||
-      m === 'gemini-3.8-flash' ||
-      m === 'gemini flash' ||
-      m === 'gemini-flash' ||
-      m === 'flash' ||
-      m === 'fast' ||
-      m === 'auto' ||
-      m === 'default'
-    ) {
-      return process.env.OPENROUTER_MODEL || 'google/gemini-3.8-flash';
+  resolveModel() {
+    return LUNA_MODEL;
+  }
+
+  isConfigured() {
+    const key = String(process.env.OPENROUTER_API_KEY || '').trim();
+    return Boolean(key) && key !== 'your_openrouter_api_key';
+  }
+
+  /**
+   * Live check that the OpenRouter key works and that GPT-6 Luna is available to it.
+   * Returns { ok, status, model, message }.
+   */
+  async checkConnection() {
+    if (!this.isConfigured()) {
+      return { ok: false, status: 'missing_key', model: LUNA_MODEL, message: 'OPENROUTER_API_KEY is not set.' };
     }
-    if (m === 'gpt' || m === 'gpt-4o') {
-      return 'openai/gpt-4o';
+    try {
+      const { data } = await axios.get(`${this.baseURL}/models/${LUNA_MODEL}/endpoints`, {
+        headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` },
+        timeout: 15000
+      });
+      const endpoints = data?.data?.endpoints || [];
+      if (data?.data && endpoints.length === 0) {
+        return { ok: false, status: 'model_unavailable', model: LUNA_MODEL, message: `OpenRouter has no endpoints for ${LUNA_MODEL}.` };
+      }
+      return { ok: true, status: 'connected', model: LUNA_MODEL, message: `Connected to OpenRouter. Model: ${LUNA_MODEL}.` };
+    } catch (err) {
+      const code = err.response?.status;
+      if (code === 401 || code === 403) return { ok: false, status: 'auth_failed', model: LUNA_MODEL, message: 'OpenRouter rejected the API key.' };
+      if (code === 404) return { ok: false, status: 'model_unavailable', model: LUNA_MODEL, message: `OpenRouter does not know the model ${LUNA_MODEL}.` };
+      return { ok: false, status: 'unreachable', model: LUNA_MODEL, message: `Could not reach OpenRouter: ${err.message}` };
     }
-    if (m === 'gpt-6 luna' || m === 'chatgpt luna 6' || m === 'gpt 6 luna' || m === 'luna 6') {
-      return 'openai/gpt-6-luna';
-    }
-    if (m === 'claude' || m === 'claude sonnet 5.5' || m === 'claude 5.5 sonnet' || m === 'claude sonnet 4.5' || m === 'claude 4.5 sonnet' || m === 'claude 3.5 sonnet' || m === 'high quality') {
-      return process.env.CLAUDE_GENERATION_MODEL || 'anthropic/claude-sonnet-5.5';
-    }
-    if (m === 'gemini' || m === 'gemini 1.5 pro' || m === 'balanced') {
-      return 'google/gemini-pro-1.5';
-    }
-    return modelName;
   }
 
   async generateCompletion(messages, options = {}) {
@@ -200,7 +190,7 @@ class OpenRouterService {
       if (error instanceof AIError) throw error;
       logger.error(`OpenRouter API Error: ${error.message}`);
       if (error.code === 'ECONNABORTED' || (error.message && error.message.toLowerCase().includes('timeout'))) {
-        throw new OpenRouterTimeoutError(`OpenRouter request timed out: ${error.message}`);
+        throw new OpenRouterTimeoutError(`The AI request timed out: ${error.message}`);
       }
       if (error.response) {
         const status = error.response.status;
@@ -215,15 +205,16 @@ class OpenRouterService {
         const msg = serializedDetail && !String(baseMessage).includes(serializedDetail)
           ? `${baseMessage}: ${serializedDetail}`
           : baseMessage;
+        logger.error(`OpenRouter HTTP ${status}: ${msg}`);
         if (status === 401) {
-          throw new OpenRouterAuthError(`OpenRouter authentication failed: ${msg}`);
+          { const authError = new OpenRouterAuthError('The AI service is not available right now. Please try again later.'); authError.permanent = true; throw authError; }
         }
         if (status === 402) {
           const match = typeof msg === 'string' && msg.match(/can only afford (\d+)/i);
           if (match && !options._retried402) {
             const affordable = parseInt(match[1], 10);
             if (affordable >= 200) {
-              const reduced = Math.min(affordable, 4000);
+              const reduced = Math.min(affordable, Number(options.max_tokens) || 16000);
               logger.warn(`OpenRouter 402 credit limit encountered; auto-retrying with affordable max_tokens: ${reduced}`);
               return await this.generateCompletion(messages, {
                 ...options,
@@ -232,10 +223,10 @@ class OpenRouterService {
               });
             }
           }
-          throw new OpenRouterRateLimitError(`OpenRouter insufficient credits (HTTP 402): ${msg}. Top up at https://openrouter.ai/settings/credits.`);
+          throw new OpenRouterCreditError('The AI service is out of credits or capacity. Please try again later.');
         }
         if (status === 429) {
-          throw new OpenRouterRateLimitError(`OpenRouter rate limit exceeded or insufficient credits: ${msg}`);
+          throw new OpenRouterRateLimitError('The AI service is busy. Please try again in a moment.');
         }
         if (status === 400 && /provider returned error/i.test(String(baseMessage)) && !options._retried400) {
           logger.warn('OpenRouter provider rejected advanced generation parameters; retrying once without forced tool choice or reasoning controls.');
@@ -247,12 +238,12 @@ class OpenRouterService {
           });
         }
         if (status === 404 || (typeof msg === 'string' && (msg.toLowerCase().includes('model') || msg.toLowerCase().includes('not found')))) {
-          throw new OpenRouterModelError(`OpenRouter model unavailable: ${msg}`);
+          { const modelError = new OpenRouterModelError('The AI model is unavailable. Please try again later.'); modelError.permanent = true; throw modelError; }
         }
-        throw new OpenRouterAPIError(`OpenRouter API error (${status}): ${msg}`, status);
+        throw new OpenRouterAPIError(`The AI service returned an error (${status}): ${msg}`, status);
       }
       if (error.request) {
-        throw new OpenRouterNetworkError(`OpenRouter network error: ${error.message}`);
+        throw new OpenRouterNetworkError(`Could not reach the AI service: ${error.message}`);
       }
       throw new AIError(`Failed to generate completion from AI service: ${error.message}`);
     }

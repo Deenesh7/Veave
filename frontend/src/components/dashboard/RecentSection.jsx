@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FolderOpen, Sparkles, Loader2 } from 'lucide-react';
+import { FolderOpen, Plus, Loader2 } from 'lucide-react';
 import RecentToolbar from './RecentToolbar';
 import ProjectCard from './ProjectCard';
 import { useProjectStore } from '../../store/projectStore';
@@ -60,7 +60,7 @@ export default function RecentSection() {
   };
 
   return (
-    <section className="w-full mt-10 sm:mt-14 space-y-5">
+    <section className="w-full space-y-5">
       {/* Header Row */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-2 border-b border-[#E2E5E8] dark:border-zinc-800">
         <div className="flex items-center gap-2">
@@ -92,7 +92,7 @@ export default function RecentSection() {
           <Loader2 className="w-6 h-6 text-[#52525B] animate-spin" />
           <p className="text-xs text-[#64748B] font-mono">Loading projects...</p>
         </div>
-      ) : sortedProjects.length === 0 ? (
+      ) : sortedProjects.length === 0 && viewMode !== 'grid' ? (
         /* Empty State: NO mock data! */
         <div className="bg-white rounded-2xl border border-[#E2E5E8] p-12 sm:p-16 text-center flex flex-col items-center justify-center space-y-3">
           <div className="w-12 h-12 rounded-2xl bg-zinc-50 text-[#52525B] flex items-center justify-center mb-1">
@@ -119,8 +119,19 @@ export default function RecentSection() {
           ))}
         </div>
       ) : (
-        /* Responsive Grid: Desktop: 3–4 cards, Tablet: 2 cards, Mobile: 1 card */
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5 sm:gap-6">
+        /* Responsive Grid: Create card first, then projects */
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-[22px]">
+          <button
+            type="button"
+            onClick={() => navigate('/', { state: { createType: 'website' } })}
+            className="h-[225px] w-full bg-white rounded-3xl border-2 border-dashed border-[#E5E7EB] flex flex-col items-center justify-center text-center px-5 hover:border-zinc-400 hover:bg-zinc-50/60 transition-colors"
+          >
+            <span className="w-11 h-11 rounded-full border border-[#E5E7EB] bg-white flex items-center justify-center mb-3 shadow-[0_1px_3px_rgba(0,0,0,0.05)]">
+              <Plus className="w-5 h-5 text-[#171717]" />
+            </span>
+            <span className="text-[15px] font-bold text-[#171717]">Create new project</span>
+            <span className="text-xs text-[#737373] mt-1">Configure layout style and preferences</span>
+          </button>
           {sortedProjects.map((proj) => (
             <ProjectCard
               key={proj._id || proj.id}

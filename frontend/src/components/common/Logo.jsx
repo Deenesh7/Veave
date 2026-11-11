@@ -1,30 +1,17 @@
 import { Link } from 'react-router-dom';
-import { Sparkles } from 'lucide-react';
 import { cn } from '../../utils/helpers';
 
-export function Logo({ size = 'md', showText = true, className }) {
+// The Veave logo image already contains the wordmark, so `showText` is kept only for call-site compatibility.
+export function Logo({ size = 'md', className }) {
   const sizes = {
-    sm: { icon: 'w-5 h-5', text: 'text-lg' },
-    md: { icon: 'w-6 h-6', text: 'text-xl' },
-    lg: { icon: 'w-8 h-8', text: 'text-3xl' },
+    sm: 'w-9 h-9',
+    md: 'w-11 h-11',
+    lg: 'w-16 h-16',
   };
 
   return (
-    <Link to="/" className={cn('flex items-center gap-2 group', className)}>
-      <div className="relative flex items-center justify-center">
-        <div className="absolute inset-0 bg-indigo-500/20 blur-md rounded-full group-hover:bg-indigo-500/30 transition-colors" />
-        <Sparkles className={cn('text-indigo-400 relative z-10', sizes[size].icon)} />
-      </div>
-      {showText && (
-        <span
-          className={cn(
-            'font-bold tracking-tight text-zinc-900',
-            sizes[size].text
-          )}
-        >
-          Veave
-        </span>
-      )}
+    <Link to="/" aria-label="Veave" className={cn('flex items-center group', className)}>
+      <img src="/veave-logo.png" alt="Veave" className={cn('object-contain', sizes[size])} />
     </Link>
   );
 }

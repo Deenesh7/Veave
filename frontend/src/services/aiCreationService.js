@@ -1,11 +1,12 @@
 ﻿import api from './api';
+import { API_URL } from '../config';
 
 // Legacy synchronous endpoints also run the full build/browser gate. The main
 // composer uses persistent jobs instead, so it can show progress and reconnect.
 const validationTimeout = { timeout: 2400000 };
-// Polling is serialized in generationJobStore. Do not turn a busy but live
-// backend into a false disconnect merely because one generation stage is long.
-const jobStatusRequest = { timeout: 0 };
+// Polling is serialized in generationJobStore. The status endpoint only reads one document, so a request that takes longer than
+// this is a dead connection; without a limit one hung request would block every later poll for the job.
+const jobStatusRequest = { timeout: 30000 };
 
 export const aiCreationService = {
   transcribeWhisper: (formData) => api.post('/ai/whisper', formData, {
@@ -14,7 +15,7 @@ export const aiCreationService = {
   enhancePrompt: (data) => api.post('/ai/enhance-prompt', data),
   generate: (data) => api.post('/ai/generate', data, validationTimeout),
   modify: (data) => api.post('/ai/modify', data, validationTimeout),
-  streamGenerate: (data) => fetch('/api/ai/stream-generate', {
+  streamGenerate: (data) => fetch(`${API_URL}/ai/stream-generate`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

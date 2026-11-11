@@ -86,7 +86,14 @@ const generationJobSchema = new mongoose.Schema({
   // Set atomically before the credit is deducted so a retried or recovered job can never bill twice.
   creditChargedAt: { type: Date, default: null },
   // How many times restart recovery re-ran this job; bounded so a job that crashes the server cannot loop forever.
-  recoveryAttempts: { type: Number, default: 0 }
+  recoveryAttempts: { type: Number, default: 0 },
+  // Lease: the process that is running this job renews it every few seconds. A job whose lease has expired has no live owner and
+  // may be taken over; a job with a live lease is never started or recovered by another process.
+  leaseOwner: { type: String, default: null },
+  leaseExpiresAt: { type: Date, default: null },
+  startedAt: { type: Date, default: null },
+  // Machine-readable failure reason (JOB_TIMEOUT, PROVIDER_AUTH, PROVIDER_CREDITS, PROVIDER_RATE_LIMIT, ...).
+  errorCode: { type: String, default: null }
 }, {
   timestamps: true
 });

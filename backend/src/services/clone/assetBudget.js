@@ -6,7 +6,6 @@
 //   * photos are resized to what a screen can show and re-encoded; one font format per family; no legacy formats;
 //   * a byte budget for the whole set; what does not fit is reported as unavailable, never silently forgotten.
 const sharp = require('sharp');
-
 const MB = 1024 * 1024;
 const FONT_RANK = { 'font/woff2': 0, 'application/font-woff2': 0, 'font/woff': 1, 'application/font-woff': 1, 'font/ttf': 2, 'application/x-font-ttf': 2, 'font/otf': 2 };
 

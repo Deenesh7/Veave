@@ -32,7 +32,8 @@ export function StatusBar({
   isDirty = false,
   isSaving = false,
   cursorPos = { line: 1, col: 1, selectionLength: 0 },
-  onSave
+  onSave,
+  hideSave = false
 }) {
   const langName = getFriendlyLanguageName(activeFilePath);
 
@@ -66,8 +67,8 @@ export function StatusBar({
           {langName}
         </span>
 
-        {/* Database Save indicator button */}
-        <button
+        {/* Database Save indicator button (hidden when the host shows its own Save button) */}
+        {!hideSave && (<button
           type="button"
           onClick={onSave}
           disabled={isSaving}
@@ -82,7 +83,7 @@ export function StatusBar({
             isSaving
               ? 'Saving changes to database...'
               : isDirty
-              ? 'Unsaved changes (Auto-saving to database or click/Ctrl+S to save now)'
+              ? 'Unsaved changes (click Save or press Ctrl+S)'
               : 'All changes saved to database'
           }
         >
@@ -102,7 +103,7 @@ export function StatusBar({
               <span>Saved to database</span>
             </>
           )}
-        </button>
+        </button>)}
       </div>
     </footer>
   );

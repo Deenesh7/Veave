@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
-require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+require('../src/config/loadEnv');
 
 const uri = process.env.MONGODB_URI || 'mongodb://localhost:27017/veave';
 
