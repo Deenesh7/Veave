@@ -19,7 +19,7 @@ export function LoginForm() {
 
     if (token) {
       useAuthStore.getState().loginWithToken(token).then(() => {
-        navigate('/dashboard', { replace: true });
+        navigate('/template-studio', { replace: true });
       }).catch((err) => {
         console.error('OAuth login failed:', err);
       });
@@ -37,7 +37,7 @@ export function LoginForm() {
     try {
       await login(email, password);
       const redirect = searchParams.get('redirect');
-      navigate(redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/dashboard');
+      navigate(redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/template-studio');
     } catch (err) {
       // Error is handled by store
     } finally {

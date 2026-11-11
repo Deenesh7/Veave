@@ -23,7 +23,7 @@ export function RegisterForm() {
 
     if (token) {
       useAuthStore.getState().loginWithToken(token).then(() => {
-        navigate('/dashboard', { replace: true });
+        navigate('/template-studio', { replace: true });
       }).catch((err) => {
         console.error('OAuth registration failed:', err);
       });
@@ -49,7 +49,7 @@ export function RegisterForm() {
     setIsSubmitting(true);
     try {
       await register(name, email, password);
-      navigate('/dashboard');
+      navigate('/template-studio');
     } catch (err) {
       // Error is handled by store
     } finally {

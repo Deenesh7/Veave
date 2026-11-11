@@ -27,7 +27,7 @@ import UpgradePlanModal from './components/common/UpgradePlanModal';
 
 function HomeRoute() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  return isAuthenticated ? <Navigate to="/dashboard" replace /> : <Landing />;
+  return isAuthenticated ? <Navigate to="/template-studio" replace /> : <Landing />;
 }
 
 export default function App() {
