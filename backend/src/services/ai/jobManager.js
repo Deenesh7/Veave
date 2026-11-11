@@ -3044,6 +3044,8 @@ class JobManager {
 
       // Names in the prompt (people, companies, brands, places...) get real, verified pictures found on the web. They are handed
       // to the generator with placement guidance and checked again after the site is built. Never blocks a generation.
+      // Whether this is an edit of an existing project (decided once, before anything below needs it).
+      const isIncremental = shouldUseIncrementalMode(job.type, project);
       let entityImageReport = null;
       if (!isIncremental && !cloneCapture && job.type !== 'clone' && String(process.env.ENTITY_IMAGES || 'true').toLowerCase() !== 'false' && prompt && !/\b(no images?|without images?|text[- ]only)\b/i.test(prompt)) {
         try {
@@ -3081,7 +3083,6 @@ class JobManager {
 
       // Determine if this is an incremental modification of an existing project
       const hasExistingFiles = project && Array.isArray(project.files) && project.files.length > 0;
-      const isIncremental = shouldUseIncrementalMode(job.type, project);
       // WHICH PAGE this edit is about: the page named in the request, otherwise the page the user is looking at, otherwise "/".
       const editTarget = resolveEditRoute({ prompt, viewingRoute: job.payload?.viewingRoute, files: project?.files || [], provenance: project?.provenance });
       // "Add 10 images all over the website" is not about the page being viewed: no single page is the target then.

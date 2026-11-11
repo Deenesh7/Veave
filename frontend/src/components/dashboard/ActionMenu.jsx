@@ -15,6 +15,7 @@ export default function ActionMenu({
   onOpenConnectGitHub,
   onOpenConnectors,
   onOpenSkills,
+  activeSkillsCount = 0,
   className = ''
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -81,6 +82,7 @@ export default function ActionMenu({
     {
       id: 'skills',
       label: 'Skills',
+      count: activeSkillsCount,
       icon: Sparkles,
       iconColor: 'text-zinc-500 group-hover:text-amber-500',
       action: () => {
@@ -253,11 +255,11 @@ export default function ActionMenu({
         aria-haspopup="menu"
         aria-expanded={isOpen}
         aria-label="Add file, component, integration, or skill"
-        title="Actions (Upload File, Add Component, GitHub, Connectors, Skills)"
-        className={`p-1.5 rounded-lg transition-all cursor-pointer flex items-center justify-center outline-none select-none ${
+        title={activeSkillsCount > 0 ? `Actions · ${activeSkillsCount} active skill${activeSkillsCount > 1 ? 's' : ''}` : 'Actions (Upload File, Add Component, GitHub, Connectors, Skills)'}
+        className={`relative w-8 h-8 rounded-full transition-all duration-200 cursor-pointer flex items-center justify-center outline-none select-none border focus-visible:ring-2 focus-visible:ring-zinc-900/15 ${
           isOpen
-            ? 'bg-zinc-100 text-zinc-900 border border-zinc-300 ring-2 ring-zinc-100 shadow-2xs'
-            : 'text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 border border-transparent'
+            ? 'bg-zinc-100 text-zinc-900 border-zinc-300'
+            : 'bg-white text-zinc-500 border-zinc-200 hover:text-zinc-900 hover:bg-zinc-50 hover:border-zinc-300'
         }`}
       >
         <Plus
@@ -265,6 +267,9 @@ export default function ActionMenu({
             isOpen ? 'rotate-45 text-zinc-800' : ''
           }`}
         />
+        {activeSkillsCount > 0 && !isOpen && (
+          <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-zinc-900 text-white text-[10px] font-bold leading-4 text-center ring-2 ring-white" aria-hidden="true">{activeSkillsCount}</span>
+        )}
       </button>
 
       {/* Floating Action Menu Dropdown */}
@@ -313,6 +318,9 @@ export default function ActionMenu({
                   className={`w-4 h-4 shrink-0 transition-colors stroke-[1.8] ${item.iconColor}`}
                 />
                 <span className="truncate tracking-tight font-medium">{item.label}</span>
+                {item.count > 0 && (
+                  <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1.5 rounded-full bg-zinc-900 text-white text-[10px] font-bold leading-none">{item.count}</span>
+                )}
               </button>
             );
           })}

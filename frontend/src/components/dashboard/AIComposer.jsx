@@ -28,8 +28,6 @@ import UploadedFileBadge from './UploadedFileBadge';
 import aiCreationService from '../../services/aiCreationService';
 import { useProjectStore } from '../../store/projectStore';
 import { useGenerationJobStore } from '../../store/generationJobStore';
-import { useTemplateStore } from '../../store/templateStore';
-import TemplateGalleryModal from './TemplateGalleryModal';
 import { MatrixOrb } from '../rare-ui';
 import { WhisperAudioRecorder } from '../../utils/whisperAudioRecorder';
 
@@ -44,12 +42,6 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
   const navigate = useNavigate();
   const { fetchProjects } = useProjectStore();
 
-  const selectedTemplate = useTemplateStore((state) => state.selected);
-  const isTemplateGalleryOpen = useTemplateStore((state) => state.isGalleryOpen);
-  const openTemplateGallery = useTemplateStore((state) => state.openGallery);
-  const closeTemplateGallery = useTemplateStore((state) => state.closeGallery);
-  const chooseTemplate = useTemplateStore((state) => state.select);
-  const clearTemplate = useTemplateStore((state) => state.clear);
 
   const [designSystem, setDesignSystem] = useState('Modern');
   const [selectedPalette, setSelectedPalette] = useState(null);
@@ -379,13 +371,11 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
         enrichedPrompt += ` [Context Files Attached: ${fileNames}]`;
       }
 
-      // With a template selected, an attached image is just an asset: the template (not the image) defines the design.
-      const screenshotFile = selectedTemplate ? null : uploadedFiles.find(f => f.isImage || f.type?.startsWith('image/'));
+      const screenshotFile = uploadedFiles.find(f => f.isImage || f.type?.startsWith('image/'));
       const isScreenshot = !!screenshotFile;
 
-      await startJob({
+      const startedJobId = await startJob({
         type: isScreenshot ? 'screenshot' : 'generate',
-        ...(selectedTemplate ? { templateId: selectedTemplate.templateId, templateVersion: selectedTemplate.templateVersion } : {}),
         prompt: enrichedPrompt,
         command: detectedCommand,
         designSystem,
@@ -393,7 +383,7 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
         customTokens: selectedPalette || null,
         model,
         image: screenshotFile?.dataUrl || null,
-        prototypeSite: selectedTemplate ? { none: true } : (normalizedPrototypeUrl ? { url: normalizedPrototypeUrl } : (dismissedPromptUrl ? { none: true } : undefined)),
+        prototypeSite: normalizedPrototypeUrl ? { url: normalizedPrototypeUrl } : (dismissedPromptUrl ? { none: true } : undefined),
         uploadedFiles: uploadedFiles.map(f => ({
           name: f.name,
           size: f.size,
@@ -405,6 +395,8 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
         activeSkills: activeSkills.map(s => s.name),
         githubRepo: connectedGitHub ? { repo: connectedGitHub.fullName, branch: connectedGitHub.selectedBranch } : null
       });
+      // Only once the server has accepted the job: a failed start keeps the user's text so nothing is lost.
+      if (startedJobId) setPrompt('');
     } catch (err) {
       setLocalError(
         err.response?.data?.error ||
@@ -449,7 +441,7 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
             onChange={handlePromptChange}
             onKeyDown={handleInputKeyDown}
             onSubmit={handleSubmit}
-            placeholder={selectedTemplate ? `Describe your website. It will be built on the ${selectedTemplate.name} template...` : 'Describe the website you want to create...'}
+            placeholder="Describe the website you want to create..."
           />
         </div>
 
@@ -490,7 +482,7 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
         )}
 
         {/* Attached Context Strip: Uploaded Files, Component, GitHub Repo, Active Skills */}
-        {(uploadedFiles.length > 0 || selectedComponent || connectedGitHub || activeSkills.length > 0 || normalizedPrototypeUrl || selectedTemplate) && (
+        {(uploadedFiles.length > 0 || selectedComponent || connectedGitHub || normalizedPrototypeUrl) && (
           <div className="flex flex-wrap items-center gap-1.5 mb-2 px-1 select-none animate-in fade-in">
             {/* Uploaded Files */}
             {uploadedFiles.map((file) => (
@@ -501,24 +493,8 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
               />
             ))}
 
-            {/* Selected template */}
-            {selectedTemplate && (
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-900 text-white text-xs shadow-2xs" data-testid="selected-template-chip">
-                <LayoutTemplate className="w-3.5 h-3.5 shrink-0" />
-                <span className="font-semibold text-[11px] truncate max-w-[190px]">
-                  Template: {selectedTemplate.name}
-                </span>
-                <button type="button" onClick={openTemplateGallery} className="text-[10px] font-semibold text-zinc-300 hover:text-white underline underline-offset-2 cursor-pointer" title="Choose a different template">
-                  Change
-                </button>
-                <button type="button" onClick={clearTemplate} className="text-zinc-400 hover:text-white p-0.5 rounded-full cursor-pointer" title="Remove template" aria-label="Remove selected template">
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-            )}
-
             {/* Prototype website */}
-            {normalizedPrototypeUrl && !selectedTemplate && (
+            {normalizedPrototypeUrl && (
               <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 shadow-2xs">
                 <LayoutTemplate className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                 <span className="font-semibold text-[11px] truncate max-w-[170px]">
@@ -570,25 +546,13 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
               </div>
             )}
 
-            {/* Active Skills Indicator */}
-            {activeSkills.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setIsSkillsOpen(true)}
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-zinc-50 border border-zinc-200/80 text-zinc-700 text-[10px] font-semibold hover:bg-zinc-100/70 transition-colors cursor-pointer"
-                title="Manage active skills"
-              >
-                <Sparkles className="w-2.5 h-2.5 text-zinc-600" />
-                <span>{activeSkills.length} skill{activeSkills.length > 1 ? 's' : ''} active</span>
-              </button>
-            )}
           </div>
         )}
 
         {/* Bottom Control Bar: All in 1 sleek line */}
-        <div className="flex items-center justify-between gap-2 pt-2 select-none flex-wrap sm:flex-nowrap">
+        <div className="flex items-center justify-between gap-2 pt-2 select-none">
           {/* Left Controls */}
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
             {/* Compact Action Menu (+ button with clean floating dropdown) */}
             <ActionMenu
               onUploadFile={handleUploadFile}
@@ -596,18 +560,8 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
               onOpenConnectGitHub={() => setIsConnectGitHubOpen(true)}
               onOpenConnectors={() => setIsConnectorsOpen(true)}
               onOpenSkills={() => setIsSkillsOpen(true)}
+              activeSkillsCount={activeSkills.length}
             />
-
-            {/* Template gallery */}
-            <button
-              type="button"
-              onClick={openTemplateGallery}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${selectedTemplate ? 'border-zinc-900 bg-zinc-900 text-white' : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'}`}
-              title="Start from a template"
-            >
-              <LayoutTemplate className="w-3.5 h-3.5" />
-              <span>Templates</span>
-            </button>
 
             {/* Functional Design System Selector Dropdown */}
             <DesignSystemSelector
@@ -617,10 +571,11 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
                 setSelectedPalette(paletteObj);
               }}
             />
+
           </div>
 
           {/* Right Controls: Model, Mic, Up Arrow - all in 1 line */}
-          <div className="flex items-center gap-2 shrink-0 ml-auto">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 ml-auto">
             {/* Voice Input Microphone (voice transcription) */}
             <button
               type="button"
@@ -633,7 +588,7 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
                   ? 'Click to stop and transcribe voice message'
                   : 'Record voice message (voice transcription)'
               }
-              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+              className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/15 ${
                 isTranscribing
                   ? 'text-indigo-600 bg-indigo-50 animate-pulse'
                   : isListening
@@ -654,24 +609,17 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
               disabled={!prompt.trim() || isGenerating}
               onClick={handleSubmit}
               aria-label="Generate prototype"
-              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all shadow-sm active:scale-90 ${
+              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/30 focus-visible:ring-offset-2 ${
                 prompt.trim() && !isGenerating
-                  ? 'bg-zinc-900 hover:bg-black text-white cursor-pointer'
+                  ? 'bg-zinc-900 hover:bg-black text-white shadow-[0_2px_8px_rgba(24,24,27,0.25)] hover:-translate-y-px active:translate-y-0 active:scale-95 cursor-pointer'
                   : 'bg-zinc-100 text-zinc-300 cursor-not-allowed'
               }`}
             >
-              <ArrowUp className="w-5 h-5 stroke-[2.5]" />
+              <ArrowUp className="w-[18px] h-[18px] stroke-[2.5]" />
             </button>
           </div>
         </div>
       </div>
-
-      <TemplateGalleryModal
-        isOpen={isTemplateGalleryOpen}
-        onClose={closeTemplateGallery}
-        selectedId={selectedTemplate?.templateId || null}
-        onUse={chooseTemplate}
-      />
 
       {/* Generated Design Live Result Modal */}
       <GeneratedDesignPreview

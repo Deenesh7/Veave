@@ -13,8 +13,8 @@ const PromptInput = forwardRef(function PromptInput(
     if (localRef.current) {
       localRef.current.style.height = 'auto';
       localRef.current.style.height = `${Math.min(
-        220,
-        Math.max(40, localRef.current.scrollHeight)
+        240,
+        Math.max(44, localRef.current.scrollHeight)
       )}px`;
     }
   }, [value]);
@@ -39,7 +39,7 @@ const PromptInput = forwardRef(function PromptInput(
       onKeyDown={handleKeyDown}
       placeholder={placeholder || 'Ask Veave to build anything, or type / for commands...'}
       rows={1}
-      className="w-full bg-transparent text-sm text-[#111827] placeholder:text-zinc-400 focus:outline-none resize-none leading-relaxed"
+      className="block w-full bg-transparent border-0 p-0 text-[15px] leading-relaxed text-zinc-900 placeholder:text-zinc-400 caret-zinc-900 focus:outline-none focus:ring-0 resize-none overflow-y-auto"
     />
   );
 });

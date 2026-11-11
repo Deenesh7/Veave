@@ -50,20 +50,25 @@ export default function DesignSystemSelector({ selected, onSelect }) {
   const current = allSystems.find((d) => d.id === selected) || allSystems[1]; // Default to Primary / Modern
 
   return (
-    <div className="relative inline-block" ref={dropdownRef}>
+    <div className="relative inline-block min-w-0" ref={dropdownRef}>
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold transition-all shadow-2xs cursor-pointer border ${
-          isOpen || selected
-            ? 'bg-zinc-100 border-zinc-300 text-zinc-900 shadow-xs'
-            : 'bg-white border-[#E2E5E8] text-[#64748B] hover:text-[#111827] hover:border-zinc-300'
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        className={`inline-flex items-center gap-1.5 h-8 max-w-full pl-2.5 pr-2 rounded-full text-xs font-medium transition-all duration-200 cursor-pointer border outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/15 ${
+          isOpen
+            ? 'bg-zinc-100 border-zinc-300 text-zinc-900'
+            : 'bg-white border-zinc-200 text-zinc-600 hover:text-zinc-900 hover:bg-zinc-50 hover:border-zinc-300'
         }`}
         title="Select active design system"
       >
-        <Palette className="w-3.5 h-3.5 text-[#4F46E5]" />
-        <span>Design System: <strong className="text-zinc-900 font-bold">{current.name}</strong></span>
-        <ChevronDown className={`w-3 h-3 text-zinc-400 transition-transform duration-200 ${isOpen ? 'rotate-180 text-zinc-800' : ''}`} />
+        <Palette className="w-4 h-4 shrink-0 text-zinc-500" />
+        <span className="truncate">
+          <span className="hidden sm:inline text-zinc-500">Design System: </span>
+          <span className="text-zinc-900 font-semibold">{current.name}</span>
+        </span>
+        <ChevronDown className={`w-3.5 h-3.5 shrink-0 text-zinc-400 transition-transform duration-200 ${isOpen ? 'rotate-180 text-zinc-700' : ''}`} />
       </button>
 
       {isOpen && (
