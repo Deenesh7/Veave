@@ -10,7 +10,7 @@
     "templates:import": "node scripts/import-templates.cjs",
     "start:prod": "NODE_ENV=production node --no-warnings src/server.js",
     "dev": "nodemon --no-warnings --watch src --watch ../frontend/src/utils/codeTransformer.js src/server.js",
-    "test": "node --no-warnings --require ./test/helpers/stubTemplateAssets.js --test",
+    "test": "node --no-warnings --require ./test/helpers/stubTemplateAssets.js --test \"test/**/*.test.js\"",
     "runner:build": "docker build -t veave-validator:1 runner",
     "test:browser": "node --test test/browserValidation.test.js",
     "test:runner": "node scripts/verify-runner.cjs",

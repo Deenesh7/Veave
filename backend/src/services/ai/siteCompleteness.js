@@ -3,6 +3,8 @@
 // a page background that matches it. The build/browser gate cannot see any of this: a single-page, navigation-less,
 // dark stub passes it. Issues are phrased as instructions so they can be handed straight to the repair model.
 const SOURCE = /\.(?:jsx?|tsx?)$/i;
+const { imageConfig } = require('./images/imageConfig');
+const imageValidation = require('./images/imageValidation');
 const textOf = (file) => (file && file.encoding !== 'base64' && typeof file.content === 'string' ? file.content : '');
 const IMPORT_RE = /import\s+(?:[\w*${},\s]+\s+from\s+)?['"](\.{1,2}\/[^'"]+)['"]/g;
 const EXT = ['', '.jsx', '.js', '.tsx', '.ts', '/index.jsx', '/index.js', '/index.tsx', '/index.ts'];
@@ -69,7 +71,7 @@ function luminance(hex) {
  * @param {{prompt?:string, spec?:{pages?:Array}, prototypeBg?:string|null}} context
  * @returns {Array<{category:'completeness', path:string, message:string, kind:string}>}
  */
-function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null, brokenImageLinks = [], entityAssets = [] } = {}) {
+function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null, brokenImageLinks = [], entityAssets = [], imageInfo = null, spareImages = [], missingImages = [] } = {}) {
   const issues = [];
   const byPath = new Map(files.map((file) => [file.path, file]));
   const app = byPath.get('src/App.jsx') || byPath.get('src/App.tsx') || byPath.get('src/App.js');
@@ -133,12 +135,26 @@ function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null
   // 5. Images: a website is not created without them. Links that could not be downloaded count as a failure of their own.
   const imagesExempt = NO_IMAGES_REQUEST.test(prompt) || (NON_VISUAL_APP.test(prompt) && !/\b(website|web ?site)\b/i.test(prompt));
   if (!imagesExempt) {
-    const minimumHome = 3;
-    const minimumSite = singleScreen ? 3 : 6;
-    const homeImages = countImages(homeSource);
-    const siteImages = countImages(treeSource);
+    const cfg = imageConfig();
+    const minimumHome = cfg.minHome;
+    const minimumSite = singleScreen ? Math.min(cfg.minSite, 3) : cfg.minSite;
+    // With the decoded project images (the normal path) only real, distinct, working files count. Without them (older callers)
+    // the references in the source are counted as before.
+    const homeStats = imageInfo ? imageValidation.summarizeImages(homeTree, imageInfo) : null;
+    const siteStats = imageInfo ? imageValidation.summarizeImages(tree, imageInfo) : null;
+    const homeImages = homeStats ? homeStats.count : countImages(homeSource);
+    const siteImages = siteStats ? siteStats.count : countImages(treeSource);
     if (homeImages < minimumHome || siteImages < minimumSite) {
-      add('images', `The site has ${siteImages} image(s) (${homeImages} on the home page) but a website must have real images: at least ${minimumHome} on the home page and ${minimumSite} across the site. Add a hero image and images inside the feature, service, team, news, product or gallery cards of every page. Use <img src="https://..."> with real, working, public image links you are certain exist (they are downloaded into the project), meaningful alt text, a fixed-aspect frame with object-cover, and loading="lazy" below the fold. Do not use gradients or empty boxes instead of images, do not invent stock-photo ids, and do not reuse one image everywhere.`, home.path);
+      const head = `The site has ${siteImages} image(s) (${homeImages} on the home page) but a website must have real images: at least ${minimumHome} on the home page and ${minimumSite} across the site.`;
+      const problems = siteStats ? imageValidation.describeProblems(homeStats, siteStats) : '';
+      if (spareImages.length) {
+        const list = spareImages.slice(0, 10).map((item) => `${item.publicPath} (${item.page} / ${item.section}; alt "${item.alt}")`).join('; ');
+        add('images', `${head} ${problems} These verified images are already saved in the project but not used yet: ${list}. Place each one where it is listed with <img src="PATH"> (exact path), its alt text, a fixed-aspect frame with object-cover, and loading="lazy" below the fold (the hero eager with fetchPriority="high"). Put at least ${minimumHome} on the home page. Do not invent other links, do not use gradients or empty boxes, and do not reuse one image everywhere.`.replace(/\s+/g, ' '), home.path);
+      } else if (siteStats && missingImages.length) {
+        add('images', `${head} ${problems} No further verified pictures could be found for: ${missingImages.slice(0, 6).map((item) => `${item.page} / ${item.section} (${item.reason})`).join('; ')}. Use the project's existing verified images (src/assets/image-manifest.json lists them) on the home page first, never an unrelated picture, a gradient or an empty box.`.replace(/\s+/g, ' '), home.path);
+      } else {
+        add('images', `${head} ${problems} Add a hero image and images inside the feature, service, team, news, product or gallery cards of every page. Use <img src="https://..."> with real, working, public image links you are certain exist (they are downloaded into the project), meaningful alt text, a fixed-aspect frame with object-cover, and loading="lazy" below the fold. Do not use gradients or empty boxes instead of images, do not invent stock-photo ids, and do not reuse one image everywhere.`.replace(/\s+/g, ' '), home.path);
+      }
     }
     if (brokenImageLinks.length) {
       add('images', `These image links could not be downloaded: ${brokenImageLinks.slice(0, 8).map((item) => item.url).join(', ')}. Replace each with a different real, working, public image link (or a different image that fits the same place). Do not leave a broken or empty image.${(() => { const spare = entityAssets.length ? require('./entityImages').spareAssets(files, entityAssets) : []; return spare.length ? ` Verified working pictures you can use instead where they fit: ${spare.slice(0, 4).map((item) => `${item.url} (${item.entity}, ${item.kind})`).join('; ')}.` : ''; })()}`, home.path);
@@ -166,4 +182,7 @@ function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null
   return issues;
 }
 
-module.exports = { checkCompleteness, SINGLE_SCREEN_REQUEST, visibleWords };
+/** True when the request does not need photographs (an explicit "no images", or a tool/widget rather than a website). */
+const imagesExempt = (prompt = '') => NO_IMAGES_REQUEST.test(prompt) || (NON_VISUAL_APP.test(prompt) && !/\b(website|web ?site)\b/i.test(prompt));
+
+module.exports = { imagesExempt, checkCompleteness, SINGLE_SCREEN_REQUEST, visibleWords };

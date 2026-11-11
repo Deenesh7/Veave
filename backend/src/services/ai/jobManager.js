@@ -33,7 +33,7 @@ const generationPipeline = require('./generationPipeline');
 const { validateAndRepair, sourceHash } = require('./validationGate');
 const fallbackSite = require('./fallbackSite');
 const templateService = require('../templates/templateService');
-const { checkCompleteness } = require('./siteCompleteness');
+const { checkCompleteness, imagesExempt } = require('./siteCompleteness');
 const duplicateGuard = require('../clone/duplicateGuard');
 const cloneRouteGuarantee = require('./cloneRouteGuarantee');
 const { mergeText } = require('./threeWayMerge');
@@ -51,6 +51,9 @@ const assetManifestLib = require('../clone/assetManifest');
 const remoteImageLocalizer = require('./remoteImageLocalizer');
 const imageSearch = require('./imageSearch');
 const entityImages = require('./entityImages');
+const imageDiscovery = require('./images/imageDiscoveryService');
+const imageValidation = require('./images/imageValidation');
+const { imageConfig } = require('./images/imageConfig');
 const pageDistinctness = require('./pageDistinctness');
 const { repairBlankSpace } = require('./blankSpaceRepair');
 const { runBlankSpaceEngine, makeLlmChooser } = require('../layout/blankSpaceEngine');
@@ -2025,6 +2028,61 @@ function failureCode(error, { timedOut = false } = {}) {
   return 'JOB_FAILED';
 }
 
+/**
+ * Image recovery for a candidate website: puts back discovered pictures that went missing, replaces pictures whose files fail
+ * validation (at the same path, so no component changes) and, when the site still has too few working pictures to cover the
+ * requirement, finds additional verified ones. Never inserts an unverified picture.
+ */
+async function recoverProjectImages({ files, imageContext, prompt, spec, signal }) {
+  const cfg = imageConfig();
+  if (!cfg.enabled || (imageContext.recoveries || 0) >= 2) return { files, changed: false };
+  imageContext.recoveries = (imageContext.recoveries || 0) + 1;
+  let next = files;
+  let changed = false;
+  const byPath = new Map(next.map((file) => [file.path, file]));
+  let info = await imageValidation.inspectProjectImages(next);
+  const taken = imageContext.taken || { sha256: new Set(), hashes: [] };
+  // 1. A discovered picture that vanished from the project comes back; one that no longer decodes is replaced in place.
+  for (const asset of imageContext.assets || []) {
+    const stored = (imageContext.files || []).find((file) => file.path === asset.path);
+    const current = byPath.get(asset.path);
+    const broken = current && info.get(asset.path) && !info.get(asset.path).valid;
+    if (!current && stored) { next = imageDiscovery.mergeAssetFiles(next, [stored]); changed = true; continue; }
+    if (broken) {
+      const replacement = await imageDiscovery.replaceAsset(asset, { signal, taken, exclude: [asset.sha256] });
+      if (replacement.ok) {
+        next = next.map((file) => (file.path === asset.path ? replacement.file : file));
+        Object.assign(asset, replacement.asset);
+        const at = (imageContext.files || []).findIndex((file) => file.path === asset.path);
+        if (at >= 0) imageContext.files[at] = replacement.file; else (imageContext.files = imageContext.files || []).push(replacement.file);
+        changed = true;
+      }
+    }
+  }
+  // 2. Still short of pictures (counting the verified ones that are saved but not placed yet)? Find more, for the pages with the fewest.
+  info = await imageValidation.inspectProjectImages(next);
+  const tree = next.filter((file) => /\.(?:jsx?|tsx?)$/i.test(file.path || '') && /^src\//.test(file.path));
+  const placed = imageValidation.summarizeImages(tree, info).count;
+  const spare = imageDiscovery.spareAssets(next, imageContext.assets || []).length;
+  const shortBy = Math.max(cfg.minSite, cfg.minHome) + 1 - (placed + spare);
+  if (shortBy > 0) {
+    const found = await imageDiscovery.discoverImages({
+      prompt, spec, scope: `${imageContext.jobId}-recovery-${imageContext.recoveries}`, signal, taken,
+      requirements: imageDiscovery.extraRequirements({ plan: imageContext.plan, assets: imageContext.assets || [], count: shortBy + 1, prompt, spec }),
+      existingPaths: new Set(next.map((file) => file.path))
+    });
+    if (found.assets.length) {
+      imageContext.assets = [...(imageContext.assets || []), ...found.assets];
+      imageContext.files = [...(imageContext.files || []), ...found.files.filter((file) => file.path !== imageDiscovery.MANIFEST_PATH)];
+      imageContext.missing = [...(imageContext.missing || []), ...found.missing];
+      next = imageDiscovery.mergeAssetFiles(next, found.files.filter((file) => file.path !== imageDiscovery.MANIFEST_PATH));
+      next = [...next.filter((file) => file.path !== imageDiscovery.MANIFEST_PATH), imageDiscovery.manifestFile(imageContext.assets, imageContext.plan)];
+      changed = true;
+    } else if (found.missing.length) imageContext.missing = [...(imageContext.missing || []), ...found.missing];
+  }
+  return { files: next, changed };
+}
+
 class JobManager {
   activeValidations = new Map();
   // Jobs this process already took over after a restart; stops a second recovery pass from claiming them again.
@@ -2136,6 +2194,9 @@ class JobManager {
     // Strict duplicate handling: byte-identical asset files are merged deterministically (references rewritten); anything
     // that cannot be merged mechanically (colliding paths, a route registered twice, a copied component) goes to the model.
     let brokenImageLinks = [];
+    const imageContext = completeness?.imageContext || null;
+    // The verified pictures found before generation belong to the project from the start, so references to them resolve.
+    if (imageContext?.files?.length) files = imageDiscovery.mergeAssetFiles(files, imageContext.files);
     if (localizeImages) {
       const localized = await localizeGeneratedImages(files, signal);
       files = localized.files;
@@ -2146,10 +2207,12 @@ class JobManager {
     files = merged.files;
     const baseline = new Set((baselineFiles ? duplicateGuard.findProjectDuplicates(baselineFiles) : []).map((issue) => `${issue.kind}|${issue.message}`));
     const completenessReport = (completeness || duplicateGuard.findProjectDuplicates(files).some((issue) => !baseline.has(`${issue.kind}|${issue.message}`)))
-      ? await this.completeSite(files, { ...(completeness || {}), enforceCompleteness: Boolean(completeness), baseline, model, tokens, signal, localizeImages, brokenImageLinks, routeCheck: completeness && localizeImages && process.env.MULTIPAGE_RENDER_CHECK !== 'false' ? (candidate) => this.checkRenderedPages(candidate, { signal, spec: completeness.spec }) : null })
+      ? await this.completeSite(files, { ...(completeness || {}), enforceCompleteness: Boolean(completeness), baseline, model, tokens, signal, localizeImages, brokenImageLinks, routeCheck: completeness && localizeImages && process.env.MULTIPAGE_RENDER_CHECK !== 'false' ? (candidate) => this.checkRenderedPages(candidate, { signal, spec: completeness.spec }) : null, imageContext, imageRenderCheck: imageContext && imageConfig().renderCheck ? (candidate, info) => this.checkRenderedImages(candidate, { signal, info }) : null })
       : null;
     if (completenessReport) {
       files = completenessReport.files;
+      // Discovered pictures no page ended up using are not kept in the project.
+      if (imageContext?.assets?.length) files = imageDiscovery.pruneUnused(files, imageContext.assets).files;
       const leftover = completenessReport.summary.remaining.filter((issue) => issue.kind === 'duplicate' || String(issue.kind).startsWith('path-') || ['route', 'file-content', 'path-case'].includes(issue.kind));
       if (leftover.length) throw new AIResponseValidationError(`Duplicate check failed after repair: ${leftover.map((issue) => issue.message).join(' ')}`);
       const pageIssues = completenessReport.summary.remaining.filter((issue) => pageDistinctness.BLOCKING_KINDS.has(issue.kind));
@@ -2424,6 +2487,16 @@ class JobManager {
   }
 
   /**
+   * Opens the pages of a new site in the headless browser and checks that its pictures really render (lazy images are scrolled
+   * into view first). Returns [] when the preview environment cannot render; that is not a site defect.
+   */
+  async checkRenderedImages(files, { signal, info = null } = {}) {
+    const cfg = imageConfig();
+    const routes = pageDistinctness.extractRoutes(files).filter((route) => route.path.startsWith('/') && !/[:*]/.test(route.path)).map((route) => route.path);
+    return imageValidation.checkRenderedImages(files, { routes: [...new Set(routes)], signal, cfg, info, render: (candidate, options) => inspectRenderedPreview(candidate, { signal, ...options }) });
+  }
+
+  /**
    * Loads every route of a new multi-page site by its own URL (what a direct visit or a browser refresh does) and compares
    * what each shows. A route that shows Home, two routes that show the same thing, or a blank route become issues that name
    * the page file to rewrite. Returns [] when the preview environment cannot render (that is not a site defect).
@@ -2457,7 +2530,7 @@ class JobManager {
    * COMPLETENESS_MAX_REPAIRS times (default 2). This phase is soft: a site that still lacks something after that is
    * kept (it passed nothing worse than being short) and the gaps are recorded on the report for the UI.
    */
-  async completeSite(files, { prompt, spec, prototypeBg, entityAssets = [], entityMissing = [], routeCheck = null, enforceCompleteness = true, baseline = new Set(), model, tokens, signal, localizeImages = false, brokenImageLinks = [] }) {
+  async completeSite(files, { prompt, spec, prototypeBg, entityAssets = [], entityMissing = [], routeCheck = null, imageContext = null, imageRenderCheck = null, enforceCompleteness = true, baseline = new Set(), model, tokens, signal, localizeImages = false, brokenImageLinks = [] }) {
     const maxRounds = Number.parseInt(process.env.COMPLETENESS_MAX_REPAIRS, 10);
     const rounds = Number.isFinite(maxRounds) ? maxRounds : 3;
     const context = { prompt, spec, prototypeBg, brokenImageLinks, entityAssets, entityMissing };
@@ -2466,19 +2539,51 @@ class JobManager {
       ...(enforceCompleteness ? checkCompleteness(candidateFiles, context) : []),
       ...duplicateGuard.findProjectDuplicates(candidateFiles).filter((issue) => !baseline.has(`${issue.kind}|${issue.message}`))
     ];
-    // The rendered check (each route loaded by its own URL, as on a refresh) only runs once the static page checks are clean.
+    // The images the project really has (decoded, one by one), so the check counts working pictures and not <img> tags.
+    const refreshImages = async (candidateFiles) => {
+      if (!imageContext) return;
+      context.imageInfo = await imageValidation.inspectProjectImages(candidateFiles);
+      context.spareImages = imageDiscovery.spareAssets(candidateFiles, imageContext.assets || []);
+      context.missingImages = (imageContext.missing || []).map((item) => ({ page: item.page, section: item.section, reason: imageDiscovery.reasonFor(item.code) }));
+    };
+    const stageNote = (stage) => { if (imageContext?.jobId) GenerationJob.updateOne({ jobId: imageContext.jobId, status: 'processing' }, { $set: { 'analysis.imagePipeline.stage': stage } }).catch(() => {}); };
+    // The rendered checks (each route loaded by its own URL, as on a refresh; then the images in the browser) only run once the
+    // static checks are clean.
     const findAllIssues = async (candidateFiles) => {
-      const found = findIssues(candidateFiles);
-      if (!routeCheck || found.some((issue) => issue.kind.startsWith('page-') || issue.kind === 'pages' || issue.kind === 'routing')) return found;
-      try { return [...found, ...await routeCheck(candidateFiles)]; } catch (error) { if (signal?.aborted) throw error; logger.warn(`Rendered page check skipped: ${error.message}`); return found; }
+      await refreshImages(candidateFiles);
+      let found = findIssues(candidateFiles);
+      const pageBroken = (list) => list.some((issue) => issue.kind.startsWith('page-') || issue.kind === 'pages' || issue.kind === 'routing');
+      if (routeCheck && !pageBroken(found)) {
+        try { found = [...found, ...await routeCheck(candidateFiles)]; } catch (error) { if (signal?.aborted) throw error; logger.warn(`Rendered page check skipped: ${error.message}`); }
+      }
+      if (imageRenderCheck && enforceCompleteness && !pageBroken(found) && !found.some((issue) => issue.kind === 'images')) {
+        try { stageNote('image_render_validation'); found = [...found, ...await imageRenderCheck(candidateFiles, context.imageInfo)]; } catch (error) { if (signal?.aborted) throw error; logger.warn(`Rendered image check skipped: ${error.message}`); }
+      }
+      return found;
     };
     let current = files;
     let issues = await findAllIssues(current);
     const initial = issues.map((issue) => issue.kind);
     const history = [];
     let attempts = 0;
+    // Targeted image recovery first: restore or replace failed pictures at their own paths and find more pictures when the site
+    // still has too few. The model is only asked to place pictures that already exist.
+    const recoverImages = async () => {
+      if (!imageContext || !issues.some((issue) => issue.kind === 'images')) return false;
+      stageNote('image_repair');
+      try {
+        const recovered = await recoverProjectImages({ files: current, imageContext, prompt, spec, signal });
+        if (!recovered.changed) return false;
+        current = recovered.files;
+        issues = await findAllIssues(current);
+        return true;
+      } catch (error) { if (signal?.aborted) throw error; logger.warn(`Image recovery skipped: ${error.message}`); return false; }
+    };
+    await recoverImages();
     for (let round = 0; issues.length && round < rounds; round++) {
       if (signal?.aborted) throw Object.assign(new Error('Validation cancelled'), { name: 'AbortError' });
+      if (round > 0) await recoverImages();
+      if (!issues.length) break;
       attempts++;
       let changes;
       try {
@@ -2517,6 +2622,18 @@ class JobManager {
       current = candidate;
       issues = after;
     }
+    // Last resort for pictures that exist in the project (verified, relevant) but were never placed: a gallery section on the home page.
+    if (imageContext && issues.some((issue) => issue.kind === 'images') && context.spareImages?.length) {
+      const placed = imageDiscovery.placeSpareImages(current, context.spareImages);
+      if (placed) {
+        const broken = generationPipeline.validateGeneratedFiles(placed.files).filter((item) => item.category === 'syntax');
+        if (!broken.length) {
+          const after = await findAllIssues(placed.files);
+          if (after.filter((issue) => issue.kind === 'images').length < issues.filter((issue) => issue.kind === 'images').length) { current = placed.files; issues = after; logger.info(`Placed ${placed.placed.length} verified image(s) in a home page gallery.`); }
+        }
+      }
+    }
+    if (imageContext) stageNote(issues.some((issue) => issue.kind === 'images') ? 'image_failed' : 'completed');
     return {
       files: current,
       summary: { checked: true, initialIssues: initial, remaining: issues.map(({ kind, message }) => ({ kind, message })), repairAttempts: attempts, complete: issues.length === 0 }
@@ -3071,6 +3188,50 @@ class JobManager {
         } catch (error) {
           if (validationController.signal.aborted) throw error;
           logger.warn(`Job ${jobId} entity image search skipped: ${error.message}`);
+        }
+      }
+
+      // Real photographs for a NEW website: planned per page, searched, downloaded, decoded and checked BEFORE the model writes the
+      // site, so it is handed verified local files instead of inventing links. Failing here never stops the generation: the
+      // validation and repair steps below can still find or place images, and report exactly what is missing.
+      const imageCfg = imageConfig();
+      const imageEligible = imageCfg.enabled && !isIncremental && !cloneCapture && job.type !== 'clone' && !template && !prototypeStyle && !prototypeFromUrl && !image && Boolean(prompt) && !imagesExempt(prompt);
+      let imageDiscoveryReport = null;
+      if (imageEligible) {
+        const IMAGE_STAGE_TEXT = {
+          image_requirements: 'Planning the images your website needs...',
+          image_discovery: 'Searching for real photographs...',
+          image_verification: 'Checking the photographs...',
+          image_download: 'Saving the verified photographs...',
+          asset_mapping: 'Matching photographs to your pages...'
+        };
+        try {
+          const canAsk = process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key';
+          const found = await imageDiscovery.discoverImages({
+            prompt, spec: job.analysis?.spec || null, scope: jobId,
+            signal: validationController.signal,
+            ask: canAsk ? async (system, user) => {
+              const completion = await openrouterService.generateCompletion([{ role: 'system', content: system }, { role: 'user', content: user }], { model, temperature: 0, max_tokens: 1400, response_format: false, reasoning: { effort: 'minimal', exclude: true } });
+              return completion?.content || '';
+            } : null,
+            onStage: (stage, info) => {
+              logger.info(`Job ${jobId} images: ${stage} ${JSON.stringify(info || {})}`);
+              GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: { ...(IMAGE_STAGE_TEXT[stage] ? { stepName: IMAGE_STAGE_TEXT[stage] } : {}), 'analysis.imagePipeline.stage': stage } }).catch(() => {});
+            }
+          });
+          imageDiscoveryReport = found;
+          const imageBlock = imageDiscovery.buildPromptBlock(found);
+          if (imageBlock) generationPrompt = `${generationPrompt}\n\n${imageBlock}`;
+          await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.imagePipeline': {
+            stage: 'website_generation', industry: found.plan.industry, subject: found.plan.subject, source: found.plan.source,
+            requested: found.plan.requirements.length, verified: found.assets.length, diagnostics: found.diagnostics,
+            assets: found.assets.map(({ id, page, section, publicPath, width, height, provider, sourcePage, creator, license, query }) => ({ id, page, section, publicPath, width, height, provider, sourcePage, creator, license, query })),
+            missing: found.missing.map(({ slot, page, section, code, tried }) => ({ slot, page, section, code, tried }))
+          } } }).catch(() => {});
+          logger.info(`Job ${jobId} images: ${found.assets.length}/${found.plan.requirements.length} verified${found.missing.length ? `, missing ${JSON.stringify(found.diagnostics)}` : ''}.`);
+        } catch (error) {
+          if (validationController.signal.aborted) throw error;
+          logger.warn(`Job ${jobId} image discovery skipped: ${error.message}`);
         }
       }
 
@@ -5081,7 +5242,8 @@ class JobManager {
          // threshold), and the repair model is shown what the real page contains.
          ...(cloneCapture ? { visualAdvisory: true, visualThreshold: resolveCloneVisualThresholds().minimum, visualTarget: resolveCloneVisualThresholds().target,
            repairContext: (diagnostics) => buildCloneRepairContext(cloneCapture, clonePromptPages, diagnostics) } : {}),
-         completeness: enforceCompleteness ? { prompt, spec: job.analysis?.spec || null, prototypeBg: prototypeStyle?.tokens?.bg || null, entityAssets: entityImageReport?.assets || [], entityMissing: (entityImageReport?.missing || []).map((item) => item.name) } : null,
+         completeness: enforceCompleteness ? { prompt, spec: job.analysis?.spec || null, prototypeBg: prototypeStyle?.tokens?.bg || null, entityAssets: entityImageReport?.assets || [], entityMissing: (entityImageReport?.missing || []).map((item) => item.name),
+           imageContext: imageEligible ? { jobId, assets: imageDiscoveryReport?.assets || [], files: imageDiscoveryReport?.files || [], missing: imageDiscoveryReport?.missing || [], plan: imageDiscoveryReport?.plan || null, taken: imageDiscoveryReport?.taken || null, recoveries: 0 } : null } : null,
         onProgress: (report) => {
           progressWrites = progressWrites.then(() => GenerationJob.updateOne({ jobId, status: 'processing' }, {
             $set: { validation: report, progress: report.status === 'passed' ? 95 : 75,
