@@ -296,7 +296,7 @@ export default function NewSiteModal({ open, onClose }) {
                 </button>
                 <div className={`${themeOpen ? 'block' : 'hidden'} min-w-0 md:block md:h-full md:overflow-y-auto md:overscroll-contain`}>
                   <ThemeEditor theme={theme} onChange={setTheme} detail={detail?.data} library={library} libraryFailed={libraryFailed} adjusted={adjusted} onReset={() => { setTheme(DEFAULT_THEME()); setAdjusted([]); }}
-                    before={scratch ? <PagePicker pages={scratchPages} onChange={setScratchPages} /> : null}>
+                    >
                     {detail?.failed ? <p className={`px-4 py-2 text-xs ${muted}`}>The template's design details could not be loaded, so colours show no defaults.</p> : null}
                     {detail?.data?.pages?.length ? (
                       <ThemeSection title={`Template pages (${detail.data.pages.length})`}>
@@ -312,31 +312,18 @@ export default function NewSiteModal({ open, onClose }) {
               </section>
             </div>
 
-            {/* Site information: always visible, never behind the footer. */}
-            <div className={`shrink-0 border-t ${line} bg-[#F7F3EA] px-4 py-3`}>
-              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-                <div>
-                  <label htmlFor="site-name" className={`mb-1 block text-xs font-medium uppercase tracking-wider ${muted}`}>Site name</label>
-                  <input id="site-name" value={name} onChange={(event) => { setNameTouched(true); setName(event.target.value); }} maxLength={NAME_MAX} required aria-invalid={Boolean(nameError)} aria-describedby="site-name-help" placeholder="Ember House" className={inputClass} />
-                  <p id="site-name-help" className={`mt-1 text-[11px] ${nameError ? 'text-[#A4493A]' : muted}`}>{nameError || `${name.length}/${NAME_MAX}`}</p>
-                </div>
-                <div>
-                  <div className="mb-1 flex items-baseline justify-between gap-2">
-                    <label htmlFor="site-brief" className={`text-xs font-medium uppercase tracking-wider ${muted}`}>Website description <span className="normal-case tracking-normal">{scratch ? '(recommended)' : '(optional)'}</span></label>
-                    <span className={`text-[11px] ${brief.length > BRIEF_MAX * 0.9 ? 'text-[#A4493A]' : muted}`}>{brief.length}/{scratch ? BRIEF_MAX - 480 : BRIEF_MAX}</span>
-                  </div>
-                  <textarea id="site-brief" value={brief} onChange={(event) => setBrief(event.target.value)} maxLength={scratch ? BRIEF_MAX - 480 : BRIEF_MAX} rows={2} placeholder={placeholderFor(selected)} className={`${inputClass} max-h-28 resize-y leading-relaxed`} />
-                  <p className={`mt-1 text-[11px] ${muted}`}>{needsBrief ? <span className="text-[#A4493A]">Describe the website so its pages can be written.</span> : brief.trim() ? (scratch ? 'The AI plans the whole website and writes every page from this description, in your theme.' : 'The whole website is planned and every page written from this description, in your theme.') : scratch ? 'Leave empty to create a blank website in your theme.' : 'Leave empty to start from the template as it is.'}</p>
-                </div>
+            {/* Site name and actions: one compact row so the three columns get the height. */}
+            <div className={`flex shrink-0 flex-wrap items-end gap-3 border-t ${line} bg-[#F7F3EA] px-4 py-2.5`}>
+              <div className="min-w-[200px] flex-1 md:max-w-md">
+                <label htmlFor="site-name" className={`mb-1 block text-xs font-medium uppercase tracking-wider ${muted}`}>Site name</label>
+                <input id="site-name" value={name} onChange={(event) => { setNameTouched(true); setName(event.target.value); }} maxLength={NAME_MAX} required aria-invalid={Boolean(nameError)} aria-describedby="site-name-help" placeholder="Ember House" className={inputClass} />
+                <p id="site-name-help" className={`mt-0.5 text-[11px] ${nameError ? 'text-[#A4493A]' : muted}`}>{nameError || `${name.length}/${NAME_MAX}`}</p>
               </div>
-            </div>
-
-            <div className="shrink-0 bg-[#F7F3EA] px-4 pb-3"><CreationPhotos photos={photos} onChange={setPhotos} disabled={creating} /></div>
-
-            <div className={`flex shrink-0 flex-wrap items-center justify-end gap-2 border-t ${line} bg-[#FBF9F4] px-4 py-3`}>
-              {!selected ? <p className={`mr-auto text-xs ${muted}`}>Choose a design to continue.</p> : payload ? <p className={`mr-auto text-xs ${muted}`}>Your theme is saved with the site.</p> : null}
-              <GhostButton onClick={requestClose} disabled={creating}>Cancel</GhostButton>
-              <PrimaryButton type="submit" disabled={!canSubmit}>{creating ? <Spinner /> : null}{creating ? (createStep || 'Creating website…') : brief.trim() ? 'Create and generate site' : 'Create site'}</PrimaryButton>
+              <div className="ml-auto flex items-center gap-2 pb-5">
+                {!selected ? <p className={`text-xs ${muted}`}>Choose a design to continue.</p> : payload ? <p className={`text-xs ${muted}`}>Your theme is saved with the site.</p> : null}
+                <GhostButton onClick={requestClose} disabled={creating}>Cancel</GhostButton>
+                <PrimaryButton type="submit" disabled={!canSubmit}>{creating ? <Spinner /> : null}{creating ? (createStep || 'Creating website…') : 'Create site'}</PrimaryButton>
+              </div>
             </div>
           </form>
         )}

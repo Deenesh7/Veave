@@ -78,7 +78,7 @@ export function Modal({ open, onClose, title, children, wide = false, size = nul
   if (!open) return null;
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#2B2823]/40 p-2 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div role="dialog" aria-modal="true" aria-label={title} className={`w-full rounded-lg border ${line} bg-[#FBF9F4] shadow-xl ${size === 'studio' ? 'flex h-[min(94vh,980px)] max-w-[1480px] flex-col overflow-hidden' : `max-h-[90vh] overflow-auto ${size === 'xl' ? 'max-w-6xl' : wide ? 'max-w-3xl' : 'max-w-md'}`}`}>
+      <div role="dialog" aria-modal="true" aria-label={title} className={`w-full rounded-lg border ${line} bg-[#FBF9F4] shadow-xl ${size === 'studio' ? 'flex h-[min(97vh,1200px)] max-w-[1600px] flex-col overflow-hidden' : `max-h-[90vh] overflow-auto ${size === 'xl' ? 'max-w-6xl' : wide ? 'max-w-3xl' : 'max-w-md'}`}`}>
         <div className={`sticky top-0 z-10 flex shrink-0 items-center justify-between border-b ${line} bg-[#FBF9F4] px-5 py-3`}>
           <h3 className={`font-serif text-lg ${ink}`}>{title}</h3>
           <IconButton label="Close" onClick={onClose}><X className="h-4 w-4" /></IconButton>
