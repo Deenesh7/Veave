@@ -3,11 +3,9 @@ import { Plus, Pencil, Trash2, Check, X, ChevronsLeft, ChevronsRight } from 'luc
 import { useTemplateStudioStore } from '../../store/templateStudioStore';
 import { PanelHeader, EmptyState, ErrorNote, IconButton, Spinner, ConfirmModal, inputClass, ink, muted, line } from './ui';
 import NewSiteModal from './NewSiteModal';
-import { PrimaryButton } from './ui';
 
 export default function MySitesPanel({ className = '', embedded = false, onSelect }) {
-  const { sites, sitesLoaded, sitesError, activeSiteId, selectSite, renameSite, deleteSite, loadSites, sitesCollapsed, setSitesCollapsed, createSite } = useTemplateStudioStore();
-  const creatingSample = useTemplateStudioStore((state) => Boolean(state.busy.createSite));
+  const { sites, sitesLoaded, sitesError, activeSiteId, selectSite, renameSite, deleteSite, loadSites, sitesCollapsed, setSitesCollapsed } = useTemplateStudioStore();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(null);   // { id, name }
   const [removing, setRemoving] = useState(null); // site
@@ -38,15 +36,7 @@ export default function MySitesPanel({ className = '', embedded = false, onSelec
         {!sitesLoaded ? <div className="flex justify-center py-8"><Spinner className="h-5 w-5" /></div> : null}
         {sitesError ? <ErrorNote onRetry={loadSites}>{sitesError}</ErrorNote> : null}
         {sitesLoaded && !sitesError && sites.length === 0 ? (
-          <>
-            <EmptyState title="No sites yet">Choose a template to create your first website, or start with the sample.</EmptyState>
-            <div className="px-4 pb-4">
-              <PrimaryButton className="w-full" disabled={creatingSample} onClick={() => createSite({ templateId: 'studio-editorial-001', name: 'Ember House' })}>
-                {creatingSample ? <Spinner /> : null}Create the sample site
-              </PrimaryButton>
-              <p className={`mt-2 text-center text-[11px] ${muted}`}>Ember House: Home, Studio, Projects and Contact, ready to preview and regenerate.</p>
-            </div>
-          </>
+          <EmptyState title="No sites yet">Choose a template to create your first website.</EmptyState>
         ) : null}
         <ul>
           {sites.map((site) => {
