@@ -120,8 +120,19 @@ async function hydrateFiles(files = []) {
   return mapPool(files, BLOB_CONCURRENCY, (file) => hydrateFile(file.toObject ? file.toObject() : file));
 }
 
+/** Stores a JSON value as one content-addressed object and returns the blob reference to keep in the database. */
+async function putJson(name, value) {
+  return uploadFile({ path: `${name}.json`, encoding: 'utf8', content: JSON.stringify(value) });
+}
+
+/** Reads back a value stored with putJson. */
+async function getJson(blob) {
+  const file = await hydrateFile({ blob, content: '', encoding: 'utf8' });
+  return JSON.parse(file.content);
+}
+
 function setClientForTests(value) {
   client = value;
 }
 
-module.exports = { isConfigured, uploadFile, dehydrateFiles, hydrateFile, hydrateFiles, contentTypeForPath, setClientForTests };
+module.exports = { isConfigured, putJson, getJson, uploadFile, dehydrateFiles, hydrateFile, hydrateFiles, contentTypeForPath, setClientForTests };

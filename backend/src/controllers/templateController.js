@@ -17,7 +17,13 @@ exports.list = (req, res, next) => {
 };
 
 const themes = () => require('../services/templateSites/templateTheme');
-exports.themeLibrary = (req, res) => res.json({ success: true, ...themes().library() });
+// The font and palette library never changes while the server runs: built once, and the browser may keep it for an hour.
+let libraryBody = null;
+exports.themeLibrary = (req, res) => {
+  libraryBody = libraryBody || { success: true, ...themes().library() };
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.json(libraryBody);
+};
 
 // The template's real, compiled website (nothing saved). The frontend shows it in a sandboxed iframe and sends it the theme CSS.
 const compiled = new Map();

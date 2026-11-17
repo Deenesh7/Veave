@@ -29,6 +29,7 @@ const invitationRoutes = require('./routes/invitations');
 const notificationRoutes = require('./routes/notifications');
 const templateRoutes = require('./routes/templates');
 const templateSiteRoutes = require('./routes/templateSites');
+const adminRoutes = require('./routes/admin');
 
 const app = express();
 
@@ -43,16 +44,20 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors(corsOptions));
 app.use('/api', require('./middleware/originGuard'));
 app.use(morgan('dev'));
+app.use(require('./utils/perfMonitor').slowRequestLogger);
 // Stored preview assets are public capability URLs (unguessable token); a page can legitimately request dozens of them.
 app.get('/api/preview-assets/:token/*', require('./controllers/previewController').getPreviewAsset);
 app.use('/api', generalLimiter);
+// Razorpay's webhook is signed over the EXACT bytes it sends, so it gets the raw body (before the JSON parser) and no login.
+app.post('/api/billing/webhook', express.raw({ type: '*/*', limit: '1mb' }), require('./controllers/billingController').webhook);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 app.use(mongoSanitize());
 
 // Database Explorer Web UI
-app.use('/db', dbViewerRoutes);
+// The raw database viewer shows every collection (including accounts), so it is never served in production.
+if (process.env.NODE_ENV !== 'production') app.use('/db', dbViewerRoutes);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectRoutes);
@@ -71,6 +76,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/template-sites', templateSiteRoutes.sites);
 app.use('/api/template-jobs', templateSiteRoutes.jobs);
+app.use('/api/admin', adminRoutes);
 
 app.use(errorHandler);
 

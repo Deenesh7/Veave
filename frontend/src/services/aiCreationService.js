@@ -32,7 +32,9 @@ export const aiCreationService = {
   getJobStatus: (jobId) => api.get(`/ai/jobs/${jobId}`, jobStatusRequest),
   getActiveJob: (params) => api.get('/ai/jobs/active', { params, ...jobStatusRequest }),
   cancelJob: (jobId) => api.post(`/ai/jobs/${jobId}/cancel`),
-  decidePlan: (jobId, decision) => api.post(`/ai/jobs/${jobId}/decision`, { decision }),
+  // `selectedPaths` is the approved page list; the server re-prices it from its own plan and ignores any client numbers.
+  decidePlan: (jobId, decision, selectedPaths) => api.post(`/ai/jobs/${jobId}/decision`, selectedPaths ? { decision, selectedPaths } : { decision }),
+  scrapeMorePlanPages: (jobId, paths = []) => api.post(`/ai/jobs/${jobId}/plan/scrape`, { paths }),
   // Stateful Conversation & Generation History APIs
   getConversation: (id) => api.get(`/ai/conversations/${id}`),
   rollbackGeneration: (id, generationId) => api.post(`/ai/conversations/${id}/rollback/${generationId}`, {}, validationTimeout),

@@ -11,6 +11,9 @@ const TERMINAL = ['completed', 'failed', 'cancelled'];
 const remember = (state) => {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ siteId: state.activeSiteId, pageId: state.activePageId })); } catch { /* storage may be unavailable */ }
 };
+// What was typed (page instructions and the notes on chosen pictures) survives a refresh; kept per site.
+const WORK_KEY = (siteId) => `veave_studio_work_${siteId}`;
+const loadWork = (siteId) => { try { const saved = JSON.parse(localStorage.getItem(WORK_KEY(siteId)) || '{}') || {}; return { drafts: saved.drafts || {}, selection: saved.selection || {} }; } catch { return { drafts: {}, selection: {} }; } };
 const remembered = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {}; } catch { return {}; } };
 
 let pollRun = 0; // every poll loop has a number; starting a new one (or stopping) retires the old one, so two never run together
@@ -77,6 +80,7 @@ export const useTemplateStudioStore = create((set, get) => ({
   contentWidth: initialContentWidth(),
   setContentWidth: (value) => { const width = Math.min(CONTENT_MAX, Math.max(CONTENT_MIN, Math.round(value))); try { localStorage.setItem(WIDTH_KEY, String(width)); } catch { /* ignore */ } set({ contentWidth: width }); },
   pageSections: {},        // { [pageId]: ['Hero title', ...] } what each page shows now
+  sectionsLoading: false,
   lastRequest: null,       // the last regeneration that was sent, so a failed one can be retried
   versionsOpen: false,
   versionHistory: { entries: [], versions: [], dirty: false, loaded: false, loading: false, error: null, filter: 'all' },
@@ -93,6 +97,7 @@ export const useTemplateStudioStore = create((set, get) => ({
   previewKey: 0,        // bumped whenever the saved site changed, so the preview reloads
   toast: null,          // { type: 'success' | 'error' | 'info', message }
   busy: {},             // { [action]: true } while a request runs
+  editedPageIds: {},  // { [pageId]: true } pages that have been individually edited/regenerated; once any page is edited, "Generate Entire Website" is hidden
 
   flash: (type, message) => {
     clearTimeout(toastTimer);
@@ -124,7 +129,7 @@ export const useTemplateStudioStore = create((set, get) => ({
   selectSite: async (siteId, { restore = false } = {}) => {
     if (!siteId) return;
     get().stopPolling();
-    set({ versionsOpen: false, compareState: null, branches: [], versionHistory: { entries: [], versions: [], dirty: false, loaded: false, loading: false, error: null, filter: 'all' }, activeSiteId: siteId, siteLoading: true, siteError: null, job: null, jobPageId: null, revisions: [], revisionPreview: null, images: [], imagesLoaded: false, imagesError: null, uploads: [] });
+    set({ versionsOpen: false, compareState: null, branches: [], versionHistory: { entries: [], versions: [], dirty: false, loaded: false, loading: false, error: null, filter: 'all' }, activeSiteId: siteId, siteLoading: true, siteError: null, job: null, jobPageId: null, revisions: [], revisionPreview: null, images: [], imagesLoaded: false, imagesError: null, uploads: [], editedPageIds: {}, ...loadWork(siteId) });
     uploadRun = null;
     try {
       const res = await templateSiteService.getSite(siteId);
@@ -132,7 +137,15 @@ export const useTemplateStudioStore = create((set, get) => ({
       const { site, pages, activeJob } = res.data;
       const saved = restore ? remembered() : {};
       const pick = pages.find((page) => page.id === saved.pageId) || pages.find((page) => page.id === site.lastPageId) || pages[0] || null;
-      set({ site, pages, activePageId: pick?.id || null, siteLoading: false, job: activeJob || null, jobPageId: activeJob?.pageId || null, previewKey: get().previewKey + 1 });
+      let storedEdited = {};
+      try { storedEdited = JSON.parse(localStorage.getItem(`veave_edited_pages_${siteId}`) || '{}') || {}; } catch {}
+      const initialEdited = { ...storedEdited };
+      for (const p of pages) {
+        if (p.currentRevision > 1 || Boolean(p.lastInstruction) || p.generation?.state === 'completed') {
+          initialEdited[p.id] = true;
+        }
+      }
+      set({ site, pages, activePageId: pick?.id || null, siteLoading: false, job: activeJob || null, jobPageId: activeJob?.pageId || null, previewKey: get().previewKey + 1, editedPageIds: initialEdited });
       remember(get());
       if (pick) { get().loadRevisions(pick.id); get().loadSections(pick.id); }
       get().loadImages();
@@ -187,6 +200,20 @@ export const useTemplateStudioStore = create((set, get) => ({
       if (get().activeSiteId === siteId) set((state) => ({ site: state.site ? { ...state.site, name } : state.site }));
       return true;
     } catch (error) { get().flash('error', apiMessage(error, 'The site could not be renamed.')); return false; }
+  },
+
+  themeBusy: false,
+  applyTheme: async (theme) => {
+    const siteId = get().activeSiteId;
+    if (!siteId || get().themeBusy) return false;
+    set({ themeBusy: true });
+    try {
+      const res = await templateSiteService.updateTheme(siteId, theme);
+      set((state) => ({ site: state.site ? { ...state.site, theme: res.data.site.theme, typography: res.data.site.typography } : state.site, previewKey: state.previewKey + 1 }));
+      get().flash('success', res.data.adjusted?.length ? 'Theme applied. Some text colours were adjusted so they stay readable.' : 'Theme applied.');
+      return true;
+    } catch (error) { get().flash('error', apiMessage(error, 'The theme could not be applied.')); return false; }
+    finally { set({ themeBusy: false }); }
   },
 
   deleteSite: async (siteId) => {
@@ -321,6 +348,7 @@ export const useTemplateStudioStore = create((set, get) => ({
   cancelJob: async () => {
     const job = get().job;
     if (!job) return;
+    if (!window.confirm('Are you sure you want to cancel this generation?')) return;
     try {
       const res = await templateSiteService.cancelJob(job.id);
       set({ job: res.data.job });
@@ -381,6 +409,10 @@ export const useTemplateStudioStore = create((set, get) => ({
       // The instruction is cleared only now, after the backend confirmed the page was saved, and only for the page the job belonged to:
       // the text must still be exactly what was submitted (a different or edited text on that page is the user's new work).
       if (job.type === 'page-regenerate' && job.pageId) {
+        // A saved single-page edit: from now on "Generate Entire Website" is hidden for this site.
+        const edited = { ...get().editedPageIds, [job.pageId]: true };
+        try { localStorage.setItem(`veave_edited_pages_${get().activeSiteId}`, JSON.stringify(edited)); } catch {}
+        set({ editedPageIds: edited });
         set((state) => (String(state.drafts[job.pageId] || '').trim() === String(job.instruction || '').trim() && state.drafts[job.pageId] ? { drafts: { ...state.drafts, [job.pageId]: '' } } : {}));
       }
       set((state) => ({ previewKey: state.previewKey + 1 }));
@@ -410,10 +442,14 @@ export const useTemplateStudioStore = create((set, get) => ({
   loadSections: async (pageId) => {
     const siteId = get().activeSiteId;
     if (!siteId || !pageId) return;
+    set({ sectionsLoading: true });
     try {
       const res = await templateSiteService.getPage(siteId, pageId);
-      set((state) => ({ pageSections: { ...state.pageSections, [pageId]: res.data.page.sections || [] } }));
-    } catch { /* the list is a nicety; the page works without it */ }
+      const sections = res.data.page?.sections || [];
+      set((state) => ({ pageSections: { ...state.pageSections, [pageId]: sections }, sectionsLoading: false }));
+    } catch {
+      set((state) => ({ pageSections: { ...state.pageSections, [pageId]: state.pageSections[pageId] || [] }, sectionsLoading: false }));
+    }
   },
 
   /** Shows an older revision in the preview (read-only; nothing is saved). */
@@ -644,12 +680,18 @@ export const useTemplateStudioStore = create((set, get) => ({
         try {
           const res = await templateSiteService.uploadPhoto(siteId, next.file, { pageId: get().activePageId, onProgress: (value) => patch(next.id, { progress: value }) });
           const photo = res.data.photo;
-          patch(next.id, { status: 'done', progress: 1, imageId: photo.id, reused: Boolean(photo.reused) });
+          if (photo.reused) {
+            // The same picture is already in the library: nothing new was stored. It is shown under "Photos for this page" so the user can find it.
+            set((state) => ({ images: state.images.some((image) => image.id === photo.id) ? state.images : [photo, ...state.images] }));
+            patch(next.id, { status: 'error', progress: 1, error: 'This image is already uploaded. It is listed below under "Photos for this page" (tap View to open it).', duplicate: true, imageId: photo.id });
+            if (get().activePageId) get().toggleImage(photo.id, true);
+            continue;
+          }
+          patch(next.id, { status: 'done', progress: 1, imageId: photo.id, reused: false });
           set((state) => ({ images: state.images.some((image) => image.id === photo.id) ? state.images.map((image) => (image.id === photo.id ? photo : image)) : [photo, ...state.images] }));
           // The new picture is ready to use on the page it was added from.
           const pageId = get().activePageId;
           if (pageId) get().toggleImage(photo.id, true);
-          if (photo.reused) get().flash('info', `"${photo.name}" is already in the library. It was not uploaded twice.`);
         } catch (error) {
           patch(next.id, { status: 'error', error: apiMessage(error, 'The upload failed. Check your connection and try again.') });
         }
@@ -775,3 +817,14 @@ export const useTemplateStudioStore = create((set, get) => ({
     finally { get().setBusy(`image:${imageId}`, false); }
   }
 }));
+
+// Save the typed work whenever it changes (empty drafts are dropped so the entry does not grow).
+useTemplateStudioStore.subscribe((state, previous) => {
+  if (!state.activeSiteId || (state.drafts === previous.drafts && state.selection === previous.selection && state.activeSiteId === previous.activeSiteId)) return;
+  if (state.activeSiteId !== previous.activeSiteId && state.siteLoading) return; // the site's saved work is still being loaded
+  try {
+    const drafts = Object.fromEntries(Object.entries(state.drafts).filter(([, text]) => String(text || '').trim()));
+    const selection = Object.fromEntries(Object.entries(state.selection).filter(([, chosen]) => Object.keys(chosen || {}).length));
+    localStorage.setItem(WORK_KEY(state.activeSiteId), JSON.stringify({ drafts, selection }));
+  } catch { /* storage may be unavailable */ }
+});

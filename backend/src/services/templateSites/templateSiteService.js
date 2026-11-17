@@ -172,6 +172,39 @@ async function renameSite(user, siteId, { name, description }) {
   return site;
 }
 
+/**
+ * Changes the theme (colours, fonts, appearance) of an existing site. Only the managed theme block in src/index.css and the font
+ * link in index.html are rewritten; pages, content and pictures are untouched. A null theme restores the template's own look.
+ * The previous state is saved as a version first, and the result is saved as a new one, so the change can always be undone.
+ */
+async function updateTheme(user, siteId, themeInput) {
+  const site = await getSite(user, siteId);
+  const store = require('./siteFileStore');
+  const themes = require('./templateTheme');
+  const { assertNoRunningJob, bumpSite } = require('./templatePageService');
+  const versions = require('./templateVersionService');
+  await assertNoRunningJob(site._id);
+  let template;
+  try { template = templateService.resolveTemplate(site.templateId, { version: site.templateVersion, user }); } catch (error) {
+    if (error?.name === 'TemplateError') throw Object.assign(new AppError(error.message, error.status || error.statusCode || 422), { code: error.code });
+    throw error;
+  }
+  const { theme, adjusted } = themes.normalize(themeInput, template);
+  await versions.snapshotBefore(site, user, 'Before changing the theme', { operation: 'change-theme' });
+  let written = null;
+  let read = null;
+  for (let attempt = 0; attempt < 3 && written == null; attempt += 1) {
+    read = await store.readSite(site);
+    const touched = new Map(themes.applyTheme(read.files.filter((file) => file.path === 'src/index.css' || file.path === 'index.html'), theme, template).map((file) => [file.path, file]));
+    if (!touched.has('src/index.css')) throw new ValidationError('This site has no src/index.css to apply a theme to.');
+    const next = (read.project.files || []).map((file) => (touched.has(file.path) ? { path: file.path, content: touched.get(file.path).content, language: file.language, encoding: 'utf8' } : file));
+    try { written = await store.writeSite(site, next, read.projectRevision); } catch (error) { if (!(error instanceof ConflictError) || attempt === 2) throw error; }
+  }
+  const updated = await bumpSite(site._id, { theme, typography: theme?.typography || null });
+  await versions.createVersion({ site: updated, user, kind: 'snapshot', name: 'Theme changed', origin: 'user', operation: 'change-theme', dedupe: true });
+  return { site: updated, adjusted };
+}
+
 async function deleteSite(user, siteId) {
   const site = await getSite(user, siteId);
   const running = await TemplateGenerationJob.exists({ siteId: site._id, status: { $in: TemplateGenerationJob.ACTIVE_STATUSES } });
@@ -203,4 +236,4 @@ async function rememberPage(user, siteId, pageId) {
   return site;
 }
 
-module.exports = { idOf, requireUser, cleanName, objectId, getSite, getPage, listPages, listSites, createSite, renameSite, deleteSite, loadSiteFiles, rememberPage, applySiteName };
+module.exports = { idOf, requireUser, cleanName, objectId, getSite, getPage, listPages, listSites, createSite, renameSite, updateTheme, deleteSite, loadSiteFiles, rememberPage, applySiteName };

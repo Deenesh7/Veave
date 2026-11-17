@@ -34,7 +34,9 @@ const projectSchema = new mongoose.Schema({
   status: { type: String, enum: ['active', 'archived'], default: 'active' },
   // Monotonic change counter used for optimistic concurrency on shared projects (bumped by every write below).
   revision: { type: Number, default: 0 },
-  lastEditedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
+  lastEditedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  // The account that first created the project. `userId` is the current owner and changes on an ownership transfer.
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { timestamps: true });
 
 // The project list (Recent, Files, sidebar) filters by owner + status and sorts newest first: one compound index
@@ -85,6 +87,7 @@ projectSchema.pre('findOneAndUpdate', function bumpRevisionOnUpdate() {
 // Plan limits are enforced where projects are actually created, so no creation path (API, AI job, import) can skip them.
 projectSchema.pre('save', async function enforcePlanLimits() {
   if (!this.isNew) return;
+  if (!this.createdBy && this.userId) this.createdBy = this.userId;
   if (!this.userId) throw new (require('../utils/errors').AuthError)('Log in to create a project.');
   await require('../services/billing/usageService').assertCanCreate(this.userId, { newProject: true });
 });
@@ -124,38 +127,7 @@ projectSchema.post('findOneAndUpdate', function precompilePreviewAfterUpdate(doc
 projectSchema.post('save', async function syncFilesAfterSave(doc) {
   try {
     if (!Array.isArray(doc.files) || doc.files.length === 0) return;
-    const ProjectFile = require('./ProjectFile');
-    const paths = doc.files.map(f => f.path).filter(Boolean);
-
-    // Delete files that were removed
-    await ProjectFile.deleteMany({
-      projectId: doc._id,
-      path: { $nin: paths }
-    });
-
-    // Upsert each file
-    if (paths.length) {
-      const ops = doc.files.filter(f => f && f.path).map(f => ({
-        updateOne: {
-          filter: { projectId: doc._id, path: f.path },
-          update: {
-            $set: {
-              projectId: doc._id,
-              userId: doc.userId || null,
-              path: f.path,
-              content: String(f.content || ''),
-              language: f.language || undefined,
-              encoding: f.encoding || 'utf8',
-              blob: f.blob || null,
-              size: f.blob?.size ?? Buffer.byteLength(f.content || '', f.encoding === 'base64' ? 'base64' : 'utf8'),
-              isBinary: f.encoding === 'base64'
-            }
-          },
-          upsert: true
-        }
-      }));
-      if (ops.length) await ProjectFile.bulkWrite(ops, { ordered: false });
-    }
+    await require('./ProjectFile').mirrorProject(doc);
   } catch (err) {
     // Never fail the parent save if the mirror sync fails
     // eslint-disable-next-line no-console
@@ -164,44 +136,26 @@ projectSchema.post('save', async function syncFilesAfterSave(doc) {
 });
 
 /**
- * `Project.create({...})` calls `.save()` internally so the post-save hook
- * above already fires. `findOneAndUpdate` however does NOT trigger save hooks,
- * so we register a dedicated post hook for that path.
+ * `findOneAndUpdate` does NOT trigger save hooks, so it has its own post hook (same mirror, same change detection).
  */
 projectSchema.post('findOneAndUpdate', async function syncFilesAfterUpdate(doc) {
   if (!doc) return;
   try {
-    const ProjectFile = require('./ProjectFile');
     if (!Array.isArray(doc.files)) return;
-    const paths = doc.files.map(f => f.path).filter(Boolean);
-    await ProjectFile.deleteMany({ projectId: doc._id, path: { $nin: paths } });
-    if (paths.length) {
-      const ops = doc.files.filter(f => f && f.path).map(f => ({
-        updateOne: {
-          filter: { projectId: doc._id, path: f.path },
-          update: {
-            $set: {
-              projectId: doc._id,
-              userId: doc.userId || null,
-              path: f.path,
-              content: String(f.content || ''),
-              language: f.language || undefined,
-              encoding: f.encoding || 'utf8',
-              blob: f.blob || null,
-              size: f.blob?.size ?? Buffer.byteLength(f.content || '', f.encoding === 'base64' ? 'base64' : 'utf8'),
-              isBinary: f.encoding === 'base64'
-            }
-          },
-          upsert: true
-        }
-      }));
-      if (ops.length) await ProjectFile.bulkWrite(ops, { ordered: false });
-    }
+    await require('./ProjectFile').mirrorProject(doc);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[Project] ProjectFile sync (update) failed:', err.message);
   }
 });
+
+// Cached project lists (see projectService.getAll) go stale on any change to a project: one version bump invalidates them all.
+const invalidateProjectLists = () => { require('../services/cache/cacheService').invalidate('projects').catch(() => {}); };
+projectSchema.post('save', invalidateProjectLists);
+for (const operation of ['findOneAndUpdate', 'findOneAndDelete', 'findOneAndReplace', 'updateOne', 'updateMany', 'deleteOne', 'deleteMany', 'replaceOne']) {
+  projectSchema.post(operation, invalidateProjectLists);
+}
+projectSchema.post('insertMany', invalidateProjectLists);
 
 /**
  * Cascade delete files, versions, and conversations when a Project is removed.

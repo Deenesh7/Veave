@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { UploadCloud, Check, X, RotateCcw, AlertCircle, ImageOff, Sparkles, SplitSquareHorizontal, MapPin, ChevronDown } from 'lucide-react';
-import { useTemplateStudioStore, PLACEMENT_OPTIONS, PHOTO_TYPES, MAX_ATTACH } from '../../store/templateStudioStore';
+import { useTemplateStudioStore, PHOTO_TYPES, MAX_ATTACH } from '../../store/templateStudioStore';
 import { Spinner, Skeleton, IconButton, inputClass, ink, muted, line } from './ui';
 import { useImageSrc, formatBytes, dimensionsOf } from './imageUtils';
 import ImageViewer from './ImageViewer';
@@ -123,7 +123,7 @@ function EnhancementBlock({ siteId, image, onCompare }) {
 }
 
 export default function ImageLibrary({ disabled = false }) {
-  const { site, activePageId, images, uploads, selection, uploadFiles, retryUpload, dismissUpload, clearFinishedUploads, toggleImage, setImageChoice } = useTemplateStudioStore();
+  const { site, pages, pageSections, activePageId, images, uploads, selection, uploadFiles, retryUpload, dismissUpload, clearFinishedUploads, toggleImage, setImageChoice } = useTemplateStudioStore();
   const [dragging, setDragging] = useState(false);
   const [viewing, setViewing] = useState(null);
   const [reviewing, setReviewing] = useState(null);
@@ -131,6 +131,14 @@ export default function ImageLibrary({ disabled = false }) {
   const chosen = (activePageId && selection[activePageId]) || {};
   const chosenIds = Object.keys(chosen);
   const siteId = site?.id;
+  // Where a photo can go: only the sections that are on this page.
+  const activePage = pages.find((item) => item.id === activePageId);
+  const pageSectionNames = (Array.isArray(pageSections?.[activePageId]) && pageSections[activePageId].length ? pageSections[activePageId] : (activePage?.description || '').split(/\s*·\s*|\s*,\s*|\n+/)).map((name) => String(name).trim()).filter(Boolean);
+  const placementOptionsFor = (current) => {
+    const options = [{ value: '', label: 'Let the page decide', hint: 'The AI picks the best spot on this page' }, { value: 'page-background', label: 'Whole page background', hint: 'The picture sits behind every section of this page' }, ...[...new Set(pageSectionNames)].map((name) => ({ value: `section:${name}`, label: name, hint: 'Place it in this section of the page' }))];
+    if (current && !options.some((option) => option.value === current)) options.push({ value: current, label: current.replace(/^section:/, ''), hint: 'Chosen earlier' });
+    return options;
+  };
   // A finished upload disappears from the queue once its picture shows in the library.
   const queue = uploads.filter((item) => item.status !== 'done' || !images.some((image) => image.id === item.imageId));
   const finished = queue.some((item) => item.status === 'done');
@@ -167,7 +175,8 @@ export default function ImageLibrary({ disabled = false }) {
               </div>
               {item.status === 'uploading' ? <Spinner className="h-4 w-4 text-[#5E7B5F]" /> : null}
               {item.status === 'done' ? <Check className="h-4 w-4 text-[#5E7B5F]" /> : null}
-              {item.status === 'error' && item.file ? <IconButton label="Try again" onClick={() => retryUpload(item.id)}><RotateCcw className="h-3.5 w-3.5" /></IconButton> : null}
+              {item.duplicate && images.some((image) => image.id === item.imageId) ? <button type="button" onClick={() => setViewing(images.find((image) => image.id === item.imageId))} className="shrink-0 rounded border border-[#D9B8B0] bg-white px-1.5 py-0.5 text-[11px] font-medium text-[#7A3A2E] hover:bg-[#FBF3F0]">View</button> : null}
+              {item.status === 'error' && item.file && !item.duplicate ? <IconButton label="Try again" onClick={() => retryUpload(item.id)}><RotateCcw className="h-3.5 w-3.5" /></IconButton> : null}
               {item.status !== 'uploading' ? <IconButton label="Dismiss" onClick={() => dismissUpload(item.id)}><X className="h-3.5 w-3.5" /></IconButton> : null}
             </li>
           ))}
@@ -193,7 +202,7 @@ export default function ImageLibrary({ disabled = false }) {
                     <IconButton label={`Do not use ${image.name}`} onClick={() => toggleImage(id, false)}><X className="h-3.5 w-3.5" /></IconButton>
                   </div>
                   <EnhancementBlock siteId={siteId} image={image} onCompare={() => setReviewing(image)} />
-                  <div className="mt-1.5"><Dropdown compact icon={MapPin} label={`Where ${image.name} should go`} value={chosen[id].placement} onChange={(placement) => setImageChoice(id, { placement })} options={PLACEMENT_OPTIONS} /></div>
+                  <div className="mt-1.5"><Dropdown compact icon={MapPin} label={`Where ${image.name} should go`} value={chosen[id].placement} onChange={(placement) => setImageChoice(id, { placement })} options={placementOptionsFor(chosen[id].placement)} /></div>
                   <input value={chosen[id].note} onChange={(event) => setImageChoice(id, { note: event.target.value })} maxLength={300} aria-label={`Instruction for ${image.name}`} placeholder="Optional: how to use this photo" className={`${inputClass} mt-1 !py-1 text-xs`} />
                 </li>
               );

@@ -28,7 +28,7 @@ const logger = require('../../utils/logger');
 const MAX_PARALLEL = Number.parseInt(process.env.IMAGE_ENHANCE_PARALLEL, 10) || 2;
 let running = 0;
 const waiting = [];
-const deps = {}; // test seam: { requestModel }
+const deps = {}; // test seam: { requestModel, reuseStored (false = always ask the model) }
 
 /** At most MAX_PARALLEL model calls at a time; the rest wait their turn (they stay "queued" for the owner). */
 function slot() {
@@ -46,6 +46,30 @@ async function readStored(site, asset) {
   if (!stored) throw new enhancer.EnhanceError('ORIGINAL_MISSING', 'The original photo could not be found in your site.', { retryable: false });
   const file = await hydrateFile(stored);
   return Buffer.from(file.content || '', 'base64');
+}
+
+/**
+ * An enhanced picture already made (and stored with its site's files) from this exact original, for this owner: the same photo
+ * uploaded again is not sent to the AI a second time and costs nothing; the stored result is reused. Null when there is none.
+ */
+async function findStoredEnhancement(user, original) {
+  if (!original.sha256) return null;
+  const earlier = await TemplateAsset.find({
+    userId: idOf(user), source: 'upload', sha256: original.sha256, _id: { $ne: original._id },
+    'enhancement.status': 'completed', 'enhancement.enhancedAssetId': { $ne: null }
+  }).sort({ 'enhancement.completedAt': -1 }).limit(5).lean();
+  for (const candidate of earlier) {
+    try {
+      const twin = await TemplateAsset.findOne({ _id: candidate.enhancement.enhancedAssetId, source: 'enhanced' }).lean();
+      const owner = twin && await TemplateSite.findById(twin.siteId);
+      if (!owner) continue;
+      const buffer = await readStored(owner, twin);
+      if (!buffer.length) continue;
+      const extension = String(twin.projectPath || '').split('.').pop() || 'jpg';
+      return { buffer, mime: twin.mime, extension, width: twin.width, height: twin.height, method: 'cached', model: candidate.enhancement.model || null, usage: null };
+    } catch { /* that copy is gone: try the next one, or enhance again */ }
+  }
+  return null;
 }
 
 /**
@@ -106,7 +130,7 @@ async function run({ site, user, assetId }) {
       width = meta.width; height = meta.height;
       await TemplateAsset.updateOne({ _id: assetId }, { $set: { width, height } });
     }
-    const result = await enhancer.enhance({ buffer, mime: original.mime, sha256: original.sha256, width, height }, { deps });
+    const result = (deps.reuseStored === false ? null : await findStoredEnhancement(user, original)) || await enhancer.enhance({ buffer, mime: original.mime, sha256: original.sha256, width, height }, { deps });
     const enhanced = await storeEnhanced({ site, user, original, result });
     // Done only now, when a valid enhanced picture is stored.
     await TemplateAsset.updateOne({ _id: assetId }, { $set: { 'enhancement.status': 'completed', 'enhancement.error': null, 'enhancement.errorCode': null, 'enhancement.completedAt': new Date(), 'enhancement.enhancedAssetId': enhanced._id, 'enhancement.model': result.model } });
@@ -146,6 +170,11 @@ async function storeEnhanced({ site, user, original, result }) {
 
 /** Bills one successful enhancement exactly once and records the model's real usage. */
 async function charge({ userId, assetId, projectId, result }) {
+  // A photo finished locally (the AI result could not be used) or from a stored copy costs the owner nothing.
+  if (result.method === 'local' || result.method === 'cached') {
+    await TemplateAsset.updateOne({ _id: assetId, 'enhancement.chargedAt': null }, { $set: { 'enhancement.chargedAt': new Date(), 'enhancement.credits': 0 } });
+    return;
+  }
   const credits = imageEnhanceCredits();
   const claimed = await TemplateAsset.findOneAndUpdate({ _id: assetId, 'enhancement.chargedAt': null }, { $set: { 'enhancement.chargedAt': new Date(), 'enhancement.credits': credits } });
   if (!claimed) return;

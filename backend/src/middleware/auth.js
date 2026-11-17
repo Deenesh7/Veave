@@ -1,6 +1,24 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { AuthError } = require('../utils/errors');
+const { AuthError, ForbiddenError } = require('../utils/errors');
+
+// Records when an account was last seen, at most once every 5 minutes per account (no write on every request).
+const SEEN_EVERY_MS = 5 * 60 * 1000;
+const lastSeen = new Map();
+function touchActive(user) {
+  const now = Date.now();
+  if (now - (lastSeen.get(String(user._id)) || 0) < SEEN_EVERY_MS) return;
+  if (lastSeen.size > 5000) lastSeen.clear();
+  lastSeen.set(String(user._id), now);
+  User.updateOne({ _id: user._id }, { $set: { lastActiveAt: new Date(now) } }).catch(() => {});
+}
+
+function assertNotSuspended(user) {
+  if (user.status === 'suspended') {
+    const error = new ForbiddenError('This account has been suspended. Contact support.', 'ACCOUNT_SUSPENDED');
+    throw error;
+  }
+}
 
 const auth = async (req, res, next) => {
   try {
@@ -26,8 +44,11 @@ const auth = async (req, res, next) => {
       if (!req.user) {
         throw new AuthError('User not found');
       }
+      assertNotSuspended(req.user);
+      touchActive(req.user);
       next();
     } catch (err) {
+      if (err instanceof ForbiddenError) throw err;
       throw new AuthError('Not authorized to access this route');
     }
   } catch (error) {
@@ -65,6 +86,8 @@ const optionalAuth = async (req, res, next) => {
       error.code = 'TOKEN_INVALID';
       return next(error);
     }
+    assertNotSuspended(req.user);
+    touchActive(req.user);
     return next();
   } catch (error) {
     return next(error);

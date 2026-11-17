@@ -1,9 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Monitor, Tablet, Smartphone, RefreshCw, Maximize2, Minimize2, History, RotateCcw, X } from 'lucide-react';
+import { Monitor, Tablet, Smartphone, RefreshCw, Maximize2, Minimize2, History, RotateCcw, X, Palette } from 'lucide-react';
 import { useTemplateStudioStore } from '../../store/templateStudioStore';
 import { templateSiteService, apiMessage } from '../../services/templateSiteService';
 import { ASSET_BASE_PLACEHOLDER } from '../../services/previewService';
+import ThemePanel from './ThemePanel';
 import { PanelHeader, EmptyState, ErrorNote, IconButton, Spinner, Skeleton, GhostButton, PrimaryButton, ink, muted, line } from './ui';
+
+// Lets the page take theme CSS from the studio while the theme panel is open (the same listener the template preview uses).
+const THEME_LISTENER = `<style id="veave-theme"></style><script>window.addEventListener('message',function(e){var d=e.data;if(d&&d.type==='veave-theme'){document.getElementById('veave-theme').textContent=d.css||'';}});</script>`;
 
 const DEVICES = [
   { id: 'desktop', label: 'Desktop', icon: Monitor, width: '100%', hint: 'Full width' },
@@ -17,7 +21,34 @@ const DEVICES = [
  */
 export default function SitePreviewPanel({ className = '' }) {
   const { site, pages, activePageId, previewKey, selectPage, job, revisionPreview, closeRevisionPreview, restoreRevision, previewRevision, busy } = useTemplateStudioStore();
+  const iframeRef = useRef(null);
   const [full, setFull] = useState(false);
+  const [themeOpen, setThemeOpen] = useState(false);
+  // While the theme panel is open, the app sidebar and the Pages / Content columns fold away so the preview gets the room; they come back as they were.
+  useEffect(() => {
+    if (!themeOpen) return undefined;
+    const before = useTemplateStudioStore.getState();
+    const saved = { sidebar: before.appSidebarHidden, pages: before.pagesCollapsed, content: before.contentCollapsed };
+    before.setAppSidebarHidden(true);
+    before.setPagesCollapsed(true);
+    before.setContentCollapsed(true);
+    return () => {
+      const now = useTemplateStudioStore.getState();
+      now.setAppSidebarHidden(saved.sidebar);
+      now.setPagesCollapsed(saved.pages);
+      now.setContentCollapsed(saved.content);
+    };
+  }, [themeOpen]);
+  const cssRef = useRef('');
+  const pushCss = useCallback((css) => {
+    cssRef.current = css;
+    try { iframeRef.current?.contentWindow?.postMessage({ type: 'veave-theme', css }, '*'); } catch { /* the frame may be reloading */ }
+  }, []);
+  const closeTheme = useCallback((saved) => {
+    setThemeOpen(false);
+    if (!saved) pushCss(''); // unsaved changes are dropped; a saved one reloads the preview from the site itself
+    cssRef.current = '';
+  }, [pushCss]);
   const page = pages.find((item) => item.id === activePageId) || null;
   const [device, setDevice] = useState('desktop');
   const [manualKey, setManualKey] = useState(0);
@@ -28,7 +59,6 @@ export default function SitePreviewPanel({ className = '' }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [full]);
   const [state, setState] = useState({ status: 'idle', html: '', hash: '', error: null });
-  const iframeRef = useRef(null);
   const hashRef = useRef('');
   const routeRef = useRef('/');
   const pagesRef = useRef(pages);
@@ -71,6 +101,15 @@ export default function SitePreviewPanel({ className = '' }) {
   // Choosing a page in the list shows that page in the website.
   useEffect(() => { if (state.status === 'ready') showRoute(routeRef.current); }, [page?.route, state.status, state.hash, showRoute]);
 
+  // Clicking a section in the Content column scrolls the website to that part of the page.
+  useEffect(() => {
+    const onScroll = (event) => {
+      try { iframeRef.current?.contentWindow?.postMessage({ type: 'preview-scroll-to-section', label: event.detail }, '*'); } catch { /* the frame may be reloading */ }
+    };
+    window.addEventListener('studio-scroll-section', onScroll);
+    return () => window.removeEventListener('studio-scroll-section', onScroll);
+  }, []);
+
   // The website tells the studio when the visitor navigates inside it, so the page list follows.
   useEffect(() => {
     const onMessage = (event) => {
@@ -92,7 +131,8 @@ export default function SitePreviewPanel({ className = '' }) {
   // An older revision, when one is being looked at, replaces the live site until it is closed.
   const old = revisionPreview?.status === 'ready' ? revisionPreview : null;
   const oldHtml = old ? old.html.split(ASSET_BASE_PLACEHOLDER).join(`${window.location.origin}/api/preview-assets/${old.token}`) : '';
-  const html = old ? oldHtml : state.html;
+  const raw = old ? oldHtml : state.html;
+  const html = raw && !old ? (raw.includes('</body>') ? raw.replace('</body>', () => `${THEME_LISTENER}</body>`) : raw + THEME_LISTENER) : raw;
   const frameKey = old ? `rev-${old.number}` : `${state.hash}:${manualKey}`;
   const loading = revisionPreview?.status === 'loading' || (!old && site && state.status === 'loading' && !state.html);
   const frameError = revisionPreview?.status === 'error' ? revisionPreview.error : (!old && site && state.status === 'error' ? state.error : null);
@@ -113,6 +153,7 @@ export default function SitePreviewPanel({ className = '' }) {
               ))}
             </div>
             <span className="mx-1 h-4 w-px bg-[#D8D2C3]" aria-hidden="true" />
+            <IconButton label="Change theme" onClick={() => (themeOpen ? closeTheme(false) : setThemeOpen(true))} disabled={Boolean(revisionPreview)} className={themeOpen ? 'bg-white shadow-sm' : ''}><Palette className="h-4 w-4" /></IconButton>
             <IconButton label="Refresh preview" onClick={() => setManualKey((value) => value + 1)} disabled={Boolean(old)}><RefreshCw className={`h-4 w-4 ${state.status === 'loading' ? 'animate-spin' : ''}`} /></IconButton>
             <IconButton label={full ? 'Exit full screen (Esc)' : 'Full screen'} onClick={() => setFull((value) => !value)}>{full ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}</IconButton>
           </div>
@@ -129,7 +170,7 @@ export default function SitePreviewPanel({ className = '' }) {
           </span>
         </div>
       ) : null}
-      <div className="relative min-h-0 flex-1 overflow-hidden p-0">
+      <div className="relative min-h-0 flex-1 overflow-hidden p-0" style={{ paddingRight: themeOpen ? 340 : 0 }}>
         {!site ? <EmptyState title="No website to show">Create a site from a template and it appears here as a real, working website.</EmptyState> : null}
         {loading ? (
           <div className="mx-auto flex h-full flex-col gap-3 bg-white p-4 transition-[width] duration-200" style={{ width, maxWidth: '100%' }} aria-busy="true" aria-label="Building the preview">
@@ -146,10 +187,11 @@ export default function SitePreviewPanel({ className = '' }) {
             <iframe
               key={frameKey} ref={iframeRef} title={`${site.name} website preview`} srcDoc={html}
               sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
-              onLoad={() => showRoute(routeRef.current)} className="h-full w-full border-0 bg-white"
+              onLoad={() => { showRoute(routeRef.current); if (cssRef.current) pushCss(cssRef.current); }} className="h-full w-full border-0 bg-white"
             />
           </div>
         ) : null}
+        {themeOpen && site ? <ThemePanel key={site.id} onCss={pushCss} onClose={closeTheme} /> : null}
         {regenerating ? (
           <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center p-3" role="status">
             <span className={`flex items-center gap-2 rounded-full border ${line} bg-[#FBF9F4]/95 px-3 py-1.5 text-xs shadow ${ink}`}><Spinner className="h-3 w-3 text-[#5E7B5F]" />{job.pageId ? 'Regenerating a page. This is the current saved version.' : 'Writing the pages. This is the current saved version.'}</span>

@@ -40,6 +40,12 @@ api.interceptors.response.use(
     } else if (code === 'INSUFFICIENT_PROJECT_ACCESS') {
       window.dispatchEvent(new CustomEvent('veave:project-readonly', { detail: { message: failure?.message } }));
     }
+    if (code === 'ACCOUNT_SUSPENDED') {
+      // An administrator suspended this account: end the session right away.
+      localStorage.removeItem('veave_token');
+      window.dispatchEvent(new Event('veave:unauthorized'));
+      if (window.location.pathname !== '/login') window.location.href = '/login?suspended=1';
+    }
     if (error.response?.status === 401) {
       localStorage.removeItem('veave_token');
       // Let the auth store drop its stale "logged in" state so screens stop retrying with a dead token.

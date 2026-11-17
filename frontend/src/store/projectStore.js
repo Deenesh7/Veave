@@ -69,9 +69,28 @@ export const useProjectStore = create((set, get) => ({
     }
   },
 
-  deleteProject: async (id) => {
+  // Creates an independent copy on the server, then reloads the list so the copy appears with its real data.
+  duplicateProject: async (id, name) => {
+    const res = await projectService.duplicateProject(id, name);
+    await get().fetchProjects();
+    refreshUsage();
+    return res.data?.data;
+  },
+
+  // The project leaves this user's list once the server confirms the new owner.
+  transferProject: async (id, email) => {
+    const res = await projectService.transferProject(id, email);
+    set((state) => ({
+      projects: state.projects.filter((p) => p._id !== id),
+      currentProject: state.currentProject?._id === id ? null : state.currentProject,
+    }));
+    refreshUsage();
+    return res.data?.data;
+  },
+
+  deleteProject: async (id, options) => {
     try {
-      await projectService.deleteProject(id);
+      await projectService.deleteProject(id, options);
       set((state) => ({
         projects: state.projects.filter((p) => p._id !== id),
         currentProject: state.currentProject?._id === id ? null : state.currentProject,

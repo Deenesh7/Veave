@@ -1,5 +1,6 @@
 ﻿import React from 'react';
 import { Loader2, Check, X } from 'lucide-react';
+import ClonePlanReview from './ClonePlanReview';
 import { FluidOrb } from '../rare-ui';
 import { useGenerationJobStore } from '../../store/generationJobStore';
 
@@ -17,48 +18,12 @@ export default function GenerationLoader({
   onCancel,
 }) {
   const approval = useGenerationJobStore((s) => s.approval);
-  const decidePlan = useGenerationJobStore((s) => s.decidePlan);
   const prototypeQueue = useGenerationJobStore((s) => s.prototypeQueue);
 
   if (!isGenerating) return null;
 
-  if (approval?.plan) {
-    const plan = approval.plan;
-    return (
-      <div className="absolute inset-0 bg-white rounded-2xl z-30 flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-150">
-        <h4 className="text-base font-bold text-[#111827] mb-4">Ready to build</h4>
-        <div className="flex items-stretch justify-center gap-3 mb-3">
-          <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-6 py-3">
-            <div className="text-2xl font-bold text-[#111827] leading-none">{plan.pageCount}</div>
-            <div className="text-[11px] text-zinc-500 mt-1">Pages</div>
-          </div>
-          <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-6 py-3">
-            <div className="text-2xl font-bold text-[#111827] leading-none">{plan.stageCount}</div>
-            <div className="text-[11px] text-zinc-500 mt-1">Steps</div>
-          </div>
-        </div>
-        {plan.estimatedMinutes ? (
-          <p className="text-xs text-zinc-500 mb-4">Estimated time: about {plan.estimatedMinutes} min</p>
-        ) : null}
-        <div className="flex items-center justify-center gap-2 w-full max-w-xs">
-          <button
-            type="button"
-            onClick={() => decidePlan('approve')}
-            className="flex-1 rounded-lg bg-zinc-900 text-white text-sm font-semibold py-2.5 hover:bg-black transition-colors"
-          >
-            Approve
-          </button>
-          <button
-            type="button"
-            onClick={() => decidePlan('cancel')}
-            className="rounded-lg border border-zinc-300 text-zinc-600 text-sm font-medium px-4 py-2.5 hover:bg-zinc-100 transition-colors"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    );
-  }
+  if (approval?.plan) return <ClonePlanReview approval={approval} />;
+
   const progressPercentage = Number.isFinite(progress)
     ? Math.min(100, Math.max(0, Math.round(progress)))
     : Math.min(100, Math.round(((currentStep + 1) / steps.length) * 100));

@@ -20,7 +20,8 @@
     "restore:db": "node scripts/restore-db.cjs",
     "claim:projects": "node scripts/claim-projects.cjs",
     "migrate:collab": "node scripts/migrate-collaboration.cjs",
-    "test:prototype": "node --no-warnings --test 'test/prototype/*.test.js'"
+    "test:prototype": "node --no-warnings --test 'test/prototype/*.test.js'",
+    "admin:promote": "node scripts/promote-admin.cjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1148.0",
@@ -42,6 +43,7 @@
     "google-auth-library": "^11.1.0",
     "gsap": "^3.12.5",
     "helmet": "^7.1.0",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.4.1",
     "morgan": "^1.10.0",
@@ -58,7 +60,8 @@
     "typescript-language-server": "^6.0.2",
     "uuid": "^10.0.0",
     "vscode-langservers-extracted": "^4.10.0",
-    "wavefile": "^11.0.0"
+    "wavefile": "^11.0.0",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "mongodb-memory-server": "^11.3.0",

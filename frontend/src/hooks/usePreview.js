@@ -26,6 +26,13 @@ export function quickFingerprint(files) {
   return `${sorted.length}:${(hash >>> 0).toString(36)}`;
 }
 
+// A picture that fails to load (a dropped request, a storage hiccup) is requested again a couple of times before it is given up on, so a
+// transient failure never leaves a permanent hole in the preview. Only preview-asset URLs are retried; the retry has its own query string.
+const ASSET_RETRY = `<script>(function(){var tries=new WeakMap();window.addEventListener('error',function(e){var t=e.target;if(!t||t.tagName!=='IMG')return;var src=t.getAttribute('src')||'';if(src.indexOf('/api/preview-assets/')<0)return;var n=(tries.get(t)||0)+1;if(n>2)return;tries.set(t,n);setTimeout(function(){var base=src.split('?')[0];t.setAttribute('src',base+'?retry='+n+'-'+Date.now());},400*n);},true);})();<\/script>`;
+const withAssetRetry = (html) => (typeof html === 'string' && html.includes('/api/preview-assets/')
+  ? (html.includes('</body>') ? html.replace('</body>', () => `${ASSET_RETRY}</body>`) : html + ASSET_RETRY)
+  : html);
+
 export function usePreview({ validation, files: currentFiles, previewKey = 0, projectId = null, skipBuiltPreview = false, onPreviewError, onPreviewRendered } = {}) {
   const iframeRef = useRef(null);
   const onPreviewErrorRef = useRef(onPreviewError);
@@ -90,7 +97,8 @@ export function usePreview({ validation, files: currentFiles, previewKey = 0, pr
         if (buildId !== buildIdRef.current) return '';
         if (stored?.match && stored.html) {
           const base = `${window.location.origin}/api/preview-assets/${stored.token}`;
-          const html = stored.html.split(ASSET_BASE_PLACEHOLDER).join(base);
+          if (stored.assetReport?.missingCount) console.warn(`The stored preview refers to ${stored.assetReport.missingCount} picture(s) that are not in the project, for example ${stored.assetReport.missing.slice(0, 3).join(', ')}.`);
+          const html = withAssetRetry(stored.html.split(ASSET_BASE_PLACEHOLDER).join(base));
           setPreview({ html, url: '', precompiled: true, fingerprint, validationKey, buildId });
           return html;
         }
@@ -103,7 +111,7 @@ export function usePreview({ validation, files: currentFiles, previewKey = 0, pr
     try {
       // Binary assets are not held in the editor (contentOmitted); point the local compile at the asset server instead.
       const token = files.some((file) => file?.contentOmitted) ? useProjectStore.getState().currentProject?.previewAssetToken : null;
-      const html = buildPreviewHTML(files, [], token ? { assetBase: `${window.location.origin}/api/preview-assets/${token}` } : {});
+      const html = withAssetRetry(buildPreviewHTML(files, [], token ? { assetBase: `${window.location.origin}/api/preview-assets/${token}` } : {}));
       setPreview({ html, url: '', fingerprint, validationKey, buildId });
       return html;
     } catch (err) {

@@ -24,10 +24,16 @@ import GroupDetailPage from './pages/GroupDetailPage';
 import InvitationsPage from './pages/InvitationsPage';
 import SharedProjectsPage from './pages/SharedProjectsPage';
 import UpgradePlanModal from './components/common/UpgradePlanModal';
+import AdminLayout from './features/admin/AdminLayout';
+import DashboardPage from './features/admin/DashboardPage';
+import { UsersPage, UserDetailPage } from './features/admin/UsersPage';
+import TemplatesPage from './features/admin/TemplatesPage';
+import CreditsPage from './features/admin/CreditsPage';
+import { PlansPage, AnalyticsPage, NotificationsPage, AdminsPage } from './features/admin/MorePages';
 
 function HomeRoute() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  return isAuthenticated ? <Navigate to="/template-studio" replace /> : <Landing />;
+  return isAuthenticated ? <Navigate to="/dashboard" replace /> : <Landing />;
 }
 
 export default function App() {
@@ -54,6 +60,19 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/template-studio" element={<TemplateStudio />} />
         </Route>
+
+      {/* Admin dashboard (inside the main app shell): the server decides who may open it (GET /api/admin/me answers 403 to everyone but ADMIN) */}
+      <Route path="/admin" element={<AdminLayout />}>
+        <Route index element={<DashboardPage />} />
+        <Route path="users" element={<UsersPage />} />
+        <Route path="users/:id" element={<UserDetailPage />} />
+        <Route path="templates" element={<TemplatesPage />} />
+        <Route path="credits" element={<CreditsPage />} />
+        <Route path="plans" element={<PlansPage />} />
+        <Route path="analytics" element={<AnalyticsPage />} />
+        <Route path="notifications" element={<NotificationsPage />} />
+        <Route path="admins" element={<AdminsPage />} />
+      </Route>
       </Route>
 
       {/* Marketing Landing Page */}

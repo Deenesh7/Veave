@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Globe, Loader2, CheckCircle2, AlertTriangle, Copy, Check, RotateCw, Circle } from 'lucide-react';
 import { hostingService, hostingErrorMessage } from '../../services/hostingService';
+import Dropdown from '../../components/ui/Dropdown';
 
 // Unwraps either axios responses ({data:{success,data}}) or already-unwrapped api helpers.
 const payload = (response) => response?.data?.data ?? response?.data ?? response;
@@ -90,11 +91,11 @@ export function DomainSection({ projectId }) {
           <label className="flex items-center gap-2 text-[11px] text-zinc-600 cursor-pointer">
             <input type="checkbox" checked={includeWww} onChange={(e) => setIncludeWww(e.target.checked)} /> Also connect www
             {includeWww && (
-              <select value={canonical} onChange={(e) => setCanonical(e.target.value)} className="ml-2 rounded border border-zinc-200 px-1.5 py-0.5 text-[11px]" aria-label="Preferred address">
+              <Dropdown value={canonical} onChange={(e) => setCanonical(e.target.value)} className="ml-2 rounded border border-zinc-200 px-1.5 py-0.5 text-[11px]" aria-label="Preferred address">
                 <option value="none">Serve both</option>
                 <option value="apex">Redirect www to the root</option>
                 <option value="www">Redirect the root to www</option>
-              </select>
+              </Dropdown>
             )}
           </label>
           {preflight && (

@@ -25,15 +25,15 @@ exports.createFont = async (req, res, next) => {
   try {
     const { name, family, category, url, source } = req.body;
 
-    if (!name || !name.trim()) {
+    if (typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ success: false, error: 'Font name is required' });
     }
 
     const trimmedName = name.trim();
-    const cleanFamily = family ? family.trim() : `'${trimmedName}', sans-serif`;
+    const cleanFamily = typeof family === 'string' && family.trim() ? family.trim() : `'${trimmedName}', sans-serif`;
 
     const query = {
-      name: { $regex: new RegExp(`^${trimmedName}$`, 'i') }
+      name: { $regex: new RegExp(`^${trimmedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
     };
     if (req.user) {
       query.$or = [{ userId: req.user.id }, { userId: null }];

@@ -26,7 +26,7 @@ const crypto = require('crypto');
 const SUPPORTED_SCHEMA_VERSIONS = [1];
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
-const CATEGORIES = ['Portfolio', 'SaaS', 'Business', 'E-commerce', 'Education', 'Blog', 'Landing Page'];
+const CATEGORIES = ['Portfolio', 'SaaS', 'Business', 'Agency', 'E-commerce', 'Education', 'Healthcare', 'Restaurant', 'Blog', 'Landing Page'];
 const COLOR_KEYS = ['bg', 'surface', 'surface2', 'line', 'fg', 'muted', 'brand', 'onBrand', 'accent'];
 const CSS_VARS = { bg: '--bg', surface: '--surface', surface2: '--surface-2', line: '--line', fg: '--fg', muted: '--muted', brand: '--brand', onBrand: '--on-brand' };
 // Packages a generated project may depend on (the same registry the validation sandbox accepts).
@@ -311,6 +311,22 @@ function loadRegistry({ root = registryRoot, force = false } = {}) {
   return registry;
 }
 
+/**
+ * Reloads the registry from MongoDB/S3 after an admin changed a template (publish, edit, upload, delete). Sites already created keep
+ * their own copy of the files, so a reload never changes an existing website. Not used when templates come from a directory.
+ */
+async function reloadFromDatabase() {
+  if (registryRoot) return false;
+  registry = await loadFromDatabase();
+  return true;
+}
+
+/** Admin only: a loaded template version whatever its status (draft and archived included). Returns null when it is not loaded. */
+function inspectTemplate(id, version) {
+  const entry = loadRegistry().get(id);
+  return entry?.versions.get(version) || null;
+}
+
 /** Test and tooling hook: point the service at another directory (or null to use the default) and reload. */
 function configure({ root = null } = {}) {
   registryRoot = root || process.env.VEAVE_TEMPLATES_DIR || null;
@@ -381,7 +397,7 @@ function listTemplates({ user = null, category = null, q = '', sort = 'featured'
   if (category) items = items.filter((template) => template.category.toLowerCase() === String(category).toLowerCase());
   const needle = String(q || '').trim().toLowerCase();
   if (needle) {
-    items = items.filter((template) => [template.name, template.description, template.category, ...template.tags, ...template.styleTags].join(' ').toLowerCase().includes(needle));
+    items = items.filter((template) => [template.name, template.description, template.category, ...template.tags, ...template.styleTags, ...(template.keywords || [])].join(' ').toLowerCase().includes(needle));
   }
   const sorters = {
     featured: (a, b) => Number(Boolean(b.featured)) - Number(Boolean(a.featured)) || (b.popularity || 0) - (a.popularity || 0) || a.name.localeCompare(b.name),
@@ -815,6 +831,13 @@ module.exports = {
   configure,
   loadRegistry,
   preload,
+  reloadFromDatabase,
+  inspectTemplate,
+  fileEntry,
+  safeRelativePath,
+  compareVersions,
+  ID_PATTERN,
+  VERSION_PATTERN,
   preloadAssets,
   readTemplateDirectory,
   assembleTemplate,

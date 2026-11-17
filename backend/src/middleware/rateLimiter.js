@@ -51,4 +51,34 @@ const uploadLimiter = rateLimit({
   message: { success: false, error: { message: 'Too many uploads, please wait a few minutes and try again.' } }
 });
 
-module.exports = { generalLimiter, authLimiter, aiLimiter, uploadLimiter };
+// The admin API: a generous limit for browsing, a strict one for operations that change money-like data or upload files.
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isDev ? 5000 : 1500,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === 'test',
+  message: { success: false, error: { message: 'Too many admin requests, please slow down.' } }
+});
+
+const adminSensitiveLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isDev ? 500 : 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === 'test',
+  message: { success: false, error: { message: 'Too many sensitive admin operations, please wait a few minutes.' } }
+});
+
+// Payments: starting a checkout or verifying one. Keyed by account, not IP, so shared networks are not punished.
+const paymentLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isDev ? 500 : 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req.user ? `u:${req.user._id}` : `ip:${req.ip}`),
+  skip: () => process.env.NODE_ENV === 'test',
+  message: { success: false, error: { message: 'Too many payment attempts. Please wait a few minutes and try again.' } }
+});
+
+module.exports = { paymentLimiter, generalLimiter, authLimiter, aiLimiter, uploadLimiter, adminLimiter, adminSensitiveLimiter };

@@ -28,6 +28,8 @@ export function useLandingAnimations(rootRef) {
       const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
       intro.from('[data-nav]', { y: -30, opacity: 0, duration: 0.7, clearProps: 'all' });
       intro.from('[data-hero]', { y: 40, opacity: 0, duration: 0.9, stagger: 0.14, clearProps: 'all' }, '-=0.3');
+      // Stretch the whole intro (nav + hero words) to play over 5 seconds
+      intro.totalDuration(5);
 
       // Hero fades and drifts up slightly as the page scrolls away from it
       gsap.to('[data-hero-wrap]', {

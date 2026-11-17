@@ -1177,9 +1177,14 @@ async function crawlUntilCaptured({ holders, queue, startIndex, limit, capturedC
   return next;
 }
 
-async function captureWebsite(sourceUrl, { signal, maxRoutes } = {}) {
+/**
+ * `onlyRoutes` (absolute URLs of the same site) turns the crawl into a targeted scrape: just those routes are captured, no other
+ * links are followed. It is how extra pages are added to a plan that is waiting for approval; the caller merges the result.
+ */
+async function captureWebsite(sourceUrl, { signal, maxRoutes, onlyRoutes = null } = {}) {
   const entryUrl = await validatePublicUrl(sourceUrl);
-  const crawlLimit = resolveRouteLimit(maxRoutes);
+  const targeted = Array.isArray(onlyRoutes) && onlyRoutes.length > 0;
+  const crawlLimit = targeted ? Math.min(onlyRoutes.length, ROUTE_HARD_CAP) : resolveRouteLimit(maxRoutes);
   const crawlStartedAt = Date.now();
   signal?.throwIfAborted();
   const browser = await launchChromium({ browserType: chromium });
@@ -1319,15 +1324,19 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes } = {}) {
     // Discovered but not queued (budget or section cap). They are crawled later if budget remains, else reported.
     const deferredRoutes = new Map();
     const initialOverflow = [];
-    const discoveredRoutes = prioritizeDiscoveredRoutes(allInitialLinks.filter((link) => { const n = normalizeRoute(link.href, origin); return !n || !isBlockedByRobots(n); }), origin, queueCapacity, initialOverflow);
+    const targetedRoutes = targeted
+      ? [...new Set(onlyRoutes.map((route) => normalizeRoute(route, origin)).filter((route) => route && !isBlockedByRobots(route)))]
+      : null;
+    if (targetedRoutes) queueCapacity = targetedRoutes.length;
+    const discoveredRoutes = targetedRoutes ? [] : prioritizeDiscoveredRoutes(allInitialLinks.filter((link) => { const n = normalizeRoute(link.href, origin); return !n || !isBlockedByRobots(n); }), origin, queueCapacity, initialOverflow);
     for (const item of initialOverflow) deferredRoutes.set(item.route, item);
-    const fullRouteQueue = [normalizeRoute(canonicalUrl.href, origin), ...discoveredRoutes.filter((route) => route !== normalizeRoute(canonicalUrl.href, origin))];
+    const fullRouteQueue = targetedRoutes || [normalizeRoute(canonicalUrl.href, origin), ...discoveredRoutes.filter((route) => route !== normalizeRoute(canonicalUrl.href, origin))];
     const routeQueue = fullRouteQueue.slice(0, queueCapacity);
     for (const route of fullRouteQueue.slice(queueCapacity)) deferredRoutes.set(route, { route, reason: 'page-budget', priority: 6 });
     const queuedRoutes = new Set(routeQueue);
     const visitedRoutes = new Set();
     const failedRoutes = new Set();
-    const discoveryMetadata = new Map([[routeQueue[0], { source: 'entry', priority: -1 }]]);
+    const discoveryMetadata = new Map([[routeQueue[0], { source: targetedRoutes ? 'scrape-more' : 'entry', priority: -1 }]]);
     for (const link of allInitialLinks) {
       const normalized = normalizeRoute(link.href, origin);
       if (normalized && !discoveryMetadata.has(normalized)) discoveryMetadata.set(normalized, { source: 'homepage', priority: linkPriority(link), text: link.text });

@@ -3,6 +3,24 @@ import { billingService } from '../services/billingService';
 import { useAuthStore } from './authStore';
 import { loadRazorpayScript } from '../utils/razorpay';
 
+// The customer has already paid when verification runs, so a dropped connection or a server hiccup must not look like a failed payment:
+// retry a few times, and if it still cannot be confirmed say plainly that the purchase will activate by itself (the server also learns of
+// the payment from Razorpay and delivers it).
+const isTransient = (error) => !error.response || error.response.status >= 500 || error.response.status === 429;
+const PENDING_MESSAGE = 'Your payment went through, but we could not confirm it just yet. Your purchase will activate automatically within a few minutes. Please do not pay again.';
+async function verifyWithRetry(call) {
+  let lastError;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try { return await call(); } catch (error) {
+      lastError = error;
+      if (!isTransient(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+    }
+  }
+  lastError.userMessage = PENDING_MESSAGE;
+  throw lastError;
+}
+
 export const useBillingStore = create((set, get) => ({
   overview: null,
   invoices: [],
@@ -114,12 +132,12 @@ export const useBillingStore = create((set, get) => ({
             handler: async (response) => {
               try {
                 // Verify payment on backend
-                const verifyRes = await billingService.verifyPayment({
+                const verifyRes = await verifyWithRetry(() => billingService.verifyPayment({
                   razorpay_order_id: response.razorpay_order_id,
                   razorpay_payment_id: response.razorpay_payment_id,
                   razorpay_signature: response.razorpay_signature,
                   plan: planName,
-                });
+                }));
 
                 const verifiedData = verifyRes.data?.data;
                 if (verifiedData?.user) {
@@ -139,7 +157,7 @@ export const useBillingStore = create((set, get) => ({
 
                 resolve(verifiedData);
               } catch (verifyErr) {
-                const msg = verifyErr.response?.data?.error?.message || 'Payment verification failed';
+                const msg = verifyErr.userMessage || verifyErr.response?.data?.error?.message || 'Payment verification failed';
                 set({ error: msg, isProcessingPayment: false });
                 reject(verifyErr);
               }
@@ -196,11 +214,11 @@ export const useBillingStore = create((set, get) => ({
           },
           handler: async (response) => {
             try {
-              const verifyRes = await billingService.verifyCreditPayment({
+              const verifyRes = await verifyWithRetry(() => billingService.verifyCreditPayment({
                 razorpay_order_id: response.razorpay_order_id,
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_signature: response.razorpay_signature,
-              });
+              }));
               const verified = verifyRes.data?.data;
               if (verified?.user) useAuthStore.getState().setUser(verified.user);
               await get().fetchOverview();
@@ -211,7 +229,7 @@ export const useBillingStore = create((set, get) => ({
               });
               resolve(verified);
             } catch (verifyErr) {
-              const msg = verifyErr.response?.data?.error?.message || 'Payment verification failed';
+              const msg = verifyErr.userMessage || verifyErr.response?.data?.error?.message || 'Payment verification failed';
               set({ error: msg, isProcessingPayment: false });
               reject(verifyErr);
             }

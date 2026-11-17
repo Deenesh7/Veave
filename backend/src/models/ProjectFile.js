@@ -48,6 +48,8 @@ const projectFileSchema = new mongoose.Schema({
   encoding: { type: String, enum: ['utf8', 'base64'], default: 'utf8' },
   blob: { type: mongoose.Schema.Types.Mixed, default: null },
   size: { type: Number, default: 0 },
+  // Fingerprint of everything the mirror stores for this file: an unchanged file is skipped on the next sync.
+  syncHash: { type: String, default: '' },
   isBinary: { type: Boolean, default: false },
   isEntry: { type: Boolean, default: false },
   isConfig: { type: Boolean, default: false },
@@ -67,6 +69,43 @@ const projectFileSchema = new mongoose.Schema({
 
 projectFileSchema.index({ projectId: 1, path: 1 }, { unique: true });
 projectFileSchema.index({ userId: 1, updatedAt: -1 });
+
+const { createHash } = require('node:crypto');
+const fingerprint = (doc, file) => createHash('sha1')
+  .update(`${String(doc.userId || '')}\0${file.encoding || 'utf8'}\0${file.language || ''}\0${file.blob?.sha256 || file.blob?.key || ''}\0`)
+  .update(String(file.content || ''))
+  .digest('hex');
+
+/**
+ * Brings the mirror in line with `project.files`, writing ONLY the files that changed. Saving a 400-file project used to rewrite all
+ * 400 documents (with their full content) every time; now an edit of one file writes one document.
+ */
+projectFileSchema.statics.mirrorProject = async function mirrorProject(project) {
+  const files = (project.files || []).filter((file) => file && file.path);
+  const paths = files.map((file) => file.path);
+  await this.deleteMany({ projectId: project._id, path: { $nin: paths } });
+  if (!paths.length) return 0;
+  const known = new Map((await this.find({ projectId: project._id }).select('path syncHash').lean()).map((row) => [row.path, row.syncHash]));
+  const ops = [];
+  for (const file of files) {
+    const hash = fingerprint(project, file);
+    if (known.get(file.path) === hash) continue;
+    ops.push({
+      updateOne: {
+        filter: { projectId: project._id, path: file.path },
+        update: { $set: {
+          projectId: project._id, userId: project.userId || null, path: file.path, content: String(file.content || ''), language: file.language || undefined,
+          encoding: file.encoding || 'utf8', blob: file.blob || null,
+          size: file.blob?.size ?? Buffer.byteLength(file.content || '', file.encoding === 'base64' ? 'base64' : 'utf8'),
+          isBinary: file.encoding === 'base64', syncHash: hash
+        } },
+        upsert: true
+      }
+    });
+  }
+  if (ops.length) await this.bulkWrite(ops, { ordered: false });
+  return ops.length;
+};
 
 projectFileSchema.pre('save', function(next) {
   this.size = this.encoding === 'base64' ? Buffer.byteLength(this.content || '', 'base64') : Buffer.byteLength(this.content || '', 'utf8');

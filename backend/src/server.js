@@ -14,6 +14,9 @@ let server;
 
 const startServer = async () => {
   await connectDB();
+  require('./utils/perfMonitor').startEventLoopMonitor();
+  require('./services/billing/paymentService').startReconciler();
+  await require('./utils/perfMonitor').enableMongoProfiler();
 
   // Templates live in MongoDB (text) and S3 (images), not in the backend source: load them before any request needs one.
   try {
@@ -22,6 +25,15 @@ const startServer = async () => {
     logger.info(`Loaded ${loaded} template version(s) from the database.`);
     for (const problem of templateService.loadRegistry().problems || []) logger.error(`Template ${problem.id}@${problem.version} not loaded: ${problem.message}`);
   } catch (error) { logger.error(`Templates could not be loaded: ${error.message}`); }
+
+  // Admin dashboard: accounts listed in ADMIN_EMAILS get the ADMIN role, saved plan overrides are applied, and the background checks start.
+  try {
+    // One root administrator (see services/admin/rootAdminService). ADMIN_EMAILS only bootstraps a database that has no administrator yet.
+    await require('./services/admin/rootAdminService').ensureRootAdmin();
+    await require('./services/admin/creditLedgerService').reconcileBalances();
+    await require('./services/admin/planAdminService').loadOverrides();
+    require('./services/admin/scheduler').start();
+  } catch (error) { logger.warn(`Admin setup skipped: ${error.message}`); }
 
   try {
     const recoveredDeployments = await require('./services/hosting/deploymentService').recoverInterruptedDeployments();

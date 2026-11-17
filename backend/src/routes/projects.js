@@ -16,9 +16,19 @@ router.get('/:id/revision', projectController.getProjectRevision);
 router.patch('/:id', projectController.updateProject);
 router.delete('/:id', projectController.deleteProject);
 
+// Project card menu actions. Every one resolves access from the authenticated user and the stored project.
+const requireLogin = (req, res, next) => (req.user
+  ? next()
+  : res.status(401).json({ success: false, error: { message: 'Log in to manage projects.', statusCode: 401 } }));
+router.get('/:id/info', requireLogin, projectController.getProjectInfo);
+router.post('/:id/duplicate', requireLogin, projectController.duplicateProject);
+router.post('/:id/transfer', requireLogin, projectController.transferProject);
+
 router.get('/:id/preview', previewController.getPrecompiledPreview);
 router.get('/:id/files', projectController.getProjectFiles);
 router.patch('/:id/files', projectController.updateProjectFile);
+router.get('/:id/theme', projectController.getProjectTheme);
+router.post('/:id/theme', projectController.applyProjectTheme);
 router.get('/:id/source', projectController.getProjectSource);
 router.get('/:id/export', projectController.exportProject);
 

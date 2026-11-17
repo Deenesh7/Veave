@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Globe, MoreVertical, ExternalLink, Trash2, Copy, Sparkles, Code2, Share2 } from 'lucide-react';
+import { ExternalLink, Copy, Sparkles, Code2, Share2 } from 'lucide-react';
 import { formatDate } from '../../utils/helpers';
 import { ShareModal } from '../../features/share/ShareModal';
+import { ProjectActionsMenu } from '../../features/projects/ProjectActions';
 
-export default function ProjectCard({ project, viewMode = 'grid', onDelete }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+export default function ProjectCard({ project, viewMode = 'grid' }) {
   const [shareOpen, setShareOpen] = useState(false);
   const navigate = useNavigate();
 
@@ -29,6 +29,13 @@ export default function ProjectCard({ project, viewMode = 'grid', onDelete }) {
       navigate(`/editor/${id}?mode=visual`);
     }
   };
+
+  // Existing quick actions stay at the top of the menu; the project management actions follow them.
+  const menuItems = [
+    { label: 'Open in Editor', icon: ExternalLink, onClick: () => handleOpenEditor() },
+    { label: 'Share', icon: Share2, onClick: () => setShareOpen(true) },
+    { label: 'Copy Link', icon: Copy, onClick: () => navigator.clipboard?.writeText(`${window.location.origin}/editor/${id}`) },
+  ];
 
   // List View Layout
   if (viewMode === 'list') {
@@ -70,7 +77,9 @@ export default function ProjectCard({ project, viewMode = 'grid', onDelete }) {
           >
             <ExternalLink className="w-3.5 h-3.5" />
           </button>
+          <ProjectActionsMenu project={project} extraItems={menuItems} />
         </div>
+        <ShareModal isOpen={shareOpen} onClose={() => setShareOpen(false)} project={project} />
       </div>
     );
   }
@@ -95,69 +104,7 @@ export default function ProjectCard({ project, viewMode = 'grid', onDelete }) {
         </div>
 
         {/* Context Options Button */}
-        <div className="relative shrink-0">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setMenuOpen(!menuOpen);
-            }}
-            aria-label="Project actions"
-            className="p-1 -mr-1 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
-          >
-            <MoreVertical className="w-4 h-4" />
-          </button>
-
-          {menuOpen && (
-            <div 
-              onClick={(e) => e.stopPropagation()}
-              className="absolute right-0 top-full mt-1 w-36 bg-white rounded-xl border border-[#E2E5E8] shadow-xl py-1 z-40 animate-in fade-in zoom-in-95 duration-100 text-xs"
-            >
-              <button
-                onClick={(e) => {
-                  setMenuOpen(false);
-                  handleOpenEditor(e);
-                }}
-                className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-zinc-700 hover:bg-zinc-50"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Open in Editor</span>
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMenuOpen(false);
-                  setShareOpen(true);
-                }}
-                className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-zinc-700 hover:bg-zinc-50"
-              >
-                <Share2 className="w-3.5 h-3.5" />
-                <span>Share</span>
-              </button>
-              <button
-                onClick={() => {
-                  setMenuOpen(false);
-                  navigator.clipboard?.writeText(`${window.location.origin}/editor/${id}`);
-                }}
-                className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-zinc-700 hover:bg-zinc-50"
-              >
-                <Copy className="w-3.5 h-3.5" />
-                <span>Copy Link</span>
-              </button>
-              {onDelete && id && (
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onDelete(id);
-                  }}
-                  className="w-full px-3 py-1.5 text-left flex items-center gap-2 text-red-600 hover:bg-red-50"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Delete</span>
-                </button>
-              )}
-            </div>
-          )}
-        </div>
+        <ProjectActionsMenu project={project} extraItems={menuItems} className="shrink-0 -mr-1" />
       </div>
 
       {/* Footer */}

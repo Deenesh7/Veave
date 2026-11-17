@@ -4,6 +4,7 @@ import { Trash2, UsersRound, User, Lock, Link2, Check } from 'lucide-react';
 import { collaborationService as svc, apiErrorMessage } from '../../services/collaborationService';
 import { useCollabStore } from '../../store/collabStore';
 import { Btn, Notice, Spinner, RoleBadge, ConfirmDialog, useFlash, inputClass } from './ui';
+import Dropdown from '../../components/ui/Dropdown';
 
 const PERMISSION_HELP = {
   viewer: 'Can view the project but not change it.',
@@ -112,18 +113,18 @@ export default function ProjectSharingPanel({ project }) {
                 {adminGroups.length === 0 ? <>You are not an admin of any group. <Link to="/groups" className="underline font-semibold">Create or manage groups</Link>.</> : 'This project is already shared with all of your groups.'}
               </p>
             ) : (
-              <select aria-label="Group" className={`${inputClass} flex-1 min-w-[160px]`} value={groupId} onChange={(e) => setGroupId(e.target.value)}>
+              <Dropdown aria-label="Group" className={`${inputClass} flex-1 min-w-[160px]`} value={groupId} onChange={(e) => setGroupId(e.target.value)}>
                 {available.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-              </select>
+              </Dropdown>
             )
           ) : (
             <input aria-label="Email" type="email" required className={`${inputClass} flex-1 min-w-[160px]`} placeholder="registered user's email" value={email} onChange={(e) => setEmail(e.target.value)} />
           )}
-          <select aria-label="Permission" className={`${inputClass} w-28`} value={permission} onChange={(e) => setPermission(e.target.value)}>
+          <Dropdown aria-label="Permission" className={`${inputClass} w-28`} value={permission} onChange={(e) => setPermission(e.target.value)}>
             <option value="viewer">Viewer</option>
             <option value="editor">Editor</option>
             {isOwner && <option value="admin">Admin</option>}
-          </select>
+          </Dropdown>
           <Btn type="submit" loading={busy} disabled={mode === 'group' ? !groupId : !email}>Share</Btn>
         </div>
         <p className="text-[10px] text-zinc-500">{PERMISSION_HELP[permission]}</p>
@@ -148,11 +149,11 @@ export default function ProjectSharingPanel({ project }) {
                   <div className="min-w-0"><p className="text-xs font-semibold truncate">{share.group ? share.group.name : share.user?.name}</p><p className="text-[10px] text-zinc-500 truncate">{share.group ? 'Group' : share.user?.email}</p></div>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <select aria-label="Access level" disabled={locked} className="text-[11px] rounded-lg border border-[#E2E5E8] bg-white px-1.5 py-1 disabled:opacity-60" value={share.permission} onChange={(e) => changePermission(share, e.target.value)}>
+                  <Dropdown aria-label="Access level" disabled={locked} className="text-[11px] rounded-lg border border-[#E2E5E8] bg-white px-1.5 py-1 disabled:opacity-60" value={share.permission} onChange={(e) => changePermission(share, e.target.value)}>
                     <option value="viewer">Viewer</option>
                     <option value="editor">Editor</option>
                     {(isOwner || share.permission === 'admin') && <option value="admin">Admin</option>}
-                  </select>
+                  </Dropdown>
                   <button type="button" disabled={locked} onClick={() => setRemoving(share)} aria-label="Remove access" className="p-1.5 rounded-lg text-zinc-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-40"><Trash2 className="w-3.5 h-3.5" /></button>
                 </div>
               </li>

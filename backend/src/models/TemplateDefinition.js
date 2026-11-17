@@ -13,7 +13,10 @@ const templateDefinitionSchema = new mongoose.Schema({
   // Scaffold images, paths relative to the scaffold root (e.g. public/images/hero.svg); content lives in S3.
   assets: [{ _id: false, path: { type: String, required: true }, blob: { type: blobSchema, required: true } }],
   preview: { type: new mongoose.Schema({ blob: { type: blobSchema, required: true } }, { _id: false }), required: true },
-  contentHash: { type: String, default: '' }
+  contentHash: { type: String, default: '' },
+  // Admin-uploaded thumbnail and preview pictures (PNG/JPEG/WebP bytes in S3). Shown in the admin dashboard.
+  gallery: [{ _id: false, kind: { type: String, enum: ['thumbnail', 'preview'], default: 'preview' }, name: { type: String, default: '' }, contentType: { type: String, default: 'image/png' }, blob: { type: blobSchema, required: true } }],
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { timestamps: true, collection: 'templatedefinitions' });
 
 templateDefinitionSchema.index({ templateId: 1, version: 1 }, { unique: true });

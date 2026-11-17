@@ -43,7 +43,12 @@ const generateTokens = (userId) => {
   return { accessToken, refreshToken };
 };
 
+const suspendedBody = { success: false, error: { message: 'This account has been suspended. Contact support.', statusCode: 403, code: 'ACCOUNT_SUSPENDED' } };
+
 const sendAuthResponse = (res, user, statusCode = 200) => {
+  if (user.status === 'suspended') return res.status(403).json(suspendedBody);
+  User.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date(), lastActiveAt: new Date() } }).catch(() => {});
+  if (user.role === 'ADMIN') require('../services/admin/auditService').record(user, 'ADMIN_LOGIN', { resourceType: 'user', resourceId: user._id });
   const { accessToken, refreshToken } = generateTokens(user._id);
 
   res.cookie('token', accessToken, {
@@ -75,8 +80,11 @@ exports.register = async (req, res, next) => {
       throw new ValidationError('Email already in use');
     }
 
+    const settings = require('../services/admin/settingsService');
+    if (!(await settings.get('platform')).registrationOpen) throw new ValidationError('New registrations are closed right now.');
     const user = await User.create({ name, email, password });
-    return sendAuthResponse(res, user, 201);
+    await require('../services/admin/newUserService').onUserCreated(user);
+    return sendAuthResponse(res, await User.findById(user._id), 201);
   } catch (error) {
     next(error);
   }
@@ -112,6 +120,7 @@ exports.login = async (req, res, next) => {
 
 exports.logout = async (req, res, next) => {
   try {
+    if (req.user?.role === 'ADMIN') require('../services/admin/auditService').record(req.user, 'ADMIN_LOGOUT', { resourceType: 'user', resourceId: req.user._id });
     res.cookie('token', 'none', {
       expires: new Date(Date.now() + 10 * 1000),
       httpOnly: true
@@ -130,7 +139,11 @@ exports.getProfile = async (req, res, next) => {
       ? await User.findById(req.user._id || req.user.id).select('-password')
       : null;
     if (!user) throw new AuthError('Not authenticated');
-    res.status(200).json({ success: true, data: user });
+    // The balance is always what the billing page and the admin portal show (subscription.creditsRemaining first).
+    const data = user.toObject();
+    data.credits = require('../services/admin/creditLedgerService').balanceOf(data);
+    res.set('Cache-Control', 'no-store');
+    res.status(200).json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -204,6 +217,9 @@ exports.googleAuthCallback = async (req, res, next) => {
       avatar: googleProfile.avatar
     });
 
+    if (user.status === 'suspended') return res.redirect(`${clientUrl}/login?error=${encodeURIComponent(suspendedBody.error.message)}`);
+    User.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date(), lastActiveAt: new Date() } }).catch(() => {});
+    if (user.role === 'ADMIN') require('../services/admin/auditService').record(user, 'ADMIN_LOGIN', { resourceType: 'user', resourceId: user._id });
     // Generate token and redirect to frontend
     const { accessToken } = generateTokens(user._id);
 

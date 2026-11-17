@@ -48,6 +48,18 @@ const paymentSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  paidAt: { type: Date, default: null },
+  // Where the confirmation came from: the browser's verify call, Razorpay's webhook, or the background reconciler.
+  source: { type: String, enum: ['checkout', 'webhook', 'reconcile'], default: undefined },
+  // Delivery of what was bought. 'pending' -> 'applying' -> 'done'. Rows paid before this field existed have none and are never touched.
+  fulfillment: { type: String, enum: ['pending', 'applying', 'done'], default: undefined },
+  fulfillStartedAt: { type: Date, default: null },
+  fulfilledAt: { type: Date, default: null },
+  fulfillError: { type: String, default: '' },
 });
+
+// One Razorpay payment can belong to one order only, and the reconciler looks up stuck rows by state.
+paymentSchema.index({ razorpayPaymentId: 1 }, { name: 'razorpayPaymentId_unique', unique: true, partialFilterExpression: { razorpayPaymentId: { $type: 'string' } } });
+paymentSchema.index({ status: 1, fulfillment: 1 });
 
 module.exports = mongoose.model('Payment', paymentSchema);

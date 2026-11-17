@@ -24,6 +24,19 @@ const userSchema = new mongoose.Schema({
   // Test/internal accounts: generation is never blocked or charged for credits or monthly tokens.
   creditsExempt: { type: Boolean, default: false },
   subscription: { type: subscriptionSchema, default: () => ({}) },
+  // Ids of the payments already delivered to this account: makes delivery idempotent (see services/billing/paymentService).
+  appliedPayments: { type: [String], default: undefined, select: false },
+  // Account role: ADMIN can use the admin dashboard (/api/admin). Everyone else is USER.
+  role: { type: String, enum: ['USER', 'ADMIN'], default: 'USER', index: true },
+  // The one root administrator. Only the root can create or remove other administrators, and nobody can demote, suspend or delete the root
+  // through the API. It is set only by services/admin/rootAdminService (server start) or the command-line scripts, never from a request.
+  isRootAdmin: { type: Boolean, default: false },
+  // A suspended account cannot sign in or use the API until an admin restores it.
+  status: { type: String, enum: ['active', 'suspended'], default: 'active', index: true },
+  suspendedAt: { type: Date, default: null },
+  suspensionReason: { type: String, default: '' },
+  lastActiveAt: { type: Date, default: null },
+  lastLoginAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -46,5 +59,8 @@ userSchema.set('toJSON', {
     return ret;
   }
 });
+
+// At most one root administrator can exist: the database itself refuses a second one.
+userSchema.index({ isRootAdmin: 1 }, { unique: true, partialFilterExpression: { isRootAdmin: true } });
 
 module.exports = mongoose.model('User', userSchema);

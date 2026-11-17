@@ -76,6 +76,52 @@ async function loadSource(projectId) {
   return { updatedAt: project.updatedAt, files: [...text, ...binary] };
 }
 
+/**
+ * The compiled page goes to S3 (content-addressed: identical output is stored once) and the database keeps only the reference.
+ * Without S3, or if the upload fails, it stays in the document exactly as before.
+ */
+async function storeHtml(html) {
+  const storage = require('../storage/s3BlobStorage');
+  if (storage.isConfigured()) {
+    try { return { html: '', htmlBlob: await storage.uploadFile({ path: 'preview/index.html', content: html, encoding: 'utf8' }) }; }
+    catch (error) { logger.warn(`Compiled preview could not be stored in S3, keeping it in the database: ${error.message}`); }
+  }
+  return { html, htmlBlob: null };
+}
+
+/** The compiled HTML of a stored preview, wherever it is kept. */
+async function htmlOf(doc) {
+  if (!doc) return '';
+  if (doc.html) return doc.html;
+  if (doc.htmlBlob?.provider === 's3') return (await require('../storage/s3BlobStorage').hydrateFile({ blob: doc.htmlBlob, content: '', encoding: 'utf8' })).content;
+  return '';
+}
+
+/**
+ * Checks the compiled page against the project's own files: every picture/font path the page mentions under one of the project's public
+ * folders must exist. A path that does not exist is a picture that will be missing on screen, so it is recorded (and logged) at compile
+ * time instead of being discovered by a visitor. Returns { checked, missingCount, missing[] }.
+ */
+const MEDIA_REF = /(?<![\w:/.%@-])\/((?:[\w.@%+-]+\/)+[\w.@%+-]+\.(?:png|jpe?g|webp|gif|svg|avif|ico|woff2?|ttf|otf|mp4|webm))(?![\w-])/gi;
+function validateCompiledAssets(html, files = []) {
+  const have = new Set();
+  const folders = new Set();
+  for (const file of files) {
+    if (!file?.path?.startsWith('public/')) continue;
+    const rest = file.path.slice('public/'.length);
+    have.add(`/${rest}`);
+    if (rest.includes('/')) folders.add(rest.split('/')[0]);
+  }
+  const seen = new Set();
+  // The page refers to its own pictures as `${placeholder}/assets/...`: take the placeholder off so they are checked like plain paths.
+  for (const match of String(html).split(ASSET_BASE_PLACEHOLDER).join('').matchAll(MEDIA_REF)) {
+    const ref = `/${match[1]}`;
+    if (folders.has(match[1].split('/')[0])) seen.add(ref.split('?')[0]);
+  }
+  const missing = [...seen].filter((ref) => !have.has(ref));
+  return { checked: seen.size, missingCount: missing.length, missing: missing.slice(0, 50) };
+}
+
 async function compileProject(projectId) {
   const source = await loadSource(projectId);
   if (!source) return null;
@@ -93,18 +139,19 @@ async function compileProject(projectId) {
   try {
     const html = await runCompileWorker(compileFiles, { assetBase: ASSET_BASE_PLACEHOLDER, sourceMaps: false });
     const bytes = Buffer.byteLength(html, 'utf8');
-    // Public binary files the document actually references (listed in the asset shim / rewritten in CSS).
+    // Every public picture/font of the project may be served to this preview (binary files, and text SVGs, under public/). It used to
+    // be only those whose path appeared literally in the page, which left out pictures named only in JSON data or built at run time.
     const assetPaths = source.files
-      // Binary files, and text SVGs (templates ship their pictures as SVG text), under public/.
       .filter((file) => (file.encoding === 'base64' || /\.svg$/i.test(file.path)) && file.path.startsWith('public/'))
-      .map((file) => `/${file.path.slice('public/'.length)}`)
-      .filter((publicPath) => html.includes(publicPath));
+      .map((file) => `/${file.path.slice('public/'.length)}`);
+    const assetReport = validateCompiledAssets(html, source.files);
+    if (assetReport.missingCount) logger.warn(`Compiled preview of project ${projectId} points at ${assetReport.missingCount} file(s) that do not exist, for example ${assetReport.missing.slice(0, 3).join(', ')}.`);
     fields = bytes > MAX_HTML_BYTES
-      ? { status: 'skipped', html: '', bytes, error: `Compiled preview is ${Math.round(bytes / 1048576)} MB; the editor will compile it in the browser instead.` }
-      : { status: 'ready', html, bytes, error: '' , assetPaths };
+      ? { status: 'skipped', html: '', htmlBlob: null, bytes, error: `Compiled preview is ${Math.round(bytes / 1048576)} MB; the editor will compile it in the browser instead.` }
+      : { status: 'ready', ...(await storeHtml(html)), bytes, error: '' , assetPaths, assetReport };
   } catch (error) {
     // A source error (e.g. a syntax error) is not a hosting failure: remember it and let the editor show the live error.
-    fields = { status: 'failed', html: '', bytes: 0, error: String(error.message).slice(0, 2000) };
+    fields = { status: 'failed', html: '', htmlBlob: null, bytes: 0, error: String(error.message).slice(0, 2000) };
   }
   const doc = await PrecompiledPreview.findOneAndUpdate(
     { projectId },
@@ -160,8 +207,15 @@ async function compileFilesPreview(projectId, files = []) {
 }
 
 /** Returns an up-to-date stored preview, compiling it first if the source changed. Concurrent callers share one compile. */
-async function ensurePrecompiled(projectId) {
+async function ensurePrecompiled(projectId, { light = false } = {}) {
   const key = String(projectId);
+  if (light && !inFlight.has(key)) {
+    // Callers that only need the token (the editor view) never load the stored HTML (1-4 MB): just check it is current.
+    const stamp = await Project.findById(key).select('updatedAt').lean();
+    if (!stamp) return null;
+    const fresh = await PrecompiledPreview.findOne({ projectId: key }).select('token status compilerVersion sourceUpdatedAt').lean();
+    if (fresh && fresh.status !== 'failed' && fresh.compilerVersion === COMPILER_VERSION && sameRevision(fresh.sourceUpdatedAt, stamp.updatedAt)) return fresh;
+  }
   if (scheduled.has(key)) { clearTimeout(scheduled.get(key)); scheduled.delete(key); }
   if (!inFlight.has(key)) {
     // Fast path: the stored preview was built from the project's current revision, nothing to load or hash.
@@ -197,17 +251,31 @@ const MIME = {
   css: 'text/css; charset=utf-8', txt: 'text/plain; charset=utf-8'
 };
 
-/** One public asset of a project, found by the preview's capability token. */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * One public asset of a project, found by the preview's capability token. Returns null only when the file really does not exist;
+ * a storage hiccup is retried and then thrown (the route answers 503 so the browser can try again), never reported as "not found".
+ */
 async function readPreviewAsset(token, assetPath) {
   if (!/^[a-f0-9]{48}$/.test(String(token))) return null;
   const clean = String(assetPath || '').replace(/^\/+/, '');
   if (!clean || clean.split('/').some((part) => !part || part === '.' || part === '..') || /[\\\0]/.test(clean)) return null;
   const preview = await PrecompiledPreview.findOne({ token }).select('projectId assetPaths').lean();
-  if (!preview || !preview.assetPaths.includes(`/${clean}`)) return null; // only files the compiled preview actually references
+  if (!preview) return null;
+  // Only files under public/ are ever served. A file the compiled page did not list (added since, or named only in data) is still served
+  // if it exists: the token is the access check, and everything under public/ is the site's public content anyway.
   const project = await Project.findOne({ _id: preview.projectId, 'files.path': `public/${clean}` }, { 'files.$': 1 }).lean();
   const stored = project?.files?.[0];
   if (!stored) return null;
-  const file = await hydrateFile(stored);
+  if (!preview.assetPaths.includes(`/${clean}`)) await PrecompiledPreview.updateOne({ _id: preview._id }, { $addToSet: { assetPaths: `/${clean}` } }).catch(() => {});
+  let file;
+  for (let attempt = 0; ; attempt += 1) {
+    try { file = await hydrateFile(stored); break; } catch (error) {
+      if (attempt >= 2) throw Object.assign(new Error(`The picture ${clean} could not be read from storage.`), { statusCode: 503, transient: true, cause: error });
+      await sleep(150 * (attempt + 1));
+    }
+  }
   const buffer = file.encoding === 'base64' ? Buffer.from(file.content || '', 'base64') : Buffer.from(file.content || '', 'utf8');
   const extension = clean.split('.').pop().toLowerCase();
   return { buffer, contentType: MIME[extension] || require('../storage/s3BlobStorage').contentTypeForPath(clean) };
@@ -216,4 +284,4 @@ async function readPreviewAsset(token, assetPath) {
 /** Compiles a template's own files (no project, nothing saved) for the New Site preview. */
 const compileTemplateFiles = (files) => runCompileWorker(files.map((file) => ({ path: file.path, content: file.content || '', language: file.language })), { assetBase: ASSET_BASE_PLACEHOLDER, sourceMaps: false });
 
-module.exports = { compileTemplateFiles, compileFilesPreview, compileWithOverrides, ensurePrecompiled, schedulePrecompile, previewSourceHash, readPreviewAsset, ASSET_BASE_PLACEHOLDER };
+module.exports = { validateCompiledAssets, htmlOf, compileTemplateFiles, compileFilesPreview, compileWithOverrides, ensurePrecompiled, schedulePrecompile, previewSourceHash, readPreviewAsset, ASSET_BASE_PLACEHOLDER };

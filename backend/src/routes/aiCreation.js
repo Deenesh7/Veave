@@ -37,6 +37,7 @@ router.post('/slide-deck', requireAccount, aiCreationController.generateSlideDec
 router.post('/jobs/start', aiLimiter, requireAccount, aiCreationController.startJob);
 router.get('/jobs/active', aiCreationController.getActiveJob);
 router.get('/jobs/:jobId', aiCreationController.getJobStatus);
+router.post('/jobs/:jobId/plan/scrape', aiCreationController.scrapeMorePlanPages);
 router.post('/jobs/:jobId/decision', aiCreationController.decidePlan);
 router.post('/jobs/:jobId/cancel', aiCreationController.cancelJob);
 

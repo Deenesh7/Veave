@@ -18,11 +18,16 @@ const MIN_SIDE = 16;
 // Vector and icon files are refused: only real photographs and raster graphics.
 const ALLOWED = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
 const MAX_ATTACHMENTS = 8;
-const PLACEMENTS = ['hero', 'about', 'gallery', 'project', 'background', 'section'];
+const PLACEMENTS = ['hero', 'about', 'gallery', 'project', 'background', 'page-background', 'section'];
 const UPLOAD_NAME = /^uploaded-/;
 
 async function dimensions(buffer) {
-  try { const meta = await require('sharp')(buffer).metadata(); return { width: meta.width || 0, height: meta.height || 0 }; } catch { return null; }
+  try {
+    const meta = await require('sharp')(buffer).metadata();
+    // Phone photos are often stored sideways with an EXIF rotation: report the size people actually see.
+    const sideways = meta.orientation >= 5;
+    return { width: (sideways ? meta.height : meta.width) || 0, height: (sideways ? meta.width : meta.height) || 0 };
+  } catch { return null; }
 }
 
 const toPublic = (projectPath) => `/${String(projectPath).slice('public/'.length)}`;
@@ -124,7 +129,11 @@ async function addUpload({ user, siteId, buffer, originalName = 'photo', pageId 
 }
 
 const cleanPlacement = (value) => {
-  const text = String(value ?? '').trim().toLowerCase();
+  const raw = String(value ?? '').trim();
+  // A named section of the page (chosen from the page's own section list): "section:<name>".
+  const named = /^section:(.+)$/i.exec(raw);
+  if (named) { const name = named[1].replace(/\s+/g, ' ').trim().slice(0, 80); return name ? `section:${name}` : ''; }
+  const text = raw.toLowerCase();
   return PLACEMENTS.includes(text) ? text : '';
 };
 

@@ -5,6 +5,7 @@ import {
   Layout, PaintBucket, ShieldCheck
 } from 'lucide-react';
 import promptEngineService from '../services/promptEngineService';
+import Dropdown from '../components/ui/Dropdown';
 
 /**
  * VEAVE Prompt Engine page
@@ -297,7 +298,7 @@ function Select({ icon, value, onChange, options, label }) {
     <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[#E5E7EB] bg-white hover:bg-zinc-50 text-xs font-medium text-[#374151] cursor-pointer">
       {icon}
       <span className="sr-only">{label}</span>
-      <select
+      <Dropdown
         value={value}
         onChange={e => onChange(e.target.value)}
         className="bg-transparent focus:outline-none pr-1 cursor-pointer"
@@ -307,7 +308,7 @@ function Select({ icon, value, onChange, options, label }) {
             {o.label}{o.hint ? ` — ${o.hint}` : ''}
           </option>
         ))}
-      </select>
+      </Dropdown>
     </label>
   );
 }

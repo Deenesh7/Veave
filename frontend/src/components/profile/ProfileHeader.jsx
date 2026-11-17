@@ -4,7 +4,6 @@ import { UserAvatar } from './UserAvatar';
 export function ProfileHeader({ user }) {
   const name = user?.name || 'User Profile';
   const email = user?.email || '';
-  const userId = user?._id || user?.id || '';
   const avatar = user?.avatar || '';
 
   return (
@@ -18,14 +17,6 @@ export function ProfileHeader({ user }) {
           <h4 className="text-sm font-bold text-[#111827] truncate leading-tight tracking-tight">
             {name}
           </h4>
-          {userId && (
-            <span
-              className="text-[10px] font-mono text-zinc-400 shrink-0 bg-zinc-100/80 px-1.5 py-0.5 rounded border border-zinc-200/60"
-              title={`Database User ID: ${userId}`}
-            >
-              #{userId.slice(-6)}
-            </span>
-          )}
         </div>
 
         {email && (

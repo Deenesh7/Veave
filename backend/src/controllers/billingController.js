@@ -3,32 +3,16 @@ const Razorpay = require('razorpay');
 const User = require('../models/User');
 const AIUsage = require('../models/AIUsage');
 const Payment = require('../models/Payment');
+const logger = require('../utils/logger');
 
 const { PLAN_LIMITS, imageEnhanceCredits, limitsFor, resolvePlanName, CREDIT_PRICE_INR, MIN_CREDIT_PURCHASE, MAX_CREDIT_PURCHASE, canBuyExtraCredits, TOKENS_PER_CREDIT } = require('../services/billing/plans');
 const { getProjectUsage } = require('../services/billing/usageService');
 
-// Initialize Razorpay instance
-let razorpayInstance = null;
-const isRazorpayConfigured = () => {
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
-  return (
-    keyId &&
-    keySecret &&
-    keyId !== 'rzp_test_YourKeyIdHere' &&
-    keySecret !== 'YourSecretHere'
-  );
-};
-
-const getRazorpayInstance = () => {
-  if (!razorpayInstance && isRazorpayConfigured()) {
-    razorpayInstance = new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_KEY_SECRET,
-    });
-  }
-  return razorpayInstance;
-};
+const razorpay = require('../services/billing/razorpayClient');
+const payments = require('../services/billing/paymentService');
+const isRazorpayConfigured = razorpay.isConfigured;
+const getRazorpayInstance = razorpay.client;
+const receiptId = (prefix) => `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 
 /**
  * GET /api/billing
@@ -54,7 +38,7 @@ exports.getOverview = async (req, res, next) => {
 
     if (periodEnd && periodEnd > now) {
       periodStart = new Date(periodEnd);
-      periodStart.setDate(periodStart.getDate() - 30);
+      periodStart.setMonth(periodStart.getMonth() - 1);
     } else {
       periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
       periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
@@ -174,23 +158,31 @@ exports.changePlan = async (req, res, next) => {
         error: { message: `${plan} requires payment. Use the checkout to upgrade.` },
       });
     }
+    const balanceBefore = await User.findById(userId).select('credits plan subscription').lean();
+    if (!balanceBefore) return res.status(404).json({ success: false, error: { message: 'User not found' } });
+    // Choosing the plan you are already on changes nothing. (It used to refill the credits every time, so anyone could top up for free.)
+    if (resolvePlanName(balanceBefore.plan) === plan) {
+      return res.status(200).json({ success: true, data: { user: await User.findById(userId), plan: { name: plan, price: limits.price, credits: limits.credits, monthlyTokens: limits.monthlyTokens, storageBytes: limits.storageBytes, maxProjects: limits.maxProjects }, message: `You are already on ${plan}.` } });
+    }
     const renewsAt = new Date();
-    renewsAt.setDate(renewsAt.getDate() + 30);
-
+    renewsAt.setMonth(renewsAt.getMonth() + 1);
+    // Moving down to a plan with a smaller allowance never hands out new credits: the balance is capped, not refilled.
+    const kept = Math.min(Number(balanceBefore.subscription?.creditsRemaining ?? balanceBefore.credits ?? 0), limits.credits);
     const updatedUser = await User.findByIdAndUpdate(
       userId,
       {
         plan: plan,
-        credits: limits.credits,
+        credits: kept,
         'subscription.tier': plan,
         'subscription.status': 'active',
         'subscription.creditsAllocated': limits.credits,
-        'subscription.creditsRemaining': limits.credits,
+        'subscription.creditsRemaining': kept,
         'subscription.bonusCredits': 0,
         'subscription.renewsAt': renewsAt,
       },
       { new: true }
     );
+    if (updatedUser && balanceBefore) await require('../services/admin/creditLedgerService').recordApplied({ userId, previousBalance: require('../services/admin/creditLedgerService').balanceOf(balanceBefore), newBalance: require('../services/admin/creditLedgerService').balanceOf(updatedUser), type: 'CREDIT_ADJUSTMENT', reason: `Plan changed to ${plan}` });
 
     if (!updatedUser) {
       return res.status(404).json({ success: false, error: { message: 'User not found' } });
@@ -246,7 +238,7 @@ exports.createOrder = async (req, res, next) => {
     }
 
     const amountInPaise = Math.round(limits.price * 100);
-    const receipt = `rcpt_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const receipt = receiptId('rcpt');
 
     const rzp = getRazorpayInstance();
     if (!rzp) {
@@ -310,112 +302,37 @@ exports.createOrder = async (req, res, next) => {
 
 /**
  * POST /api/billing/verify-payment
- * Verifies Razorpay signature and activates subscription
+ * Verifies the checkout signature, then delivers the plan. Always safe to repeat: a second call returns the same success.
  */
 exports.verifyPayment = async (req, res, next) => {
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, plan } = req.body;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, plan } = req.body || {};
     const userId = req.user._id;
-
-    if (!razorpay_order_id || !plan || !PLAN_LIMITS[plan]) {
-      return res.status(400).json({
-        success: false,
-        error: { message: 'Missing order_id or invalid plan' },
-      });
+    if (typeof razorpay_order_id !== 'string' || typeof razorpay_payment_id !== 'string' || typeof razorpay_signature !== 'string' || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ success: false, error: { message: 'Missing payment details for verification' } });
     }
-    if (!isRazorpayConfigured()) {
-      return res.status(503).json({ success: false, error: { message: 'Payments are not configured on this server.' } });
-    }
-    if (!razorpay_payment_id || !razorpay_signature) {
-      return res.status(400).json({
-        success: false,
-        error: { message: 'Missing payment_id or signature for verification' },
-      });
-    }
+    if (!isRazorpayConfigured()) return res.status(503).json({ success: false, error: { message: 'Payments are not configured on this server.' } });
 
-    const limits = PLAN_LIMITS[plan];
-
-    // The order must be one this user created for this exact plan and price.
-    const pending = await Payment.findOne({ razorpayOrderId: String(razorpay_order_id), userId });
-    if (!pending || pending.plan !== plan || pending.amount !== limits.price) {
+    // The order must be one this user created. What was bought and for how much comes from that order, never from the browser.
+    const pending = await Payment.findOne({ razorpayOrderId: razorpay_order_id, userId, kind: { $ne: 'credits' } });
+    if (!pending || (plan && pending.plan !== plan) || !PLAN_LIMITS[pending.plan]) {
       return res.status(400).json({ success: false, error: { message: 'Unknown order for this account and plan.' } });
     }
-    if (pending.status === 'paid') {
-      // Replaying a verified payment must not grant anything twice.
-      return res.status(200).json({
-        success: true,
-        data: {
-          user: await User.findById(userId),
-          payment: { invoiceNumber: pending.invoiceNumber, amount: pending.amount, currency: pending.currency, plan, status: 'paid', paymentId: pending.razorpayPaymentId, paidAt: pending.createdAt },
-          message: `Payment already verified. You are subscribed to ${plan}.`,
-        },
-      });
+    if (pending.status !== 'paid' && !payments.checkoutSignatureValid(razorpay_order_id, razorpay_payment_id, razorpay_signature)) {
+      // Not marked as failed: a real payment may still be on its way, and the webhook can complete it.
+      return res.status(400).json({ success: false, error: { message: 'Invalid payment signature. Verification failed.' } });
     }
-
-    const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest('hex');
-    const given = Buffer.from(String(razorpay_signature));
-    const expected = Buffer.from(expectedSignature);
-    if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
-      await Payment.updateOne({ _id: pending._id }, { status: 'failed' });
-      return res.status(400).json({
-        success: false,
-        error: { message: 'Invalid payment signature. Verification failed.' },
-      });
+    if (pending.status !== 'paid') {
+      const gateway = await payments.confirmWithGateway(pending, razorpay_payment_id);
+      if (!gateway.ok) return res.status(400).json({ success: false, error: { message: gateway.message } });
     }
-
-    const invoiceNumber = `INV-${new Date().getFullYear()}-${pending._id.toString().slice(-6).toUpperCase()}`;
-    const paymentId = razorpay_payment_id;
-
-    const payment = await Payment.findOneAndUpdate(
-      { _id: pending._id, status: { $ne: 'paid' } },
-      {
-        status: 'paid',
-        razorpayPaymentId: paymentId,
-        razorpaySignature: razorpay_signature,
-        invoiceNumber,
-      },
-      { new: true }
-    );
-    if (!payment) {
-      return res.status(409).json({ success: false, error: { message: 'This payment was already processed.' } });
-    }
-
-    // Activate the subscription on the user document
-    const renewsAt = new Date();
-    renewsAt.setDate(renewsAt.getDate() + 30);
-
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      {
-        plan: plan,
-        credits: limits.credits,
-        'subscription.tier': plan,
-        'subscription.status': 'active',
-        'subscription.creditsAllocated': limits.credits,
-        'subscription.creditsRemaining': limits.credits,
-        'subscription.bonusCredits': 0,
-        'subscription.renewsAt': renewsAt,
-      },
-      { new: true }
-    );
-
+    const done = await payments.settle(pending, { razorpayPaymentId: razorpay_payment_id, razorpaySignature: razorpay_signature, source: 'checkout' });
     res.status(200).json({
       success: true,
       data: {
-        user: updatedUser,
-        payment: {
-          invoiceNumber: payment.invoiceNumber,
-          amount: limits.price,
-          currency: 'INR',
-          plan,
-          status: 'paid',
-          paymentId,
-          paidAt: new Date(),
-        },
-        message: `Payment successful! You are now subscribed to ${plan}.`,
+        user: await User.findById(userId),
+        payment: { invoiceNumber: done.invoiceNumber, amount: done.amount, currency: done.currency || 'INR', plan: done.plan, status: 'paid', paymentId: done.razorpayPaymentId, paidAt: done.paidAt || done.createdAt },
+        message: `Payment successful! You are now subscribed to ${done.plan}.`,
       },
     });
   } catch (error) {
@@ -453,7 +370,7 @@ exports.createCreditOrder = async (req, res, next) => {
     }
 
     const amount = qty * CREDIT_PRICE_INR;
-    const receipt = `cred_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const receipt = receiptId('cred');
     let orderId;
     try {
       const order = await rzp.orders.create({
@@ -481,65 +398,35 @@ exports.createCreditOrder = async (req, res, next) => {
 
 /**
  * POST /api/billing/credits/verify-payment
- * Verifies the signature and adds the purchased credits (once per order).
+ * Verifies the signature and adds the purchased credits (exactly once per order; repeating the call returns the same success).
  */
 exports.verifyCreditPayment = async (req, res, next) => {
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
     const userId = req.user._id;
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    if (typeof razorpay_order_id !== 'string' || typeof razorpay_payment_id !== 'string' || typeof razorpay_signature !== 'string' || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({ success: false, error: { message: 'Missing payment details for verification' } });
     }
-    if (!isRazorpayConfigured()) {
-      return res.status(503).json({ success: false, error: { message: 'Payments are not configured on this server.' } });
-    }
+    if (!isRazorpayConfigured()) return res.status(503).json({ success: false, error: { message: 'Payments are not configured on this server.' } });
 
-    const pending = await Payment.findOne({ razorpayOrderId: String(razorpay_order_id), userId, kind: 'credits' });
+    const pending = await Payment.findOne({ razorpayOrderId: razorpay_order_id, userId, kind: 'credits' });
     if (!pending || pending.amount !== pending.credits * CREDIT_PRICE_INR) {
       return res.status(400).json({ success: false, error: { message: 'Unknown credit order for this account.' } });
     }
-    if (pending.status === 'paid') {
-      return res.status(200).json({
-        success: true,
-        data: {
-          user: await User.findById(userId),
-          payment: { invoiceNumber: pending.invoiceNumber, amount: pending.amount, currency: pending.currency, plan: 'Extra Credits', credits: pending.credits, status: 'paid', paymentId: pending.razorpayPaymentId },
-          message: 'Payment already verified.',
-        },
-      });
-    }
-
-    const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex');
-    const given = Buffer.from(String(razorpay_signature));
-    const exp = Buffer.from(expected);
-    if (given.length !== exp.length || !crypto.timingSafeEqual(given, exp)) {
-      await Payment.updateOne({ _id: pending._id }, { status: 'failed' });
+    if (pending.status !== 'paid' && !payments.checkoutSignatureValid(razorpay_order_id, razorpay_payment_id, razorpay_signature)) {
       return res.status(400).json({ success: false, error: { message: 'Invalid payment signature. Verification failed.' } });
     }
-
-    const invoiceNumber = `INV-${new Date().getFullYear()}-${pending._id.toString().slice(-6).toUpperCase()}`;
-    // Atomic paid-flip guarantees the credits are granted exactly once.
-    const payment = await Payment.findOneAndUpdate(
-      { _id: pending._id, status: { $ne: 'paid' } },
-      { status: 'paid', razorpayPaymentId: razorpay_payment_id, razorpaySignature: razorpay_signature, invoiceNumber },
-      { new: true }
-    );
-    if (!payment) {
-      return res.status(409).json({ success: false, error: { message: 'This payment was already processed.' } });
+    if (pending.status !== 'paid') {
+      const gateway = await payments.confirmWithGateway(pending, razorpay_payment_id);
+      if (!gateway.ok) return res.status(400).json({ success: false, error: { message: gateway.message } });
     }
-
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      { $inc: { credits: pending.credits, 'subscription.creditsRemaining': pending.credits, 'subscription.creditsAllocated': pending.credits, 'subscription.bonusCredits': pending.credits } },
-      { new: true }
-    );
-
+    const done = await payments.settle(pending, { razorpayPaymentId: razorpay_payment_id, razorpaySignature: razorpay_signature, source: 'checkout' });
     res.status(200).json({
       success: true,
       data: {
-        user: updatedUser,
-        payment: { invoiceNumber, amount: pending.amount, currency: 'INR', plan: 'Extra Credits', credits: pending.credits, status: 'paid', paymentId: razorpay_payment_id, paidAt: new Date() },
-        message: `${pending.credits} credits added to your account.`,
+        user: await User.findById(userId),
+        payment: { invoiceNumber: done.invoiceNumber, amount: done.amount, currency: done.currency || 'INR', plan: 'Extra Credits', credits: done.credits, status: 'paid', paymentId: done.razorpayPaymentId, paidAt: done.paidAt || done.createdAt },
+        message: `${done.credits} credits added to your account.`,
       },
     });
   } catch (error) {
@@ -561,7 +448,7 @@ exports.getInvoices = async (req, res, next) => {
     const invoices = payments.map((p) => ({
       id: p._id,
       invoiceNumber: p.invoiceNumber || `INV-${new Date(p.createdAt).getFullYear()}-${p._id.toString().slice(-6).toUpperCase()}`,
-      date: p.createdAt,
+      date: p.paidAt || p.createdAt,
       plan: p.plan,
       amount: p.amount,
       currency: p.currency || 'INR',
@@ -576,5 +463,44 @@ exports.getInvoices = async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+};
+
+/**
+ * POST /api/billing/webhook  (called by Razorpay, not by the browser; no login, authenticated by its signature instead)
+ * This is what delivers a purchase when the customer paid but closed the tab, lost the connection or never came back.
+ * Answers 200 for everything it understood or can ignore, and 500 only when delivery failed so Razorpay retries it.
+ */
+exports.webhook = async (req, res) => {
+  try {
+    if (!process.env.RAZORPAY_WEBHOOK_SECRET) {
+      logger.error('Razorpay webhook received but RAZORPAY_WEBHOOK_SECRET is not set; it was rejected.');
+      return res.status(503).json({ success: false });
+    }
+    if (!payments.webhookSignatureValid(req.body, req.get('x-razorpay-signature'))) return res.status(400).json({ success: false });
+    let event;
+    try { event = JSON.parse(req.body.toString('utf8')); } catch { return res.status(400).json({ success: false }); }
+    const entity = event?.payload?.payment?.entity;
+    const orderId = entity?.order_id || event?.payload?.order?.entity?.id;
+    if (!orderId) return res.status(200).json({ success: true, ignored: true });
+    const payment = await Payment.findOne({ razorpayOrderId: String(orderId) });
+    if (!payment) return res.status(200).json({ success: true, ignored: true }); // not an order this server created
+
+    if (event.event === 'payment.failed') {
+      if (payment.status === 'created') await Payment.updateOne({ _id: payment._id, status: 'created' }, { $set: { status: 'failed' } });
+      return res.status(200).json({ success: true });
+    }
+    if (event.event === 'payment.captured' || event.event === 'order.paid') {
+      const matches = entity && Number(entity.amount) === Math.round(Number(payment.amount) * 100) && String(entity.currency || 'INR') === payment.currency;
+      if (!matches) {
+        logger.error(`Webhook for order ${orderId} reported a different amount/currency than the order; not delivered.`);
+        return res.status(200).json({ success: true, ignored: true });
+      }
+      await payments.settle(payment, { razorpayPaymentId: String(entity.id), source: 'webhook' });
+    }
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    logger.error(`Razorpay webhook failed: ${error.message}`);
+    return res.status(500).json({ success: false });
   }
 };

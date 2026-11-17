@@ -9,6 +9,7 @@ import ProjectsTable from '../features/collaboration/ProjectsTable';
 import {
   PageHeader, Btn, Card, EmptyState, Spinner, RoleBadge, StatusBadge, Notice, Modal, ConfirmDialog, Field, inputClass, useFlash, timeAgo, RoleSelect, roleLabel
 } from '../features/collaboration/ui';
+import Dropdown from '../components/ui/Dropdown';
 
 const TABS = [
   { id: 'projects', label: 'Projects', icon: FolderOpen },
@@ -157,10 +158,10 @@ function CreateGroupProjectDialog({ open, onClose, group, onDone }) {
       <form onSubmit={submit} className="space-y-4">
         <Field label="Project name"><input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} maxLength={100} required autoFocus /></Field>
         <Field label="Member access" hint="Editors can change code and use the AI. Viewers can only look.">
-          <select className={inputClass} value={permission} onChange={(e) => setPermission(e.target.value)}>
+          <Dropdown className={inputClass} value={permission} onChange={(e) => setPermission(e.target.value)}>
             <option value="editor">Editor</option>
             <option value="viewer">Viewer</option>
-          </select>
+          </Dropdown>
         </Field>
         {error && <Notice>{error}</Notice>}
         <div className="flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn type="submit" loading={busy} disabled={!name.trim()}>Create and open</Btn></div>
@@ -201,15 +202,15 @@ function ShareExistingDialog({ open, onClose, group, projects, alreadyShared, on
       {candidates.length === 0 ? <p className="text-xs text-zinc-500">You have no other projects to share. Create one from the dashboard first.</p> : (
         <form onSubmit={submit} className="space-y-4">
           <Field label="Project">
-            <select className={inputClass} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+            <Dropdown className={inputClass} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
               {candidates.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-            </select>
+            </Dropdown>
           </Field>
           <Field label="Access for group members">
-            <select className={inputClass} value={permission} onChange={(e) => setPermission(e.target.value)}>
+            <Dropdown className={inputClass} value={permission} onChange={(e) => setPermission(e.target.value)}>
               <option value="viewer">Viewer - can look, cannot change</option>
               <option value="editor">Editor - can edit code and use the AI</option>
-            </select>
+            </Dropdown>
           </Field>
           {error && <Notice>{error}</Notice>}
           <div className="flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn type="submit" loading={busy} disabled={!projectId}>Share project</Btn></div>
@@ -486,7 +487,7 @@ function SettingsTab({ group, onSaved }) {
             <span><span className="font-semibold text-[#111827]">Let members invite people</span> (as plain members).</span>
           </label>
           <Field label="Default access for new group projects">
-            <select className={inputClass} value={defaultPerm} onChange={(e) => setDefaultPerm(e.target.value)}><option value="editor">Editor</option><option value="viewer">Viewer</option></select>
+            <Dropdown className={inputClass} value={defaultPerm} onChange={(e) => setDefaultPerm(e.target.value)}><option value="editor">Editor</option><option value="viewer">Viewer</option></Dropdown>
           </Field>
           {error && <Notice>{error}</Notice>}
           {flash && <Notice kind="success">{flash}</Notice>}

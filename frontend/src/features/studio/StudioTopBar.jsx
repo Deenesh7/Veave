@@ -14,6 +14,7 @@ import {
   ChevronDown, 
   Check, 
   Columns,
+  Palette,
 } from 'lucide-react';
 import { useProjectStore } from '../../store/projectStore';
 import { useAuthStore } from '../../store/authStore';
@@ -28,7 +29,9 @@ export function StudioTopBar({
   setViewMode,
   onRefresh,
   onOpenHistory,
-  isGenerating
+  isGenerating,
+  themeOpen = false,
+  onToggleTheme
 }) {
   const navigate = useNavigate();
   const goBack = useSmartBack('/dashboard');
@@ -191,6 +194,19 @@ export function StudioTopBar({
             <span className="hidden xl:inline text-[11px]">Code</span>
           </button>
         </div>
+
+        {/* Change theme: colours, fonts and appearance of the open project */}
+        {onToggleTheme && (
+          <button
+            onClick={onToggleTheme}
+            disabled={isGenerating}
+            aria-pressed={themeOpen}
+            className={`p-2 rounded-xl text-xs font-semibold border border-zinc-200 transition-all cursor-pointer disabled:opacity-40 ${themeOpen ? 'bg-zinc-900 text-white' : 'bg-white text-zinc-600 hover:bg-zinc-50'}`}
+            title="Change theme"
+          >
+            <Palette className="w-3.5 h-3.5" />
+          </button>
+        )}
 
         {/* Refresh Preview */}
         <button

@@ -11,8 +11,12 @@ const precompiledPreviewSchema = new mongoose.Schema({
   compilerVersion: { type: String, default: '' },
   sourceUpdatedAt: { type: Date, default: null },
   status: { type: String, enum: ['ready', 'skipped', 'failed'], default: 'ready' },
+  // The compiled page (1-4 MB) lives in S3 when it is configured: `htmlBlob` is its reference and `html` stays empty. Without S3 it is kept here.
   html: { type: String, default: '' },
+  htmlBlob: { type: mongoose.Schema.Types.Mixed, default: null },
   assetPaths: { type: [String], default: [] },
+  // Result of checking the compiled page against the project's files: { checked, missingCount, missing[] } (see validateCompiledAssets).
+  assetReport: { type: mongoose.Schema.Types.Mixed, default: null },
   bytes: { type: Number, default: 0 },
   compileMs: { type: Number, default: 0 },
   error: { type: String, default: '' },

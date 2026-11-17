@@ -27,11 +27,19 @@ export function GenerationBadge({ page }) {
 /** "Generate Entire Website": the description is typed once (and remembered); then every page is written one after another. */
 export default function WebsiteGeneration() {
   const { site, pages, job, busy, generateSite, cancelJob } = useTemplateStudioStore();
+  const editedPageIds = useTemplateStudioStore((state) => state.editedPageIds);
   const [open, setOpen] = useState(false);
   const [brief, setBrief] = useState('');
   const websiteJob = job && job.type === 'site-customize' ? job : null;
   const running = Boolean(websiteJob && !['completed', 'failed', 'cancelled'].includes(websiteJob.status));
   const anyRunning = Boolean(job && !['completed', 'failed', 'cancelled'].includes(job.status));
+  
+  // Once the user has edited any page individually, the bulk generate button vanishes completely.
+  const hasEditedAnyPage = Boolean(
+    (editedPageIds && Object.keys(editedPageIds).length > 0) ||
+    pages.some((p) => p.currentRevision > 1 || Boolean(p.lastInstruction) || p.generation?.state === 'completed')
+  );
+
   if (!site) return null;
 
   const states = pages.map(stateOfPage);
@@ -43,6 +51,11 @@ export default function WebsiteGeneration() {
   const attention = count('failed') + count('needs-review');
   const showProgress = running || queued > 0;
   const percent = total ? Math.round(((completed + (generating ? 0.5 : 0)) / total) * 100) : 0;
+
+  // If a page has been edited, vanish the Generate Entire Website button completely
+  if (hasEditedAnyPage && !showProgress) {
+    return null;
+  }
 
   const openDialog = () => { setBrief(site.brief || ''); setOpen(true); };
   const start = async () => { if (brief.trim() && await generateSite(brief.trim())) setOpen(false); };

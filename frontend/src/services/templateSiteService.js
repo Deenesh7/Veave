@@ -13,6 +13,7 @@ export const templateSiteService = {
   createSite: (data) => api.post('/template-sites', data),
   getSite: (siteId) => api.get(`/template-sites/${siteId}`),
   renameSite: (siteId, data) => api.patch(`/template-sites/${siteId}`, data),
+  updateTheme: (siteId, theme) => api.put(`/template-sites/${siteId}/theme`, { theme }, { timeout: 120000 }),
   deleteSite: (siteId) => api.delete(`/template-sites/${siteId}`),
 
   listPages: (siteId) => api.get(`/template-sites/${siteId}/pages`),

@@ -151,7 +151,10 @@ export function inlinePreviewAssets(files = []) {
   });
 }
 
-function collectReferencedPreviewAssets(files = [], { allowEmptyContent = false } = {}) {
+// `includeAll` (used when assets are served by URL, not embedded): every public picture/font is known to the shim, whether or not a
+// source file spells its path out. Pictures that are only named in JSON data (a cloned site's scraped content, an asset map) or built
+// from pieces at run time were otherwise left unresolved, so they broke in the stored preview while the browser-compiled one showed them.
+function collectReferencedPreviewAssets(files = [], { allowEmptyContent = false, includeAll = false } = {}) {
   const assets = [];
   const textFiles = files.filter((file) => file && file.encoding !== 'base64' && /\.(?:jsx?|tsx?|css|html)$/i.test(file.path || ''));
   const corpus = textFiles.map((file) => String(file.content || '')).join('\n');
@@ -163,7 +166,7 @@ function collectReferencedPreviewAssets(files = [], { allowEmptyContent = false 
     const mimeType = PREVIEW_ASSET_MIME_TYPES[file.path.split('.').pop()?.toLowerCase()];
     if (!mimeType) continue;
     const publicPath = `/${file.path.slice('public/'.length)}`;
-    if (!corpus.includes(publicPath)) continue;
+    if (!includeAll && !corpus.includes(publicPath)) continue;
     assets.push({ publicPath, mimeType, base64 });
   }
   return assets;
@@ -336,7 +339,7 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
   // JSX/JS module made the modules megabytes large and Babel standalone choked
   // (blank preview). CSS gets data URLs for referenced assets only; JS/JSX keeps
   // short paths and a runtime shim resolves them to blob URLs.
-  const previewAssets = collectReferencedPreviewAssets(files, { allowEmptyContent: Boolean(assetBase) });
+  const previewAssets = collectReferencedPreviewAssets(files, { allowEmptyContent: Boolean(assetBase), includeAll: Boolean(assetBase) });
   const previewFiles = files.map((file) => (
     file?.path?.endsWith('.css') && file.encoding !== 'base64'
       ? { ...file, content: replacePreviewAssetPaths(String(file.content || ''), previewAssets, assetBase) }
@@ -1601,6 +1604,36 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
           hoveredVisualElement.classList.remove('veave-inspect-highlight');
           hoveredVisualElement = null;
         }
+      } else if (event.data.type === 'preview-scroll-to-section') {
+        // The studio's Content column asks to bring one section of this page into view.
+        try {
+          var norm = function(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); };
+          var qs = function(x) { return document.querySelector(x); };
+          var lbl = norm(event.data.label);
+          var found = null;
+          if (lbl === 'navigation' || lbl === 'navbar' || lbl === 'nav' || lbl === 'header') found = qs('nav') || qs('header');
+          else if (lbl.indexOf('footer') === 0) found = qs('footer');
+          else if (lbl.indexOf('hero') === 0) found = qs('[id*=hero i],[class*=hero i]') || qs('main section') || qs('section') || qs('h1');
+          if (!found && lbl) {
+            var cands = document.querySelectorAll('h1,h2,h3,h4,section,[id],[aria-label]');
+            for (var pass = 0; pass < 2 && !found; pass++) {
+              for (var ci = 0; ci < cands.length && !found; ci++) {
+                var c = cands[ci];
+                var cn = norm(/^H[1-4]$/.test(c.tagName) ? c.textContent : (c.getAttribute('aria-label') || c.id));
+                if (cn && (pass === 0 ? cn === lbl : (cn.length > 2 && (cn.indexOf(lbl) > -1 || lbl.indexOf(cn) > -1)))) found = c;
+              }
+            }
+            if (!found) found = qs('[id*="' + lbl.split(' ').join('-') + '" i]') || qs('[class*="' + lbl.split(' ').join('-') + '" i]');
+          }
+          if (found) {
+            var tgt = (/^H[1-4]$/.test(found.tagName) && found.closest('section')) || found;
+            tgt.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            var oldOutline = tgt.style.outline, oldOffset = tgt.style.outlineOffset;
+            tgt.style.outline = '2px solid #5E7B5F';
+            tgt.style.outlineOffset = '-2px';
+            setTimeout(function() { tgt.style.outline = oldOutline; tgt.style.outlineOffset = oldOffset; }, 1400);
+          }
+        } catch (e) {}
       } else if (event.data.type === 'preview-restore-route') {
         // The preview was rebuilt (e.g. while the site is still being created); keep the page the user was on.
         try {

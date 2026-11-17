@@ -68,6 +68,11 @@ exports.updateSite = wrap(async (req, res) => {
   send(res, { site: site(doc) });
 });
 
+exports.updateTheme = wrap(async (req, res) => {
+  const result = await siteService.updateTheme(req.user, req.params.siteId, req.body?.theme === undefined ? null : req.body.theme);
+  send(res, { site: site(result.site), adjusted: result.adjusted });
+});
+
 exports.deleteSite = wrap(async (req, res) => {
   await siteService.deleteSite(req.user, req.params.siteId);
   send(res, { deleted: true });
@@ -215,7 +220,7 @@ async function previewFor(req, res, pageId = null) {
   if (doc.status !== 'ready') return send(res, { preview: base });
   const clientHash = String(req.query.hash || '');
   if (clientHash && clientHash === doc.sourceHash) return send(res, { preview: { ...base, token: doc.token, unchanged: true } });
-  return send(res, { preview: { ...base, token: doc.token, html: doc.html, bytes: doc.bytes } });
+  return send(res, { preview: { ...base, token: doc.token, html: await preview.htmlOf(doc), bytes: doc.bytes } });
 }
 
 exports.getSitePreview = wrap((req, res) => previewFor(req, res));

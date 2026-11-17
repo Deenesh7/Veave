@@ -77,31 +77,34 @@ export default function LivePreview({ template, pages = [], theme, onTheme }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className={`flex flex-wrap items-center justify-between gap-2 border-b ${line} bg-[#FBF9F4] px-3 py-1.5`}>
-        <div className="flex items-center gap-1" role="group" aria-label="Preview size">
+      <div className={`grid shrink-0 grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1.5 bg-[#FBF9F4] px-3 py-2`}>
+        <div className={`flex items-center rounded-lg border ${line} bg-[#F3EFE5] p-0.5`} role="group" aria-label="Preview size">
           {DEVICES.map(({ id, label, icon: Icon }) => (
             <button key={id} type="button" onClick={() => setDevice(id)} aria-pressed={device === id} title={label}
-              className={`flex items-center gap-1.5 rounded px-2 py-1 text-xs transition ${device === id ? 'bg-[#E8F0E8] text-[#33503A]' : `${muted} hover:bg-[#EFEBE1]`}`}>
-              <Icon className="h-3.5 w-3.5" /><span className="hidden sm:inline">{label}</span>
+              className={`flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition ${device === id ? 'bg-white text-[#2B2823] shadow-sm' : `${muted} hover:text-[#2B2823]`}`}>
+              <Icon className="h-3.5 w-3.5" /><span className="hidden xl:inline">{label}</span>
             </button>
           ))}
         </div>
-        <div className="flex min-w-0 items-center gap-1 overflow-x-auto" role="group" aria-label="Preview page">
-          {pages.map((page) => (
-            <button key={page.path} type="button" onClick={() => goTo(page.path)} aria-pressed={pageRoute === page.path}
-              className={`whitespace-nowrap rounded px-2 py-1 text-xs transition ${pageRoute === page.path ? 'bg-[#EFEBE1] text-[#2B2823]' : `${muted} hover:bg-[#EFEBE1]`}`}>{page.title}</button>
-          ))}
+        {/* The site's pages as a tab strip: one line that scrolls sideways instead of wrapping; below tablet it takes its own row. */}
+        <div className="order-last col-span-3 min-w-0 md:order-none md:col-span-1" role="group" aria-label="Preview page">
+          <div className="flex items-center gap-1 overflow-x-auto md:justify-center [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {pages.map((page) => (
+              <button key={page.path} type="button" onClick={() => goTo(page.path)} aria-pressed={pageRoute === page.path} aria-current={pageRoute === page.path ? 'page' : undefined}
+                className={`h-7 shrink-0 whitespace-nowrap rounded-full px-3 text-xs font-medium transition ${pageRoute === page.path ? 'bg-[#5E7B5F] text-white shadow-sm' : `${muted} hover:bg-[#EFEBE1] hover:text-[#2B2823]`}`}>{page.title}</button>
+            ))}
+          </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center justify-end gap-1.5">
           {themeBusy ? <Spinner className="h-3 w-3 text-[#5E7B5F]" /> : null}
-          <span className={`hidden text-[11px] md:inline ${muted}`}>{device$.id === 'desktop' ? 'Full width' : device$.width}</span>
+          <span className={`hidden text-[11px] 2xl:inline ${muted}`}>{device$.id === 'desktop' ? 'Full width' : device$.width}</span>
           <IconButton label="Refresh preview" onClick={() => { cache.delete(key); setReloadKey((value) => value + 1); }}><RefreshCw className="h-3.5 w-3.5" /></IconButton>
         </div>
       </div>
 
-      <div className="relative min-h-[320px] flex-1 overflow-auto bg-[#EFEBE1]">
+      <div className="relative min-h-[320px] flex-1 overflow-auto bg-[#EFEBE1] p-3 sm:p-4">
         {state.status === 'loading' ? (
-          <div className="mx-auto flex h-full flex-col gap-3 bg-white p-5" style={{ width: device$.width, maxWidth: '100%' }} aria-busy="true" aria-label="Building the template preview">
+          <div className="mx-auto flex h-full flex-col gap-3 rounded-lg bg-white p-5 shadow-sm" style={{ width: device$.width, maxWidth: '100%' }} aria-busy="true" aria-label="Building the template preview">
             <Skeleton className="h-10 w-full" /><Skeleton className="h-56 w-full" /><Skeleton className="h-6 w-2/3" /><Skeleton className="h-6 w-1/2" />
             <div className="grid grid-cols-3 gap-3"><Skeleton className="h-28" /><Skeleton className="h-28" /><Skeleton className="h-28" /></div>
             <p className={`mt-auto flex items-center justify-center gap-2 text-xs ${muted}`}><Spinner className="h-3.5 w-3.5" />Building the {template?.name} website…</p>
@@ -109,7 +112,7 @@ export default function LivePreview({ template, pages = [], theme, onTheme }) {
         ) : null}
         {state.status === 'error' ? <ErrorNote onRetry={() => setReloadKey((value) => value + 1)}>{state.error}</ErrorNote> : null}
         {state.status === 'ready' ? (
-          <div className={`mx-auto h-full bg-white transition-[width] duration-200 ${device === 'desktop' ? '' : `border-x ${line} shadow-sm`}`} style={{ width: device$.width, maxWidth: '100%' }} data-viewport={device}>
+          <div className="mx-auto h-full overflow-hidden rounded-lg bg-white shadow-[0_1px_3px_rgba(43,40,35,0.12),0_8px_24px_rgba(43,40,35,0.08)] ring-1 ring-black/5 transition-[width] duration-200" style={{ width: device$.width, maxWidth: '100%' }} data-viewport={device}>
             <iframe ref={frame} title={`${template.name} website preview`} srcDoc={state.html} sandbox="allow-scripts" onLoad={() => { push(); }} className={`h-full w-full border-0 bg-white ${ink}`} />
           </div>
         ) : null}

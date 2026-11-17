@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { RotateCcw } from 'lucide-react';
 import { templateSiteService } from '../../services/templateSiteService';
 import { GhostButton, Skeleton, inputClass, ink, muted, line } from './ui';
+import Dropdown from '../../components/ui/Dropdown';
 
 export const DEFAULT_TYPOGRAPHY = { headingFont: '', bodyFont: '', headingWeight: 700, bodyWeight: 400, headingSize: 1, headingLetterSpacing: 0, bodySize: 16, bodyLineHeight: 1.6 };
 export const isDefaultTypography = (value) => !value || Object.keys(DEFAULT_TYPOGRAPHY).every((key) => value[key] === DEFAULT_TYPOGRAPHY[key]);
@@ -47,7 +48,7 @@ function Select({ id, label, value, onChange, children }) {
   return (
     <label htmlFor={id} className="block">
       <span className={`mb-0.5 block text-[11px] ${muted}`}>{label}</span>
-      <select id={id} value={value} onChange={onChange} className={`${inputClass} !py-1.5 !text-xs`}>{children}</select>
+      <Dropdown id={id} value={value} onChange={onChange} className={`${inputClass} !py-1.5 !text-xs`}>{children}</Dropdown>
     </label>
   );
 }

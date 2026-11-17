@@ -1,15 +1,42 @@
-import React, { useState } from 'react';
-import { Outlet, useLocation } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { useAuthStore } from '../../store/authStore';
+import { Spinner } from '../ui/Spinner';
 import TopHeader from './TopHeader';
 import Sidebar from './Sidebar';
 import { useTemplateStudioStore } from '../../store/templateStudioStore';
 import PersistentGenerationIndicator from './PersistentGenerationIndicator';
+import Toaster from '../common/Toaster';
 
 export default function AppLayout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   // The Template Studio fills the whole workspace card edge to edge.
   const fullBleed = useLocation().pathname.startsWith('/template-studio');
   const sidebarHidden = useTemplateStudioStore((s) => s.appSidebarHidden);
+  const { pathname } = useLocation();
+  const { user, isAuthenticated, fetchProfile } = useAuthStore();
+  const [profileTried, setProfileTried] = useState(false);
+
+  // After a reload the user is not in memory yet; load it so the role is known before any page is shown.
+  useEffect(() => {
+    if (isAuthenticated && !user) fetchProfile().finally(() => setProfileTried(true));
+  }, [isAuthenticated, user, fetchProfile]);
+  // Keep the account in step with the server, so credits an administrator adds show up without signing in again.
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    const refresh = () => { if (document.visibilityState === 'visible') fetchProfile(); };
+    const id = setInterval(refresh, 30_000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { clearInterval(id); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
+  }, [isAuthenticated, fetchProfile]);
+  const waitingForRole = isAuthenticated && !user && !profileTried;
+
+  // Administrators only get the admin dashboard, not the site-building workspace.
+  const isAdmin = user?.role === 'ADMIN';
+  if (isAdmin && !pathname.startsWith('/admin')) return <Navigate to="/admin" replace />;
+  // An administrator who lost the role while signed in goes back to the normal app.
+  if (user && !isAdmin && pathname.startsWith('/admin')) return <Navigate to="/dashboard" replace />;
 
   return (
     <div className="min-h-screen bg-[#F7F4EE] text-[#2B2823] font-sans antialiased flex flex-col">
@@ -38,7 +65,7 @@ export default function AppLayout() {
 
           {/* Dynamic Route Content */}
           <div className={fullBleed ? 'flex-1 min-h-0 w-full' : 'flex-1 px-4 pb-16 max-w-7xl w-full mx-auto'}>
-            <Outlet />
+            {waitingForRole ? <div className="flex min-h-[40vh] items-center justify-center"><Spinner size="lg" /></div> : <Outlet />}
           </div>
           </div>
         </main>
@@ -46,6 +73,7 @@ export default function AppLayout() {
 
       {/* Global Background AI Generation Persistent Indicator */}
       <PersistentGenerationIndicator />
+      <Toaster />
     </div>
   );
 }

@@ -68,7 +68,8 @@ export const useGenerationJobStore = create((set, get) => ({
   canUndo: false,
   canRedo: false,
   currentIndex: 0,
-  approval: null, // pending plan approval: { state, plan }
+  approval: null, // pending plan approval: { state, plan, request?, lastRequest? }
+  planError: null,
   prototypeQueue: null, // "build it like this website": stages + the pages found on the site
   notificationToast: null, // { type: 'success' | 'error', message: string, projectId?: string }
 
@@ -660,22 +661,42 @@ export const useGenerationJobStore = create((set, get) => ({
     }
   },
 
-  decidePlan: async (decision) => {
+  decidePlan: async (decision, selectedPaths) => {
     const { activeJobId } = get();
     if (!activeJobId) return;
-    set({ approval: null, stepName: decision === 'approve' ? 'Plan approved. Starting the build...' : 'Cancelling...' });
+    set({ planError: null, approval: null, stepName: decision === 'approve' ? 'Plan approved. Starting the build...' : 'Cancelling...' });
     try {
-      await aiCreationService.decidePlan(activeJobId, decision);
+      await aiCreationService.decidePlan(activeJobId, decision, selectedPaths);
       if (decision !== 'approve') await get().pollStatus(activeJobId);
     } catch (e) {
       console.warn('Failed to send plan decision:', e);
+      const failure = e?.response?.data?.error;
+      set({ planError: (typeof failure === 'string' ? failure : failure?.message) || 'The plan could not be approved. Try again.' });
       await get().pollStatus(activeJobId);
+    }
+  },
+
+  // Asks the running clone job to scrape more pages into the plan; the plan updates through polling.
+  scrapeMorePages: async (paths = []) => {
+    const { activeJobId } = get();
+    if (!activeJobId) return;
+    set({ planError: null });
+    try {
+      await aiCreationService.scrapeMorePlanPages(activeJobId, paths);
+      await get().pollStatus(activeJobId);
+    } catch (e) {
+      const failure = e?.response?.data?.error;
+      set({ planError: (typeof failure === 'string' ? failure : failure?.message) || 'Could not start scraping more pages.' });
     }
   },
 
   cancelJob: async () => {
     const { activeJobId } = get();
     if (!activeJobId) return;
+
+    if (!window.confirm('Are you sure you want to cancel this project generation? Progress will be lost.')) {
+      return false;
+    }
 
     try {
       await aiCreationService.cancelJob(activeJobId);

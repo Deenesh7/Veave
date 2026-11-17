@@ -13,6 +13,7 @@ import { AIAssistant } from './AIAssistant';
 import { StatusBar } from './StatusBar';
 import { CommandPalette } from './CommandPalette';
 import { ShareModal } from '../share/ShareModal';
+import { ImagePreviewModal, getImageMime } from './ImagePreviewModal';
 
 export function CodeWorkspace({
   projectId: projectIdProp,
@@ -229,8 +230,14 @@ export function CodeWorkspace({
     return updatedFiles;
   }, [persistFilesToDatabase, onFilesChange, updateProjectFiles]);
 
-  // Handle active file selection
+  const [imagePreviewPath, setImagePreviewPath] = useState('');
+
+  // Handle active file selection (images open in a popup instead of the code editor)
   const handleSelectFile = useCallback((path) => {
+    if (getImageMime(path)) {
+      setImagePreviewPath(path);
+      return;
+    }
     setActiveFilePath(path);
     syncGlobalActiveFile?.(path);
     setOpenFilePaths((prev) => (prev.includes(path) ? prev : [...prev, path]));
@@ -577,6 +584,13 @@ export function CodeWorkspace({
         onClose={() => setIsCommandPaletteOpen(false)}
         files={files}
         onSelectFile={handleSelectFile}
+      />
+
+      {/* IMAGE PREVIEW POPUP */}
+      <ImagePreviewModal
+        projectId={effectiveProjectId}
+        file={imagePreviewPath ? files.find((f) => f.path === imagePreviewPath) || { path: imagePreviewPath } : null}
+        onClose={() => setImagePreviewPath('')}
       />
 
       {/* 6. SHARE PROJECT MODAL */}

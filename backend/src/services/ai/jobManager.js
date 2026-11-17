@@ -70,7 +70,8 @@ const { runDuplicateRegionEngine, parseDuplicateRequest } = require('../layout/d
 const { isBlankRoute, applyFallbackPage, capturedTextLength } = require('./blankPageFallback');
 const { publishPreview } = require('../project/validatedPreview');
 const { scaffoldReactProject, createTemplateCandidate } = require('../project/reactScaffolder');
-const { captureWebsite, snapshotLivePage, resolveRouteLimit, validatePublicUrl } = require('../clone/websiteCaptureService');
+const { captureWebsite, snapshotLivePage, resolveRouteLimit, validatePublicUrl, normalizeRoute, dedupePlacements, buildSiteMap } = require('../clone/websiteCaptureService');
+const cloneSelection = require('../clone/cloneSelection');
 const { materializeLocalizedAssets, replaceAssetReferences, localizeGeneratedRemoteImages, removeRemoteStylesheetImports, repairMissingLocalImageReferences, unresolvedAssetTokens, validateLocalizedAssetReferences, localizeInternalRouteLinks } = require('../clone/assetLocalizationService');
 const { SCREENSHOT_TO_UI_FEATURE_PROMPT, UI_GENERATION_SYSTEM_PROMPT } = require('./prompts/systemPrompt');
 const { GSAP_ANIMATION_RULES } = require('./prompts/gsapRules');
@@ -2937,6 +2938,36 @@ class JobManager {
         // retained only as optional post-generation comparison artifacts.
         image = null;
         visualReference = cloneCapture.screenshots.desktop;
+        // 3b. Plan approval gate: show the plan and wait for the user to approve or cancel BEFORE any AI generation tokens are
+        // spent. The user may deselect pages, or ask to scrape more pages; the build then uses exactly the approved selection.
+        if (job.payload?.requireApproval !== false) {
+          const planOptions = { buildStages: buildCloneImplementationStages, creditsForTokens: require('../billing/plans').creditsForTokens, hardCap: resolveRouteLimit(Number.MAX_SAFE_INTEGER) };
+          const approved = await this.awaitPlanApproval(jobId, cloneSelection.buildClonePlan(cloneCapture, planOptions), validationController.signal, {
+            onRequest: async (request) => {
+              if (request.type !== 'scrape') throw new Error('Unknown plan request.');
+              const result = await cloneSelection.scrapeMore(cloneCapture, request, {
+                sourceUrl,
+                signal: validationController.signal,
+                captureWebsite,
+                hardCap: planOptions.hardCap,
+                merge: (current, extra) => cloneSelection.mergeCapture(current, extra, { normalizeRoute, dedupePlacements, buildSiteMap, guard: duplicateGuard })
+              });
+              cloneCapture = result.capture; // replaced only after the merge succeeded
+              return { plan: cloneSelection.buildClonePlan(cloneCapture, planOptions), message: result.message };
+            }
+          });
+          if (!approved) {
+            await GenerationJob.updateOne({ jobId, status: { $in: ['queued', 'processing'] } }, { $set: { status: 'cancelled', stepName: 'Plan cancelled. The project was not changed.' } });
+            return;
+          }
+          job = await GenerationJob.findOne({ jobId });
+          if (!job || job.status === 'cancelled') return;
+          const selection = job.approval?.selection;
+          if (Array.isArray(selection) && selection.length) cloneCapture = cloneSelection.applySelection(cloneCapture, selection, { buildSiteMap });
+          job = await GenerationJob.findOneAndUpdate({ jobId, status: { $in: ['queued', 'processing'] } }, { $set: { status: 'processing', stepName: 'Plan approved. Starting the build...' } }, { new: true });
+          if (!job) return;
+        }
+
         // STEP-BY-STEP INPUT. This first request builds the shell and the home page only, so it receives the home page's data
         // (structure, HTML, styles, its own assets and placement queue) plus just the list of the other routes. Every other
         // page is built later in its own step with its own data, after the previous page was verified.
@@ -2988,31 +3019,6 @@ class JobManager {
         };
         await job.save();
 
-        // 3b. Plan approval gate: show the plan and wait for the user to approve or cancel
-        // BEFORE any AI generation tokens are spent.
-        if (job.payload?.requireApproval !== false) {
-          const plannedStages = buildCloneImplementationStages(
-            clonePromptPages.filter((page) => page.captureStatus === 'captured')
-          );
-          const capturedPages = cloneCapture.pages.filter((page) => page.captureStatus === 'captured');
-          const approved = await this.awaitPlanApproval(jobId, {
-            sourceUrl: cloneCapture.canonicalUrl || cloneCapture.sourceUrl,
-            pageCount: capturedPages.length,
-            stageCount: plannedStages.length,
-            estimatedMinutes: Math.max(1, Math.round(plannedStages.length * (Number.parseFloat(process.env.CLONE_MINUTES_PER_STEP) || 1.5))),
-            assetCount: cloneCapture.assets.length,
-            pages: capturedPages.slice(0, 200).map(({ path, title, pageType }) => ({ path, title, pageType })),
-            note: 'Each page is built in several stages (top, content parts, footer), so the number of build steps is larger than the number of pages.'
-          }, validationController.signal);
-          if (!approved) {
-            await GenerationJob.updateOne({ jobId, status: { $in: ['queued', 'processing'] } }, { $set: { status: 'cancelled', stepName: 'Plan cancelled. The project was not changed.' } });
-            return;
-          }
-          job = await GenerationJob.findOne({ jobId });
-          if (!job || job.status === 'cancelled') return;
-          job = await GenerationJob.findOneAndUpdate({ jobId, status: { $in: ['queued', 'processing'] } }, { $set: { status: 'processing', stepName: 'Plan approved. Starting the build...' } }, { new: true });
-          if (!job) return;
-        }
       }
 
       // 4. Resolve design tokens
@@ -5607,6 +5613,14 @@ class JobManager {
         ? { created: false, projectId: project._id, files: project.files, validation: project.validation,
             provenance: project.provenance || null, appliedHash: validated.report?.sourceHash || null }
         : { created: true, projectId: null, appliedHash: validated.report?.sourceHash || null };
+      // The crawler's per-image records are large (tens of MB for a big site) and are never read back while editing. They go to S3
+      // and the project keeps a small reference, so the project document stays small and fast to load.
+      let captureBlob = null;
+      const captureAssets = cloneCapture ? cloneCapture.assets.map(({ sourceUrls, sourcePaths, localPath, publicPath, mimeType, width, height, pages, associations }) => ({ sourceUrls, sourcePaths, localPath, publicPath, mimeType, width, height, pages, associations })) : null;
+      if (cloneCapture && require('../storage/s3BlobStorage').isConfigured()) {
+        try { captureBlob = await require('../storage/s3BlobStorage').putJson('provenance/capture-assets', { assets: captureAssets, assetQueue: cloneCapture.assetQueue || [] }); }
+        catch (error) { logger.warn(`Capture assets could not be moved to S3, keeping them in the project: ${error.message}`); }
+      }
       if (!project) {
         project = await Project.create({
           userId: userId || null,
@@ -5641,8 +5655,7 @@ class JobManager {
               headings: (headings || []).slice(0, 12),
               sections: (sections || []).slice(0, 20).map(({ tag, id, text }) => ({ tag, id, text }))
              })),
-             assets: cloneCapture.assets.map(({ sourceUrls, sourcePaths, localPath, publicPath, mimeType, width, height, pages, associations }) => ({ sourceUrls, sourcePaths, localPath, publicPath, mimeType, width, height, pages, associations })),
-             assetQueue: cloneCapture.assetQueue,
+             ...(captureBlob ? { captureAssetsBlob: captureBlob } : { assets: captureAssets, assetQueue: cloneCapture.assetQueue }),
              coverage: cloneCapture.coverage,
              siteMap: cloneCapture.siteMap,
              urlRegistry: cloneCapture.urlRegistry
@@ -5941,7 +5954,7 @@ class JobManager {
     }
   }
 
-  async awaitPlanApproval(jobId, plan, signal) {
+  async awaitPlanApproval(jobId, plan, signal, { onRequest = null } = {}) {
     const timeoutMs = Number.parseInt(process.env.PLAN_APPROVAL_TIMEOUT_MS, 10) || 30 * 60 * 1000;
     await GenerationJob.updateOne({ jobId }, { $set: {
       approval: { state: 'pending', plan, requestedAt: new Date() },
@@ -5959,22 +5972,53 @@ class JobManager {
       if (!current || current.status === 'cancelled') return false;
       if (current.approval?.state === 'approved') return true;
       if (current.approval?.state === 'cancelled') return false;
+      const request = current.approval?.request;
+      if (request && onRequest) {
+        // A request from the plan screen (e.g. scrape more pages). It is handled here, in the process that holds the capture.
+        let update;
+        try {
+          const result = await onRequest(request);
+          update = { 'approval.plan': result.plan, 'approval.lastRequest': { id: request.id, status: 'done', message: result.message || '', at: new Date() } };
+        } catch (error) {
+          signal?.throwIfAborted();
+          update = { 'approval.lastRequest': { id: request.id, status: 'failed', message: String(error.message || 'The request failed.').slice(0, 300), at: new Date() } };
+        }
+        await GenerationJob.updateOne({ jobId, 'approval.state': 'pending' }, { $set: { ...update, 'approval.request': null } });
+        continue;
+      }
       if (Date.now() > deadline) return false;
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   }
 
-  /** @returns {Promise<'ok'|'not_found'|'forbidden'>} */
-  async decidePlan(jobId, decision, userId = null) {
+  /** @returns {Promise<'ok'|'not_found'|'forbidden'|'busy'>} */
+  async decidePlan(jobId, decision, userId = null, { selection = null } = {}) {
     const job = await GenerationJob.findOne({ jobId }, { userId: 1, approval: 1, status: 1 }).lean();
     if (!job || job.approval?.state !== 'pending' || job.status !== 'processing') return 'not_found';
     if (job.userId && userId && String(job.userId) !== String(userId)) return 'forbidden';
+    if (decision === 'approve' && job.approval?.request) return 'busy';
     const state = decision === 'approve' ? 'approved' : 'cancelled';
+    // The state flips only while no plan request is running, so an approval can never race a scrape that is changing the plan.
     const res = await GenerationJob.updateOne(
-      { jobId, 'approval.state': 'pending' },
-      { $set: { 'approval.state': state, 'approval.decidedAt': new Date() } }
+      { jobId, 'approval.state': 'pending', ...(decision === 'approve' ? { 'approval.request': null } : {}) },
+      { $set: { 'approval.state': state, 'approval.decidedAt': new Date(), ...(decision === 'approve' && selection ? { 'approval.selection': selection } : {}) } }
     );
-    return res.modifiedCount ? 'ok' : 'not_found';
+    return res.modifiedCount ? 'ok' : 'busy';
+  }
+
+  /**
+   * Asks the running clone job to scrape more pages into the plan that is waiting for approval.
+   * @returns {Promise<'ok'|'not_found'|'forbidden'|'busy'>}
+   */
+  async requestPlanScrape(jobId, paths, userId = null) {
+    const job = await GenerationJob.findOne({ jobId }, { userId: 1, approval: 1, status: 1, type: 1 }).lean();
+    if (!job || job.type !== 'clone' || job.approval?.state !== 'pending' || job.status !== 'processing') return 'not_found';
+    if (job.userId && userId && String(job.userId) !== String(userId)) return 'forbidden';
+    const res = await GenerationJob.updateOne(
+      { jobId, 'approval.state': 'pending', 'approval.request': null },
+      { $set: { 'approval.request': { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, type: 'scrape', paths: Array.isArray(paths) ? paths.map(String).slice(0, 50) : [], requestedAt: new Date() } } }
+    );
+    return res.modifiedCount ? 'ok' : 'busy';
   }
 
   async cancelJob(jobId) {

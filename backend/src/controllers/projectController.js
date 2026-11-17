@@ -1,4 +1,5 @@
 const projectService = require('../services/project/projectService');
+const lifecycle = require('../services/project/projectLifecycleService');
 const projectAccess = require('../services/collaboration/projectAccess');
 const sharingService = require('../services/collaboration/sharingService');
 const Project = require('../models/Project');
@@ -73,9 +74,34 @@ exports.updateProject = async (req, res, next) => {
 
 exports.deleteProject = async (req, res, next) => {
   try {
-    const userId = req.user ? req.user.id : null;
-    await projectService.delete(req.params.id, userId);
-    res.status(200).json({ success: true, data: {} });
+    const result = await lifecycle.deleteProject(req.user || null, req.params.id, { confirmName: req.body?.confirmName });
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getProjectInfo = async (req, res, next) => {
+  try {
+    res.status(200).json({ success: true, data: await lifecycle.getInfo(req.user || null, req.params.id) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.duplicateProject = async (req, res, next) => {
+  try {
+    const result = await lifecycle.duplicateProject(req.user || null, req.params.id, { name: req.body?.name });
+    res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.transferProject = async (req, res, next) => {
+  try {
+    const result = await lifecycle.transferOwnership(req.user || null, req.params.id, { email: req.body?.email, confirm: req.body?.confirm });
+    res.status(200).json({ success: true, data: result });
   } catch (error) {
     next(error);
   }
@@ -134,4 +160,20 @@ exports.exportProject = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+};
+
+// Theme changer for an existing project: GET reads the current theme and colour defaults; POST previews (default) or saves ({ save: true }).
+exports.getProjectTheme = async (req, res, next) => {
+  try {
+    const data = await require('../services/project/projectThemeService').describe(req.params.id, req.user ? req.user.id : null);
+    res.status(200).json({ success: true, data });
+  } catch (error) { next(error); }
+};
+
+exports.applyProjectTheme = async (req, res, next) => {
+  try {
+    const { theme = null, save = false } = req.body || {};
+    const data = await require('../services/project/projectThemeService').apply(req.params.id, req.user ? req.user.id : null, theme, { save: save === true });
+    res.status(200).json({ success: true, data });
+  } catch (error) { next(error); }
 };

@@ -22,12 +22,12 @@ export function BounceSidebar({
   // Auto-sync with current pathname if href matches
   useEffect(() => {
     if (value === undefined && location?.pathname) {
-      const foundIdx = items.findIndex((item) => {
-        if (typeof item === 'object' && item.href) {
-          if (item.href === '/' && location.pathname === '/') return true;
-          if (item.href !== '/' && location.pathname.startsWith(item.href)) return true;
-        }
-        return false;
+      // The longest matching href wins, so /admin/users highlights Users rather than the /admin Dashboard entry.
+      let foundIdx = -1;
+      items.forEach((item, idx) => {
+        if (typeof item !== 'object' || !item.href) return;
+        const match = item.href === '/' ? location.pathname === '/' : location.pathname.startsWith(item.href);
+        if (match && (foundIdx === -1 || item.href.length > items[foundIdx].href.length)) foundIdx = idx;
       });
       if (foundIdx !== -1) {
         setInternalValue(foundIdx);

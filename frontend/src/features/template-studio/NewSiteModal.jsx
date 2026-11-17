@@ -7,6 +7,7 @@ import ThemeEditor, { Section as ThemeSection, DEFAULT_THEME, themePayload } fro
 import LivePreview from './LivePreview';
 import { templateSiteService, apiMessage } from '../../services/templateSiteService';
 import { useTemplateStudioStore, PLACEMENT_OPTIONS, PHOTO_TYPES, MAX_PHOTO_BYTES, MAX_ATTACH } from '../../store/templateStudioStore';
+import Dropdown from '../../components/ui/Dropdown';
 
 const NAME_MAX = 80;
 const BRIEF_MAX = 4000;
@@ -41,10 +42,10 @@ function ScratchCard({ selected, onSelect }) {
   return (
     <button type="button" onClick={() => onSelect(SCRATCH)} aria-pressed={selected} title={SCRATCH.description}
       className={`${CARD} border-dashed ${selected ? 'border-[#5E7B5F] bg-[#E8F0E8] ring-1 ring-[#5E7B5F]' : 'border-[#8FAA90] bg-transparent hover:bg-[#F3EFE5]'}`}>
-      <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-[#C9D6C9] bg-white text-[#5E7B5F]"><Plus className="h-5 w-5" /></span>
+      <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-dashed border-[#8FAA90] bg-white text-[#5E7B5F]"><Plus className="h-6 w-6" strokeWidth={1.75} aria-hidden="true" /></span>
       <span className="flex min-w-0 flex-1 flex-col justify-center">
         <span className={`font-serif text-sm font-medium leading-tight ${ink}`}>Create from Scratch</span>
-        <span className={`mt-0.5 text-[11px] leading-snug ${muted}`}>Start with a completely blank website</span>
+        <span className={`mt-1 text-[11px] leading-none ${muted}`}>Blank · 1 page</span>
       </span>
       {selected ? <SelectedBadge /> : null}
     </button>
@@ -83,9 +84,9 @@ function CreationPhotos({ photos, onChange, disabled }) {
             <li key={item.id} className={`relative w-[104px] shrink-0 rounded-md border ${line} bg-white p-1`}>
               <img src={item.preview} alt={item.file.name} className="h-12 w-full rounded object-cover" />
               <button type="button" onClick={() => remove(item.id)} disabled={disabled} aria-label={`Remove ${item.file.name}`} className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-[#2B2823] text-white"><X className="h-2.5 w-2.5" /></button>
-              <select aria-label={`Where ${item.file.name} should go`} value={item.placement} onChange={(event) => set(item.id, { placement: event.target.value })} disabled={disabled} className="mt-1 w-full rounded border border-[#E2DCCF] bg-white px-1 py-0.5 text-[10px]">
+              <Dropdown aria-label={`Where ${item.file.name} should go`} value={item.placement} onChange={(event) => set(item.id, { placement: event.target.value })} disabled={disabled} className="mt-1 w-full rounded border border-[#E2DCCF] bg-white px-1 py-0.5 text-[10px]">
                 {PLACEMENT_OPTIONS.filter((option) => option.value !== 'section').map((option) => <option key={option.value} value={option.value}>{option.value ? option.label : 'Let AI decide'}</option>)}
-              </select>
+              </Dropdown>
             </li>
           ))}
         </ul>

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ImagePlus, Sparkles, X, ChevronsLeft, ChevronsRight, Pencil, Check, RotateCcw } from 'lucide-react';
+import { ImagePlus, Sparkles, X, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Pencil, Check, RotateCcw, LayoutList, ArrowRight } from 'lucide-react';
 import { useTemplateStudioStore, CONTENT_MIN, CONTENT_MAX } from '../../store/templateStudioStore';
 import { FAILURE_TITLES } from '../../store/generationJobStore';
 import { PanelHeader, EmptyState, IconButton, PrimaryButton, GhostButton, Spinner, Skeleton, inputClass, ink, muted, line } from './ui';
@@ -20,13 +20,23 @@ function SectionTitle({ children, hint }) {
 
 export default function ContentEditorPanel({ className = '' }) {
   const store = useTemplateStudioStore();
-  const { site, siteLoading, pages, activePageId, job, regenerate, cancelJob, busy, drafts, setDraft, selection, images, uploads, lastRequest, renamePage, contentWidth, setContentWidth, clearSelection } = store;
+  const { site, siteLoading, pages, activePageId, selectPage, job, regenerate, cancelJob, busy, drafts, setDraft, selection, images, uploads, lastRequest, renamePage, contentWidth, setContentWidth, clearSelection, pageSections, sectionsLoading, loadSections, editedPageIds } = store;
   const collapsed = useTemplateStudioStore((state) => state.contentCollapsed);
   const setCollapsed = useTemplateStudioStore((state) => state.setContentCollapsed);
   const page = pages.find((item) => item.id === activePageId) || null;
   const [renaming, setRenaming] = useState(null);   // the new name while editing
   const [resizing, setResizing] = useState(false);
   const panel = useRef(null);
+
+  const currentPageIndex = pages.findIndex((item) => item.id === activePageId);
+  const nextPage = currentPageIndex >= 0 && currentPageIndex < pages.length - 1 ? pages[currentPageIndex + 1] : null;
+
+  const isPageEdited = (p) => Boolean(
+    (editedPageIds && editedPageIds[p?.id]) ||
+    p?.currentRevision > 1 ||
+    Boolean(p?.lastInstruction) ||
+    p?.generation?.state === 'completed'
+  );
 
   const instruction = (activePageId && drafts[activePageId]) || '';
   const running = job && !TERMINAL.includes(job.status);
@@ -37,6 +47,56 @@ export default function ContentEditorPanel({ className = '' }) {
   const canSend = Boolean(instruction.trim()) && !running && !busy.regenerate && !uploading;
 
   useEffect(() => { setRenaming(null); }, [activePageId]);
+
+  useEffect(() => {
+    if (activePageId && !pageSections[activePageId]) {
+      loadSections(activePageId);
+    }
+  }, [activePageId, pageSections, loadSections]);
+
+  // Eagerly load sections for all pages so they're ready when switching
+  const pageIds = pages.map((p) => p.id).join(',');
+  useEffect(() => {
+    if (!pageIds) return;
+    pageIds.split(',').forEach((id) => {
+      if (!pageSections[id]) loadSections(id);
+    });
+  }, [pageIds, loadSections]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const defaultSectionsFor = (pageName = '', route = '') => {
+    const n = (pageName || '').toLowerCase();
+    const r = (route || '').toLowerCase();
+    if (r === '/' || n.includes('home')) {
+      return ['Hero Header & Introduction', 'Key Features & Highlights', 'Services Overview', 'About Preview', 'Testimonials & Reviews', 'Call to Action'];
+    }
+    if (n.includes('about') || n.includes('story')) {
+      return ['Company Introduction', 'Our Mission & Story', 'Team & Leadership', 'Core Values & Culture'];
+    }
+    if (n.includes('service') || n.includes('offer') || n.includes('what we do')) {
+      return ['Services Overview', 'Featured Offerings', 'Process & Methodology', 'Pricing & Packages', 'FAQ'];
+    }
+    if (n.includes('contact') || n.includes('reach')) {
+      return ['Get In Touch Header', 'Contact Details & Info', 'Inquiry Form', 'Office Location'];
+    }
+    if (n.includes('project') || n.includes('work') || n.includes('portfolio')) {
+      return ['Portfolio Showcase', 'Featured Projects', 'Client Case Studies', 'Next Steps'];
+    }
+    if (n.includes('blog') || n.includes('journal') || n.includes('news') || n.includes('article')) {
+      return ['Featured Articles', 'Latest Posts', 'Categories & Topics', 'Newsletter Signup'];
+    }
+    return [`${pageName || 'Page'} Header`, 'Main Content Section', 'Feature Details', 'Closing Section'];
+  };
+
+  const rawSections = activePageId ? pageSections[activePageId] : null;
+  const descSections = page?.description
+    ? page.description.split(/\s*·\s*|\s*,\s*|\n+/).map((s) => s.trim()).filter(Boolean)
+    : [];
+  const fallbackSections = descSections.length > 0 ? descSections : defaultSectionsFor(page?.name, page?.route);
+  const bodySections = Array.isArray(rawSections) && rawSections.length > 0 ? rawSections : fallbackSections;
+  const hasNav = bodySections.some((s) => /\b(nav|navigation|navbar|header menu)\b/i.test(s));
+  const hasFooter = bodySections.some((s) => /\bfooter\b/i.test(s));
+  const sections = [...(hasNav ? [] : ['Navigation']), ...bodySections, ...(hasFooter ? [] : ['Footer'])];
+  const isLoadingSections = Boolean(sectionsLoading && (!sections || sections.length === 0));
 
   const attachmentsNow = () => chosenImages.map((id) => ({ path: images.find((image) => image.id === id).path, placement: chosen[id].placement, note: chosen[id].note }));
 
@@ -81,26 +141,51 @@ export default function ContentEditorPanel({ className = '' }) {
 
       {site && page ? (
         <div className="min-h-0 flex-1 divide-y divide-[#E2DCCF] overflow-y-auto">
-          {/* A. Page information */}
-          <section aria-label="Page information" className="px-5 py-5">
-            <SectionTitle>Page</SectionTitle>
-            {renaming !== null ? (
-              <div className="flex items-center gap-1">
-                <input autoFocus value={renaming} onChange={(event) => setRenaming(event.target.value)} maxLength={60} aria-label="Page name" className={`${inputClass} font-serif text-lg`}
-                  onKeyDown={(event) => { if (event.key === 'Enter') saveName(); if (event.key === 'Escape') setRenaming(null); }} />
-                <IconButton label="Save name" onClick={saveName}><Check className="h-4 w-4" /></IconButton>
-                <IconButton label="Cancel" onClick={() => setRenaming(null)}><X className="h-4 w-4" /></IconButton>
+          {/* B. Page sections – prominent list of all detected sections */}
+          <section aria-label="Page sections" className="px-5 py-5">
+            <div className="mb-2.5 flex items-baseline justify-between">
+              <SectionTitle hint={sections.length ? `${sections.length} ${sections.length === 1 ? 'section' : 'sections'}` : null}>
+                <LayoutList className="mr-1 inline h-3 w-3 align-[-2px]" />
+                Sections on this page
+              </SectionTitle>
+              {activePageId ? (
+                <IconButton label="Refresh sections" onClick={() => loadSections(activePageId)} disabled={running || sectionsLoading} className="!p-0.5">
+                  <RotateCcw className={`h-3 w-3 ${sectionsLoading ? 'animate-spin text-[#5E7B5F]' : ''}`} />
+                </IconButton>
+              ) : null}
+            </div>
+
+            {isLoadingSections ? (
+              <div className="space-y-2">
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+              </div>
+            ) : sections.length > 0 ? (
+              <div className="space-y-1.5">
+                {sections.map((sec, idx) => (
+                  <button
+                    key={`${sec}-${idx}`}
+                    type="button"
+                    onClick={() => window.dispatchEvent(new CustomEvent('studio-scroll-section', { detail: sec }))}
+                    title={`Go to "${sec}" in the preview`}
+                    className={`flex w-full items-center gap-2 rounded-md border ${line} bg-white p-2 text-left text-xs transition hover:border-[#5E7B5F]/60 hover:bg-[#FDFCF9]`}
+                  >
+                    <span className="flex h-4 w-5 shrink-0 items-center justify-center rounded bg-[#EFEBE1] font-mono text-[10px] font-semibold text-[#5E7B5F]">
+                      {String(idx + 1).padStart(2, '0')}
+                    </span>
+                    <span className={`truncate font-medium ${ink}`}>{sec}</span>
+                  </button>
+                ))}
               </div>
             ) : (
-              <div className="group flex items-start justify-between gap-2">
-                <h3 className={`font-serif text-2xl leading-tight ${ink}`}>{page.name}</h3>
-                <IconButton label="Rename page" disabled={running} className="mt-1 opacity-60 group-hover:opacity-100" onClick={() => setRenaming(page.name)}><Pencil className="h-3.5 w-3.5" /></IconButton>
-              </div>
+              <p className={`rounded-md border border-dashed ${line} p-3 text-center text-xs ${muted}`}>
+                No distinct sections detected. This page renders as a unified layout.
+              </p>
             )}
-            <p className={`mt-1 inline-block rounded bg-[#EFEBE1] px-1.5 py-0.5 font-mono text-[11px] ${muted}`}>{page.route}</p>
           </section>
 
-          {/* B. AI page instructions */}
+          {/* C. AI page instructions */}
           <form onSubmit={submit} aria-label="AI page instructions" className="space-y-5 px-5 py-5">
             <div>
               <SectionTitle hint={<span className={instruction.length > MAX_TEXT - 200 ? 'text-[#A4493A]' : ''}>{instruction.length}/{MAX_TEXT}</span>}>AI instructions</SectionTitle>

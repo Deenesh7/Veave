@@ -74,12 +74,12 @@ async function assertCanCreate(userId, { newProject = true } = {}) {
   }
 }
 
-// Same billing period rule as the billing overview: the 30 days before the renewal date, else the calendar month.
+// Same billing period rule as the billing overview: the month before the renewal date, else the calendar month.
 function billingPeriodStart(user, now = new Date()) {
   const renewsAt = user?.subscription?.renewsAt ? new Date(user.subscription.renewsAt) : null;
   if (renewsAt && renewsAt > now) {
     const start = new Date(renewsAt);
-    start.setDate(start.getDate() - 30);
+    start.setMonth(start.getMonth() - 1);
     return start;
   }
   return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -113,11 +113,18 @@ async function chargeCredits(userId, totalTokens) {
   if (exempt) return User.findById(userId);
   const cost = creditsForTokens(totalTokens);
   const floor = (field) => ({ $max: [0, { $subtract: [{ $ifNull: [field, '$credits'] }, cost] }] });
-  return User.findByIdAndUpdate(
+  const before = await User.findByIdAndUpdate(
     userId,
     [{ $set: { credits: { $max: [0, { $subtract: ['$credits', cost] }] }, 'subscription.creditsRemaining': floor('$subscription.creditsRemaining') } }],
-    { new: true }
-  );
+    { new: false }
+  ).select('credits subscription').lean();
+  const updated = await User.findById(userId);
+  // Every balance change has a ledger row (the admin Credit Management history); a failed record never blocks the charge.
+  if (before && updated) {
+    const ledger = require('../admin/creditLedgerService');
+    await ledger.recordUsage({ userId, previousBalance: ledger.balanceOf(before), newBalance: ledger.balanceOf(updated), reason: `AI generation (${Number(totalTokens || 0).toLocaleString('en-US')} tokens)`, meta: { tokens: Number(totalTokens) || 0 } });
+  }
+  return updated;
 }
 
 // Throws PlanLimitError unless the account can pay `credits` more credits (used before starting a paid AI task that has a fixed price).

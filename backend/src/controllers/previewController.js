@@ -20,11 +20,11 @@ exports.getPrecompiledPreview = async (req, res, next) => {
     const doc = await preview.ensurePrecompiled(req.params.id);
     if (!doc) throw new NotFoundError('Project');
     const clientHash = String(req.query.hash || '');
-    const base = { status: doc.status, token: doc.status === 'ready' ? doc.token : null, sourceHash: doc.sourceHash, compiledAt: doc.compiledAt, compileMs: doc.compileMs, error: doc.error || null };
+    const base = { status: doc.status, token: doc.status === 'ready' ? doc.token : null, sourceHash: doc.sourceHash, assetReport: doc.assetReport || null, compiledAt: doc.compiledAt, compileMs: doc.compileMs, error: doc.error || null };
     if (doc.status !== 'ready' || (clientHash && clientHash !== doc.sourceHash)) {
       return res.json({ success: true, data: { ...base, match: false } });
     }
-    return res.json({ success: true, data: { ...base, match: true, token: doc.token, html: doc.html, bytes: doc.bytes } });
+    return res.json({ success: true, data: { ...base, match: true, token: doc.token, html: await preview.htmlOf(doc), bytes: doc.bytes } });
   } catch (error) {
     next(error);
   }
@@ -49,6 +49,8 @@ exports.getPreviewAsset = async (req, res, next) => {
     if (req.headers['if-none-match'] === res.get('ETag')) return res.status(304).end();
     return res.send(asset.buffer);
   } catch (error) {
+    // A storage hiccup is not "this picture does not exist": tell the browser to try again shortly.
+    if (error?.transient) return res.status(503).set('Retry-After', '1').type('text/plain').send('Temporarily unavailable');
     next(error);
   }
 };

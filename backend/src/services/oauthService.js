@@ -199,6 +199,7 @@ class OAuthService {
     }
 
     // 3. Create new user without password requirement
+    if (!(await require('./admin/settingsService').get('platform')).registrationOpen) throw new Error('New registrations are closed right now.');
     const fallbackName = name || email.split('@')[0];
     user = await User.create({
       name: fallbackName,
@@ -207,6 +208,7 @@ class OAuthService {
       googleId: provider === 'google' ? providerId : undefined,
       appleId: provider === 'apple' ? providerId : undefined
     });
+    await require('./admin/newUserService').onUserCreated(user);
 
     return user;
   }

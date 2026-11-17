@@ -14,6 +14,7 @@ import { Spinner } from '../components/ui/Spinner';
 import { Dialog } from '../components/ui/Dialog';
 import { ProjectGrid } from '../features/projects/ProjectGrid';
 import { useProjectStore } from '../store/projectStore';
+import Dropdown from '../components/ui/Dropdown';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -108,7 +109,7 @@ export default function Dashboard() {
         {/* Sort Dropdown */}
         <div className="flex items-center gap-2 px-1">
           <SlidersHorizontal className="w-4 h-4 text-zinc-400 shrink-0 hidden sm:block" />
-          <select
+          <Dropdown
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
             className="text-xs font-medium text-zinc-700 bg-white border border-zinc-200 rounded-xl py-2 px-3 focus:outline-none focus:border-zinc-400 shadow-xs cursor-pointer"
@@ -116,7 +117,7 @@ export default function Dashboard() {
             <option value="recent">Recently Updated</option>
             <option value="name">Alphabetical</option>
             <option value="files">Most Files</option>
-          </select>
+          </Dropdown>
         </div>
       </div>
 

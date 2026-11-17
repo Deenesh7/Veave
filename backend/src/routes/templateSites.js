@@ -28,6 +28,7 @@ sites.get('/', controller.listSites);
 sites.get('/:siteId', controller.getSite);
 sites.patch('/:siteId', controller.updateSite);
 sites.delete('/:siteId', controller.deleteSite);
+sites.put('/:siteId/theme', controller.updateTheme);
 
 sites.get('/:siteId/pages', controller.listPages);
 sites.post('/:siteId/pages', controller.createPage);

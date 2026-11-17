@@ -1910,15 +1910,50 @@ exports.getActiveJob = async (req, res, next) => {
  */
 exports.decidePlan = async (req, res, next) => {
   try {
-    const { decision } = req.body || {};
+    const { decision, selectedPaths } = req.body || {};
     if (!['approve', 'cancel'].includes(decision)) {
       return res.status(400).json({ success: false, error: 'decision must be "approve" or "cancel"' });
     }
     await assertJobAccess(req.params.jobId, req.user, 'editor');
-    const outcome = await jobManager.decidePlan(req.params.jobId, decision, req.user ? req.user.id : null);
+    let selection = null;
+    if (decision === 'approve') {
+      // The cost and the page list are re-derived from the plan stored on the server; client-sent numbers are never used.
+      const pending = await GenerationJob.findOne({ jobId: req.params.jobId }).select('approval type').lean();
+      const plan = pending?.approval?.plan;
+      if (plan?.pages) {
+        const priced = require('../services/clone/cloneSelection').priceSelection(plan, selectedPaths === undefined ? plan.pages.map((page) => page.path) : selectedPaths);
+        if (priced.error) return res.status(400).json({ success: false, error: priced.error });
+        selection = priced.paths;
+        if (req.user?.id && priced.credits) await require('../services/billing/usageService').assertCanSpendCredits(req.user.id, priced.credits);
+      } else if (req.user?.id) {
+        // Plans without per-page data (older jobs): fall back to the stored whole-plan estimate.
+        const needed = Number(plan?.estimatedCredits) || 0;
+        if (needed) await require('../services/billing/usageService').assertCanSpendCredits(req.user.id, needed);
+      }
+    }
+    const outcome = await jobManager.decidePlan(req.params.jobId, decision, req.user ? req.user.id : null, { selection });
     if (outcome === 'forbidden') return res.status(403).json({ success: false, error: 'Not allowed' });
     if (outcome === 'not_found') return res.status(404).json({ success: false, error: 'No plan is waiting for approval' });
+    if (outcome === 'busy') return res.status(409).json({ success: false, error: 'The plan is being updated. Try again in a moment.' });
     return res.status(200).json({ success: true, decision });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** Asks the running clone job to scrape more pages into the plan that is waiting for approval. */
+exports.scrapeMorePlanPages = async (req, res, next) => {
+  try {
+    const paths = req.body?.paths;
+    if (paths !== undefined && (!Array.isArray(paths) || paths.length > 50 || paths.some((path) => typeof path !== 'string' || path.length > 2000))) {
+      return res.status(400).json({ success: false, error: 'paths must be a list of up to 50 page paths.' });
+    }
+    await assertJobAccess(req.params.jobId, req.user, 'editor');
+    const outcome = await jobManager.requestPlanScrape(req.params.jobId, paths || [], req.user ? req.user.id : null);
+    if (outcome === 'forbidden') return res.status(403).json({ success: false, error: 'Not allowed' });
+    if (outcome === 'not_found') return res.status(404).json({ success: false, error: 'No clone plan is waiting for approval' });
+    if (outcome === 'busy') return res.status(409).json({ success: false, error: 'More pages are already being scraped.' });
+    return res.status(202).json({ success: true });
   } catch (err) {
     next(err);
   }

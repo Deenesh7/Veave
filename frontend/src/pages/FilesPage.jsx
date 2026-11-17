@@ -21,6 +21,7 @@ import {
 import { useProjectStore } from '../store/projectStore';
 import { useEditorStore } from '../store/editorStore';
 import { formatDate } from '../utils/helpers';
+import { ImagePreviewModal } from '../features/code-workspace/ImagePreviewModal';
 import {
   isImageFile,
   PROJECT_FOLDER_DEFINITIONS,
@@ -63,6 +64,7 @@ export default function FilesPage() {
   const [activeProjectId, setActiveProjectId] = useState(null);
   const [activeCategoryId, setActiveCategoryId] = useState(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [previewImage, setPreviewImage] = useState(null);
   const fileInputRef = useRef(null);
 
   const navigate = useNavigate();
@@ -73,7 +75,12 @@ export default function FilesPage() {
     fetchProjects();
   }, [fetchProjects]);
 
-  const handleOpenFile = (projectId, filePath) => {
+  const handleOpenFile = (projectId, filePath, rawFile = null) => {
+    // Images open in a preview popup instead of the code editor
+    if (rawFile && isImageFile(filePath)) {
+      setPreviewImage({ ...rawFile, projectId });
+      return;
+    }
     if (projectId) {
       if (filePath) {
         setActiveFile(filePath);
@@ -95,6 +102,7 @@ export default function FilesPage() {
             return {
               name: details.name,
               fullPath: f.path,
+              rawFile: f,
               projectName: p.name || 'Untitled Project',
               projectId: p._id,
               type: details.type,
@@ -631,7 +639,7 @@ export default function FilesPage() {
                 return (
                   <div
                     key={file.fullPath}
-                    onClick={() => handleOpenFile(file.projectId, file.fullPath)}
+                    onClick={() => handleOpenFile(file.projectId, file.fullPath, file.rawFile)}
                     className="grid grid-cols-12 px-5 py-3 items-center text-xs hover:bg-zinc-50 transition-colors group cursor-pointer"
                   >
                     <div className="col-span-6 sm:col-span-5 flex items-center gap-2.5 min-w-0">
@@ -659,10 +667,10 @@ export default function FilesPage() {
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleOpenFile(file.projectId, file.fullPath);
+                            handleOpenFile(file.projectId, file.fullPath, file.rawFile);
                           }}
                           className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-zinc-100 hover:bg-zinc-200 text-zinc-700 text-[10px] font-semibold transition-colors shrink-0 cursor-pointer"
-                          title="Open in Code Editor"
+                          title={file.isImage ? 'Preview image' : 'Open in Code Editor'}
                         >
                           <Code2 className="w-3 h-3 text-zinc-600" />
                           <span>Open</span>
@@ -676,6 +684,7 @@ export default function FilesPage() {
           )}
         </div>
       )}
+      <ImagePreviewModal file={previewImage} projectId={previewImage?.projectId} onClose={() => setPreviewImage(null)} />
     </div>
   );
 }

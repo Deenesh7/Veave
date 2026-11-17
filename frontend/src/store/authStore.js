@@ -63,7 +63,8 @@ export const useAuthStore = create((set, get) => ({
     try {
       const res = await authService.getProfile();
       const user = res.data.data || res.data;
-      if (user) {
+      // Only touch the store when something changed, so a background refresh does not re-render the whole app every time.
+      if (user && JSON.stringify(user) !== JSON.stringify(get().user)) {
         set({ user });
       }
       return user;
@@ -95,6 +96,21 @@ export const useAuthStore = create((set, get) => ({
   clearError: () => set({ error: null }),
   setUser: (user) => set({ user }),
 }));
+
+// Credits (and the plan) can change on the server at any time: an admin adjusts them, a payment is delivered, a generation is charged.
+// The signed-in user is re-read when the tab gets focus and every 30 seconds while it is visible, so the header always shows the real balance.
+if (typeof window !== 'undefined') {
+  let lastProfileSync = 0;
+  const syncProfile = () => {
+    const { isAuthenticated, fetchProfile } = useAuthStore.getState();
+    if (!isAuthenticated || document.hidden || Date.now() - lastProfileSync < 10000) return;
+    lastProfileSync = Date.now();
+    fetchProfile();
+  };
+  window.addEventListener('focus', syncProfile);
+  document.addEventListener('visibilitychange', syncProfile);
+  setInterval(syncProfile, 30000);
+}
 
 if (typeof window !== 'undefined') {
   window.addEventListener('veave:unauthorized', () => {

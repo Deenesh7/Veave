@@ -6,6 +6,7 @@ import { StudioTopBar } from './StudioTopBar';
 import { StudioConversationPanel, GENERATION_TIMELINE_STEPS } from './StudioConversationPanel';
 import { StudioProgressiveSkeleton } from './StudioProgressiveSkeleton';
 import { StudioLivePreview } from './StudioLivePreview';
+import ProjectThemePanel from './ProjectThemePanel';
 import { CodeWorkspace } from '../code-workspace/CodeWorkspace';
 import { VersionHistory } from '../editor/VersionHistory';
 import { VisualEditor } from '../visual-editor/VisualEditor';
@@ -17,6 +18,7 @@ import GenerationNotice from '../../components/dashboard/GenerationNotice';
 
 export function StudioWorkspace() {
   const { id } = useParams();
+  const [themeOpen, setThemeOpen] = useState(false);
   const navigate = useNavigate();
   const goBack = useSmartBack('/dashboard');
 
@@ -404,6 +406,8 @@ export function StudioWorkspace() {
         onRefresh={() => setPreviewKey((k) => k + 1)}
         onOpenHistory={() => setHistoryOpen(true)}
         isGenerating={isGenerating}
+        themeOpen={themeOpen}
+        onToggleTheme={() => { if (!themeOpen) setIsFeedOpen(false); setThemeOpen((open) => !open); }}
       />
 
       <GenerationNotice />
@@ -533,6 +537,9 @@ export function StudioWorkspace() {
             </div>
           )}
         </div>
+
+        {/* Theme panel: takes its own column, so the preview shrinks instead of being covered */}
+        {themeOpen && currentProject?._id && !isGenerating ? <ProjectThemePanel projectId={currentProject._id} onClose={() => setThemeOpen(false)} /> : null}
 
         {/* Right AI Designer & Prompt Agent Panel (Conversation Feed + Integrated Prompt Bar) */}
         <StudioConversationPanel

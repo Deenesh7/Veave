@@ -11,10 +11,12 @@ import {
   FolderOpen,
   Clock,
   LayoutTemplate,
+  ShieldCheck,
   Menu,
   PanelLeftClose,
   PanelLeftOpen
 } from 'lucide-react';
+import { NAV as ADMIN_NAV, useAdminUnread } from '../../features/admin/AdminLayout';
 import CreateButton from './CreateButton';
 import SearchBar from './SearchBar';
 import DocumentationLink from './DocumentationLink';
@@ -28,6 +30,8 @@ import MySitesPanel from '../../features/template-studio/MySitesPanel';
 export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }) {
   const { user } = useAuthStore();
   const projects = useProjectStore((s) => s.projects);
+  const isAdmin = user?.role === 'ADMIN';
+  const adminUnread = useAdminUnread((s) => s.unread);
   const pendingInvitations = useCollabStore((s) => s.invitations.length);
 
   const [view, setView] = useState('menu'); // 'menu' | 'studio'
@@ -47,7 +51,7 @@ export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }
 
   const projectCount = projects?.length > 0 ? String(projects.length) : undefined;
 
-  const navItems = [
+  const userNavItems = [
     { label: 'Home', href: '/', icon: Home, onClick: onCloseMobileMenu },
     { label: 'Recent', href: '/recent', icon: Clock, onClick: onCloseMobileMenu },
     { label: 'Shared with Others', href: '/shared', icon: Share2, onClick: onCloseMobileMenu },
@@ -61,15 +65,21 @@ export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }
     { label: 'Billing', href: '/billing', icon: CreditCard, onClick: onCloseMobileMenu },
   ];
 
+  // Administrators see only the admin dashboard; the server enforces the role on every admin request regardless.
+  const adminNavItems = ADMIN_NAV.map((item) => ({
+    label: item.label, href: item.to, icon: item.icon, end: item.end, onClick: onCloseMobileMenu,
+    badge: item.badge && adminUnread > 0 ? (adminUnread > 99 ? '99+' : String(adminUnread)) : undefined
+  }));
+  const navItems = isAdmin ? adminNavItems : userNavItems;
+
   const menuPane = (
     <div className="flex flex-col h-full justify-between p-3.5 select-none bg-transparent">
       {/* Top Section */}
       <div className="space-y-4">
-        {/* Create Button */}
-        <CreateButton />
+        {!isAdmin && <CreateButton />}
 
         {/* Search Bar with Ctrl+K */}
-        <SearchBar />
+        {!isAdmin && <SearchBar />}
 
         {/* Animated Bounce Sidebar Navigation */}
         <BounceSidebar items={navItems} dotColor="#18181B" />
@@ -77,7 +87,7 @@ export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }
 
       {/* Bottom Sidebar: Documentation */}
       <div className="mt-auto pt-2">
-        <DocumentationLink onNavigate={onCloseMobileMenu} />
+        {!isAdmin && <DocumentationLink onNavigate={onCloseMobileMenu} />}
       </div>
     </div>
   );
@@ -100,14 +110,14 @@ export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }
   const content = (
     <div className="flex flex-col h-full">
       <div className="shrink-0 p-3 pb-0 flex items-center gap-2">
-        <div className="relative grid flex-1 grid-cols-2 rounded-lg bg-[#EFEBE1] p-0.5 text-xs font-medium">
+        {isAdmin ? <div className="flex-1 px-1 text-xs font-semibold text-[#2B2823]">Control center</div> : <div className="relative grid flex-1 grid-cols-2 rounded-lg bg-[#EFEBE1] p-0.5 text-xs font-medium">
           <span
             aria-hidden="true"
             className={`absolute inset-y-0.5 left-0.5 w-[calc(50%-2px)] rounded-md bg-[#FBF9F4] shadow-sm transition-transform duration-300 ease-in-out ${view === 'studio' ? 'translate-x-full' : ''}`}
           />
           <button type="button" onClick={() => { setView('menu'); if (pathname.startsWith('/template-studio')) navigate('/dashboard'); }} aria-pressed={view === 'menu'} className="relative z-10 flex items-center justify-center gap-1.5 min-w-0 py-1.5 text-[#2B2823]"><Menu className="h-3.5 w-3.5 shrink-0" /><span className="truncate">Menu</span></button>
           <button type="button" onClick={() => { setView('studio'); if (!pathname.startsWith('/template-studio')) navigate('/template-studio'); }} aria-pressed={view === 'studio'} title="Template Studio" className="relative z-10 flex items-center justify-center gap-1.5 min-w-0 py-1.5 text-[#2B2823]"><LayoutTemplate className="h-3.5 w-3.5 shrink-0" /><span className="truncate">Studio</span></button>
-        </div>
+        </div>}
         <button
           type="button"
           onClick={() => setSidebarHidden(true)}
@@ -155,7 +165,7 @@ export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }
                 <NavLink
                   key={item.href}
                   to={item.href}
-                  end={item.href === '/'}
+                  end={item.end ?? item.href === '/'}
                   title={item.label}
                   aria-label={item.label}
                   className={({ isActive }) => `relative flex h-9 w-9 items-center justify-center rounded-lg transition-colors ${isActive ? 'bg-[#EEE9DC] text-[#2B2823]' : 'text-[#7A7366] hover:bg-[#EAE5D9] hover:text-[#2B2823]'}`}

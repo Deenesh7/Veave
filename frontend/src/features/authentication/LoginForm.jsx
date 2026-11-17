@@ -18,13 +18,15 @@ export function LoginForm() {
     const oauthError = searchParams.get('error');
 
     if (token) {
-      useAuthStore.getState().loginWithToken(token).then(() => {
-        navigate('/template-studio', { replace: true });
+      useAuthStore.getState().loginWithToken(token).then((user) => {
+        navigate(user?.role === 'ADMIN' ? '/admin' : '/template-studio', { replace: true });
       }).catch((err) => {
         console.error('OAuth login failed:', err);
       });
     } else if (oauthError) {
       useAuthStore.setState({ error: oauthError }); // searchParams.get() already decodes it
+    } else if (searchParams.get('suspended')) {
+      useAuthStore.setState({ error: 'This account has been suspended. Contact support.' });
     } else if (searchParams.get('expired')) {
       useAuthStore.setState({ error: 'Please log in to continue. Your session has ended or you need an account for this action.' });
     }
@@ -35,9 +37,11 @@ export function LoginForm() {
     if (error) clearError();
     setIsSubmitting(true);
     try {
-      await login(email, password);
+      const user = await login(email, password);
       const redirect = searchParams.get('redirect');
-      navigate(redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/template-studio');
+      const safe = redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : null;
+      // Administrators always land on the admin dashboard.
+      navigate(user?.role === 'ADMIN' ? (safe?.startsWith('/admin') ? safe : '/admin') : safe || '/template-studio');
     } catch (err) {
       // Error is handled by store
     } finally {

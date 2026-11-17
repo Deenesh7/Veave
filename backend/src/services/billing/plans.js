@@ -32,8 +32,8 @@ function limitsFor(name) {
   return PLAN_LIMITS[resolvePlanName(name)];
 }
 
-// 1 credit = 20,000 tokens (so 50 credits = 1,000,000 tokens, 250 = 5M, 750 = 15M).
-const TOKENS_PER_CREDIT = 20_000;
+// 1 credit = TOKENS_PER_CREDIT tokens (default 20,000, so 50 credits = 1,000,000 tokens). Set it in the .env file.
+const TOKENS_PER_CREDIT = Math.max(1, Number.parseInt(process.env.TOKENS_PER_CREDIT, 10) || 20_000);
 
 // Paid plans can top up with extra credits at a flat price per credit.
 const CREDIT_PRICE_INR = 12;

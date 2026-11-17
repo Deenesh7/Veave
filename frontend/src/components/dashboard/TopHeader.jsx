@@ -5,7 +5,9 @@ import WorkspaceSelector from './WorkspaceSelector';
 import { ProfileMenu } from '../profile/ProfileMenu';
 import NotificationBell from '../../features/collaboration/NotificationBell';
 import { useCollabStore } from '../../store/collabStore';
+import { useAuthStore } from '../../store/authStore';
 import { collaborationService, apiErrorMessage } from '../../services/collaborationService';
+import Dropdown from '../ui/Dropdown';
 
 export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
@@ -15,6 +17,7 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
   const [inviteError, setInviteError] = useState(null);
   const [inviteBusy, setInviteBusy] = useState(false);
   const navigate = useNavigate();
+  const isAdmin = useAuthStore((s) => s.user?.role) === 'ADMIN';
   const { groups, fetchGroups } = useCollabStore();
   const adminGroups = groups.filter((g) => g.myStatus === 'active' && ['owner', 'admin'].includes(g.myRole));
 
@@ -72,21 +75,21 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
           <span className="text-zinc-300 font-light mx-1 sm:mx-1.5 text-sm">/</span>
 
           {/* Workspace Selector */}
-          <WorkspaceSelector />
+          {isAdmin ? <span className="text-sm font-semibold text-[#2B2823]">Admin</span> : <WorkspaceSelector />}
         </div>
 
         {/* Right Side */}
         <div className="flex items-center gap-3">
           {/* Invite Team Button */}
-          <button
+          {!isAdmin && <button
             onClick={() => setInviteModalOpen(true)}
             className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E2E5E8] text-xs font-semibold text-[#111827] hover:bg-zinc-50 hover:border-zinc-300 transition-all shadow-2xs active:scale-95"
           >
             <UserPlus className="w-3.5 h-3.5 text-zinc-500" />
             <span>Invite Team</span>
-          </button>
+          </button>}
 
-          <NotificationBell />
+          {!isAdmin && <NotificationBell />}
 
           {/* Circular User Avatar with Profile Dropdown */}
           <ProfileMenu />
@@ -130,13 +133,13 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
 
               <div>
                 <label className="block text-xs font-semibold text-[#111827] mb-1.5">Group</label>
-                <select
+                <Dropdown
                   value={inviteGroupId}
                   onChange={(e) => setInviteGroupId(e.target.value)}
                   className="w-full px-3 py-2 text-xs rounded-xl border border-[#E2E5E8] bg-white focus:outline-none focus:border-[#52525B]"
                 >
                   {adminGroups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-                </select>
+                </Dropdown>
               </div>
 
               <div>

@@ -14,7 +14,7 @@ const HEADLINES = [
   'What are we creating today?',
   'Start with an idea, end with a website.',
 ];
-const HOLD_MS = 2000;      // how long a sentence stays fully visible
+const HOLD_MS = 5000;      // how long a sentence stays fully visible
 const LETTER_STEP_MS = 22; // delay between one letter and the next
 const LETTER_ANIM_MS = 380;
 

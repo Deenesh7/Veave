@@ -61,7 +61,7 @@ class ProjectService {
       ? { path: file.path, language: file.language, encoding: 'base64', size: file.blob?.size ?? base64ByteLength(file.content || ''), contentOmitted: true }
       : text[next++]));
     try {
-      const doc = await require('../preview/previewService').ensurePrecompiled(plain._id);
+      const doc = await require('../preview/previewService').ensurePrecompiled(plain._id, { light: true });
       plain.previewAssetToken = doc?.token || null;
     } catch (error) {
       logger.warn(`Preview token unavailable for ${plain._id}: ${error.message}`);
@@ -104,6 +104,12 @@ class ProjectService {
   }
 
   async getAll(userId) {
+    // A short-lived cache in front of the real query. Any change to any project bumps the namespace (Project model hooks), so a
+    // list is never older than the last write; the TTL only bounds staleness across several server processes without Redis.
+    return require('../cache/cacheService').remember('projects', `list:${userId ? String(userId) : 'guest'}`, 20, () => this._loadAll(userId));
+  }
+
+  async _loadAll(userId) {
     // A logged-in user's list is exactly their own projects (the same set billing counts); a guest only sees
     // ownerless ones. It used to mix in everyone's ownerless projects, so the list and the usage numbers disagreed.
     const query = userId
@@ -111,15 +117,29 @@ class ProjectService {
       : { $or: [{ userId: null }, { userId: { $exists: false } }], status: 'active' };
     // Dashboard listings only need file metadata for the count. Returning every
     // source body makes large generated projects stall unrelated API requests.
-    return await Project.find(query)
+    const projects = await Project.find(query)
       .select('-files.content -files.blob -provenance')
       .sort({ updatedAt: -1 })
       .lean();
+    // Cards show who created the project: attach the creator's name (the id is already visible to its owner).
+    const ids = [...new Set(projects.map((p) => String(p.createdBy || p.userId || '')).filter(Boolean))];
+    if (ids.length) {
+      const users = await require('../../models/User').find({ _id: { $in: ids } }).select('name').lean();
+      const byId = new Map(users.map((u) => [String(u._id), u.name]));
+      for (const project of projects) {
+        const name = byId.get(String(project.createdBy || project.userId || ''));
+        if (name) project.owner = { id: String(project.createdBy || project.userId), name };
+      }
+    }
+    return projects;
   }
 
   async getById(id, userId, { lite = false, withAccess = false, minLevel = 'viewer' } = {}) {
     const ctx = await projectAccess.requireProjectAccess(id, userId, minLevel);
-    const project = await Project.findById(id);
+    // Only callers that keep working with a Mongoose document (no `withAccess`, not lite) need one; everything else gets a plain
+    // object, which skips building a document for megabytes of file content.
+    const plainResult = lite || withAccess;
+    const project = plainResult ? await Project.findById(id).lean() : await Project.findById(id);
     if (!project) throw new NotFoundError('Project');
     const accessInfo = { level: ctx.level, canEdit: ctx.canEdit, canManage: ctx.canManage, isOwner: ctx.isOwner };
     if (lite) {
@@ -128,7 +148,7 @@ class ProjectService {
     }
     project.files = await hydrateFiles(project.files);
     if (!withAccess) return project;
-    return { ...project.toObject(), access: accessInfo };
+    return { ...project, access: accessInfo };
   }
 
   async update(id, userId, data, { lite = false, baseRevision = null } = {}) {
@@ -290,7 +310,8 @@ class ProjectService {
   async updateFile(id, userId, path, content, { baseRevision = null } = {}) {
     await projectAccess.requireProjectAccess(id, userId, 'editor');
     if (typeof path !== 'string' || !path.trim() || typeof content !== 'string') throw new ValidationError('A file path and string content are required.');
-    const project = await Project.findById(id);
+    // Plain object: only the file list and revision are needed, so no Mongoose document is built for the whole project.
+    const project = await Project.findById(id).select('files revision').lean();
     if (!project) throw new NotFoundError('Project');
     const expected = parseRevision(baseRevision);
     if (await projectAccess.isShared(id)) {

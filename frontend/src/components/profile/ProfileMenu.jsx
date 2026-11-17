@@ -31,6 +31,9 @@ export function ProfileMenu() {
     }
   }, [authUser, fetchProfile]);
 
+  // Opening the menu shows the latest balance (an admin may have added credits).
+  useEffect(() => { if (isProfileMenuOpen && fetchProfile) fetchProfile(); }, [isProfileMenuOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Helper to format plan name from DB cleanly
   const formatPlanName = (planStr) => {
     if (!planStr) return 'Free Tier';
@@ -54,9 +57,8 @@ export function ProfileMenu() {
   };
 
   // Credit balance directly from MongoDB user document
-  const credits = typeof authUser?.credits === 'number'
-    ? authUser.credits
-    : (authUser?.subscription?.creditsRemaining ?? 0);
+  // Same rule as the server, the billing page and the admin portal: the plan's remaining credits, falling back to the legacy field.
+  const credits = Number(authUser?.subscription?.creditsRemaining ?? authUser?.credits ?? 0);
 
   const menuRef = useRef(null);
 

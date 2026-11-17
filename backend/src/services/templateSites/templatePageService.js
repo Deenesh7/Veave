@@ -193,22 +193,115 @@ async function listPagesFor(site) {
   return TemplatePage.find({ siteId: site._id }).sort({ order: 1, createdAt: 1 });
 }
 
-/** The section headings of a page's source (SectionHeading titles and h1/h2 text), at most 8. */
+/** The section headings of a page's source, in document appearance order. */
 function extractHeadings(source) {
+  const matches = [];
+
+  // 1. Match SectionHeading, Heading, CTA, Hero, Banner titles/headings
+  for (const m of source.matchAll(/<(?:SectionHeading|Heading|CTA|Hero|Banner|SectionHeader|PageHeader)[^>]*?\b(?:title|heading)=(?:"([^"]+)"|\{?['"`]([^'"`]+)['"`]\}?)/gi)) {
+    matches.push({ index: m.index, text: m[1] || m[2] });
+  }
+
+  // 2. Match h1, h2, h3, h4 (including multi-line and inner elements like <span>, <strong>, etc.)
+  for (const m of source.matchAll(/<h([1-4])[^>]*>([\s\S]*?)<\/h\1>/gi)) {
+    const raw = m[2].replace(/<[^>]+>/g, ' ').replace(/\{[^}]+\}/g, ' ').replace(/\s+/g, ' ').trim();
+    if (raw && raw.length <= 120 && !raw.startsWith('http')) {
+      matches.push({ index: m.index, text: raw });
+    }
+  }
+
+  // 3. Match section / Section with aria-label or title
+  for (const m of source.matchAll(/<(?:section|Section)[^>]*?\b(?:aria-label|title)=(?:"([^"]+)"|\{?['"`]([^'"`]+)['"`]\}?)/gi)) {
+    matches.push({ index: m.index, text: m[1] || m[2] });
+  }
+
+  // 4. Match section / Section / div with id or name
+  for (const m of source.matchAll(/<(?:section|Section|div)[^>]*?\b(?:id|name)=(?:"([^"]+)"|\{?['"`]([^'"`]+)['"`]\}?)/gi)) {
+    const raw = m[1] || m[2];
+    if (raw && !['root', 'app', 'main', 'container', 'wrapper', 'page', 'content'].includes(raw.toLowerCase())) {
+      const text = raw.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).trim();
+      matches.push({ index: m.index, text });
+    }
+  }
+
+  // 5. Match JSX section comments e.g. {/* Hero Section */} or {/* Testimonials */}
+  for (const m of source.matchAll(/\{\/\*\s*([A-Za-z0-9\s&,/-]{2,50}?)(?:\s+(?:Section|Block|Area))?\s*\*\/\}/gi)) {
+    const text = m[1].replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).trim();
+    if (text && !['End', 'Start', 'Comment', 'Todo', 'Note'].includes(text)) {
+      matches.push({ index: m.index, text });
+    }
+  }
+
+  // 6. Match common Section components e.g. <Features />, <Testimonials />, <Pricing />
+  const COMPONENT_REGEX = /<((?:Hero|About|Services|Process|Features|Testimonials|Team|Stats|Pricing|FAQ|Faq|Contact|CTA|Portfolio|Gallery|Blog|Newsletter|Values|Timeline|History|Partners|Clients|Work|CaseStudies|Showcase|Reviews|ContactForm|CallToAction|Benefits|Comparison|HowItWorks)[A-Za-z0-9]*)\b[^>]*\/?>/g;
+  for (const m of source.matchAll(COMPONENT_REGEX)) {
+    const hasExistingMatch = matches.some((item) => item.index >= m.index && item.index < m.index + m[0].length);
+    if (!hasExistingMatch) {
+      const compName = m[1];
+      const text = compName.replace(/([a-z])([A-Z])/g, '$1 $2').trim();
+      matches.push({ index: m.index, text });
+    }
+  }
+
+  // 7. Look for section / Section blocks without explicit headings (e.g. stats, logos, partners, faq, form)
+  for (const m of source.matchAll(/<(?:section|Section)(?:[^>]*?)>([\s\S]*?)<\/(?:section|Section)>/gi)) {
+    const content = m[1];
+    const hasExistingMatch = matches.some((item) => item.index >= m.index && item.index < m.index + m[0].length);
+    if (!hasExistingMatch) {
+      if (/\b(stat|stats|metrics)\b/i.test(content)) {
+        matches.push({ index: m.index, text: 'Key Statistics' });
+      } else if (/\b(logo|logos|partners|clients)\b/i.test(content)) {
+        matches.push({ index: m.index, text: 'Partners & Logos' });
+      } else if (/\b(faq|questions)\b/i.test(content)) {
+        matches.push({ index: m.index, text: 'Frequently Asked Questions' });
+      } else if (/<form\b/i.test(content)) {
+        matches.push({ index: m.index, text: 'Contact Form' });
+      }
+    }
+  }
+
+  matches.sort((a, b) => a.index - b.index);
+
   const found = [];
-  const add = (value) => { const text = String(value || '').replace(/\s+/g, ' ').trim(); if (text && text.length <= 90 && !found.includes(text)) found.push(text); };
-  for (const match of source.matchAll(/<SectionHeading[^>]*?\btitle=(?:"([^"]+)"|\{?['"`]([^'"`]+)['"`]\}?)/g)) add(match[1] || match[2]);
-  for (const match of source.matchAll(/<h[12][^>]*>([^<{]+)<\/h[12]>/g)) add(match[1]);
-  return found.slice(0, 8);
+  for (const item of matches) {
+    const text = String(item.text || '').replace(/\s+/g, ' ').trim();
+    if (text && text.length <= 120 && !found.some((existing) => existing.toLowerCase() === text.toLowerCase())) {
+      found.push(text);
+    }
+  }
+
+  return found.slice(0, 50);
 }
 
-/** Short list of what a page currently shows (its section headings), read from the page's own component file. */
+/** Complete list of what a page currently shows (all its sections), read from the page's own component file with fallbacks. */
 async function describeSections(site, page) {
-  const project = await require('../../models/Project').findOne({ _id: site.projectId, userId: site.userId, 'files.path': page.componentPath }, { 'files.$': 1 }).lean();
-  const stored = project?.files?.[0];
-  if (!stored) return [];
-  const file = await require('../storage/s3BlobStorage').hydrateFile(stored);
-  return extractHeadings(String(file.content || ''));
+  let found = [];
+  try {
+    const clean = (p) => String(p || '').replace(/^\/+/, '');
+    const targetPath = clean(page.componentPath);
+    const project = await require('../../models/Project').findOne({ _id: site.projectId }, { files: 1 }).lean();
+    const stored = (project?.files || []).find((f) => clean(f.path) === targetPath || f.path === page.componentPath);
+    if (stored) {
+      const file = await require('../storage/s3BlobStorage').hydrateFile(stored);
+      found = extractHeadings(String(file.content || ''));
+    }
+  } catch {}
+
+  if (!found.length && page?.description) {
+    found = page.description.split(/\s*·\s*/).map((s) => s.trim()).filter(Boolean);
+  }
+
+  if (!found.length && site?.templateId) {
+    try {
+      const template = require('../templates/templateService').resolveTemplate(site.templateId, { user: { _id: site.userId } });
+      const tPage = template?.pages?.find((p) => p.path === page.route || p.file === page.componentPath);
+      if (Array.isArray(tPage?.sections) && tPage.sections.length) {
+        found = tPage.sections.filter(Boolean);
+      }
+    } catch {}
+  }
+
+  return found;
 }
 
 module.exports = { extractHeadings, describeSections, listPagesFor, addPage, renamePage, deletePage, reorderPages, MAX_PAGES, assertNoRunningJob, changeFiles, undoFiles, bumpSite, reindex };
