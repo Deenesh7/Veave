@@ -135,7 +135,7 @@ export default function ImageLibrary({ disabled = false }) {
   const activePage = pages.find((item) => item.id === activePageId);
   const pageSectionNames = (Array.isArray(pageSections?.[activePageId]) && pageSections[activePageId].length ? pageSections[activePageId] : (activePage?.description || '').split(/\s*·\s*|\s*,\s*|\n+/)).map((name) => String(name).trim()).filter(Boolean);
   const placementOptionsFor = (current) => {
-    const options = [{ value: '', label: 'Let the page decide', hint: 'The AI picks the best spot on this page' }, { value: 'page-background', label: 'Whole page background', hint: 'The picture sits behind every section of this page' }, ...[...new Set(pageSectionNames)].map((name) => ({ value: `section:${name}`, label: name, hint: 'Place it in this section of the page' }))];
+    const options = [{ value: '', label: 'Let the page decide', hint: 'The AI picks the best spot on this page' }, { value: 'page-background', label: 'Background of this page only', hint: 'The picture sits behind every section of this page. Other pages are not changed' }, ...[...new Set(pageSectionNames)].map((name) => ({ value: `section:${name}`, label: name, hint: 'Place it in this section of the page' }))];
     if (current && !options.some((option) => option.value === current)) options.push({ value: current, label: current.replace(/^section:/, ''), hint: 'Chosen earlier' });
     return options;
   };

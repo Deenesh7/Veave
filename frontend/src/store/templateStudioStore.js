@@ -776,7 +776,7 @@ export const useTemplateStudioStore = create((set, get) => ({
       const image = state.images.find((item) => item.id === imageId);
       if (on === false || (on === undefined && chosen[imageId])) delete chosen[imageId];
       else if (Object.keys(chosen).length >= MAX_ATTACH && !chosen[imageId]) { setTimeout(() => get().flash('error', `You can use up to ${MAX_ATTACH} photos in one regeneration.`), 0); return {}; }
-      else chosen[imageId] = chosen[imageId] || { placement: image?.placement || '', note: image?.note || '' };
+      else chosen[imageId] = chosen[imageId] || { placement: /^(page-background|section)/.test(image?.placement || '') ? '' : (image?.placement || ''), note: image?.note || '' };
       return { selection: { ...state.selection, [pageId]: chosen } };
     });
   },

@@ -166,7 +166,8 @@ async function resolveAttachments(site, items = []) {
     const use = swap || asset;
     return {
       path: toPublic(use.projectPath), name: present(asset).name, width: use.width || 0, height: use.height || 0, alt: asset.alt || '', caption: asset.caption || '', tags: asset.tags || [],
-      placement: choice.placement || asset.placement || '', note: choice.note || asset.note || ''
+      // A saved default must never carry a page-specific placement (page background, a named section) over to another page.
+      placement: choice.placement || (/^(page-background|section)/.test(asset.placement || '') ? '' : asset.placement) || '', note: choice.note || asset.note || ''
     };
   });
 }
