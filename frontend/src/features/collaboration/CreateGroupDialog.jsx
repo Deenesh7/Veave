@@ -29,9 +29,9 @@ export default function CreateGroupDialog({ open, onClose, onCreated }) {
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="Create group" description="You become the group owner. Invite people afterwards, then share projects with the group.">
+    <Modal open={open} onClose={onClose} title="Create website group" description="You become the group owner. Invite people afterwards, then share projects with the group.">
       <form onSubmit={submit} className="space-y-4">
-        <Field label="Group name" hint="Must be unique across Veave.">
+        <Field label="Website group name" hint="Must be unique across Veave.">
           <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} maxLength={60} required autoFocus placeholder="Design Team" />
         </Field>
         <Field label="Description (optional)">
@@ -44,7 +44,7 @@ export default function CreateGroupDialog({ open, onClose, onCreated }) {
         {error && <Notice>{error}</Notice>}
         <div className="flex justify-end gap-2 pt-1">
           <Btn variant="outline" onClick={onClose}>Cancel</Btn>
-          <Btn type="submit" loading={busy} disabled={name.trim().length < 2}>Create group</Btn>
+          <Btn type="submit" loading={busy} disabled={name.trim().length < 2}>Create website group</Btn>
         </div>
       </form>
     </Modal>

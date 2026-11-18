@@ -6,9 +6,10 @@ const ProjectSharing = require('../../models/ProjectSharing');
 const Project = require('../../models/Project');
 const User = require('../../models/User');
 const { NotFoundError, ValidationError, ForbiddenError, ConflictError } = require('../../utils/errors');
-const { withTransaction, notify, audit, sid } = require('./support');
+const { withTransaction, notify, audit, sid, isSupportAdmin } = require('./support');
 
 const ADMIN_ROLES = ['owner', 'admin'];
+const MAX_ADMINS = 3;
 const userId = (user) => sid(user?._id || user?.id || user);
 
 const publicUser = (u) => (u ? { id: sid(u._id), name: u.name, email: u.email, avatar: u.avatar || '' } : null);
@@ -47,7 +48,16 @@ async function requireMember(user, groupId, { roles = null, allowPending = false
   const uid = userId(user);
   if (!uid) throw new NotFoundError('Group');
   const membership = await GroupMembership.findOne({ groupId, userId: uid, status: allowPending ? { $in: ['active', 'pending'] } : 'active' });
-  if (!membership) throw new NotFoundError('Group');
+  if (!membership) {
+    // A support admin can open any group without joining it (read access; changing a group still needs a group admin or the support-only tools).
+    if (isSupportAdmin(user)) {
+      const anyGroup = await Group.findById(groupId);
+      if (!anyGroup) throw new NotFoundError('Group');
+      if (roles && !roles.includes('support')) throw new ForbiddenError('Only group admins can do this.', 'GROUP_ADMIN_REQUIRED');
+      return { group: anyGroup, membership: { role: 'support', status: 'active', groupId: anyGroup._id, userId: uid } };
+    }
+    throw new NotFoundError('Group');
+  }
   const group = await Group.findById(groupId);
   if (!group) throw new NotFoundError('Group');
   if (roles && !roles.includes(membership.role)) throw new ForbiddenError('Only group admins can do this.', 'GROUP_ADMIN_REQUIRED');
@@ -92,8 +102,14 @@ function pickSettings(input = {}) {
 async function listGroups(user) {
   const uid = userId(user);
   const memberships = await GroupMembership.find({ userId: uid, status: { $in: ['active', 'pending'] } }).lean();
-  if (!memberships.length) return [];
-  const groupIds = memberships.map((m) => m.groupId);
+  let groupIds = memberships.map((m) => m.groupId);
+  if (isSupportAdmin(user)) {
+    // A support admin sees every group (the ones they are not in are read-only for them apart from the support tools).
+    const all = await Group.find({}).select('_id').sort({ updatedAt: -1 }).limit(500).lean();
+    const mine = new Set(groupIds.map(String));
+    groupIds = [...groupIds, ...all.map((g) => g._id).filter((id) => !mine.has(String(id)))];
+  }
+  if (!groupIds.length) return [];
   const [groups, counts, projectCounts] = await Promise.all([
     Group.find({ _id: { $in: groupIds } }).lean(),
     GroupMembership.aggregate([{ $match: { groupId: { $in: groupIds }, status: 'active' } }, { $group: { _id: '$groupId', n: { $sum: 1 } } }]),
@@ -102,8 +118,9 @@ async function listGroups(user) {
   const memberCount = new Map(counts.map((c) => [String(c._id), c.n]));
   const projectCount = new Map(projectCounts.map((c) => [String(c._id), c.n]));
   const membershipByGroup = new Map(memberships.map((m) => [String(m.groupId), m]));
+  const supportView = { role: 'support', status: 'active' };
   return groups
-    .map((group) => toGroup(group, membershipByGroup.get(String(group._id)), {
+    .map((group) => toGroup(group, membershipByGroup.get(String(group._id)) || supportView, {
       memberCount: memberCount.get(String(group._id)) || 0,
       projectCount: projectCount.get(String(group._id)) || 0
     }))
@@ -148,7 +165,7 @@ async function listMembers(user, groupId) {
   const rows = await GroupMembership.find({ groupId, status: isAdmin ? { $in: ['active', 'pending'] } : 'active' }).lean();
   const users = await User.find({ _id: { $in: rows.map((r) => r.userId) } }).select('name email avatar').lean();
   const byId = new Map(users.map((u) => [String(u._id), u]));
-  const order = { owner: 0, admin: 1, member: 2 };
+  const order = { owner: 0, admin: 1, editor: 2, member: 3 };
   return rows
     .map((row) => ({
       id: sid(row._id),
@@ -162,17 +179,31 @@ async function listMembers(user, groupId) {
 }
 
 async function setMemberRole(user, groupId, targetUserId, role) {
-  if (!['admin', 'member'].includes(role)) throw new ValidationError('Role must be "admin" or "member".');
-  const { group, membership: actor } = await requireMember(user, groupId, { roles: ADMIN_ROLES });
+  if (!['admin', 'editor', 'member'].includes(role)) throw new ValidationError('Role must be "admin", "editor" or "member".');
+  const support = isSupportAdmin(user);
+  let group; let actor;
+  if (support) {
+    if (!mongoose.isValidObjectId(groupId)) throw new NotFoundError('Group');
+    group = await Group.findById(groupId);
+    if (!group) throw new NotFoundError('Group');
+    actor = { role: 'owner' }; // a support admin may change any role except the owner's
+  } else {
+    ({ group, membership: actor } = await requireMember(user, groupId, { roles: ADMIN_ROLES }));
+  }
   const target = await GroupMembership.findOne({ groupId, userId: targetUserId, status: 'active' });
   if (!target) throw new NotFoundError('Member');
   if (target.role === 'owner') throw new ForbiddenError('The group owner\'s role cannot be changed. Transfer ownership instead.', 'OWNER_PROTECTED');
   if (sid(target.userId) === userId(user)) throw new ForbiddenError('You cannot change your own role.', 'SELF_ROLE_CHANGE');
-  // Only the owner may promote to / demote from admin; admins manage plain members only (no privilege escalation).
-  if (actor.role !== 'owner' && (role === 'admin' || target.role === 'admin')) {
-    throw new ForbiddenError('Only the group owner can grant or remove the admin role.', 'OWNER_REQUIRED');
+  // Group admins are assigned (and removed) by a support admin only. The group owner, and admins, manage editors and staff.
+  if (!support && (role === 'admin' || target.role === 'admin')) {
+    throw new ForbiddenError('Only a support admin can assign or remove a group admin.', 'SUPPORT_ADMIN_REQUIRED');
   }
+  if (actor.role !== 'owner' && target.role === 'admin') throw new ForbiddenError('Only a support admin can change a group admin.', 'SUPPORT_ADMIN_REQUIRED');
   if (target.role === role) return { userId: sid(target.userId), role };
+  if (role === 'admin') {
+    const admins = await GroupMembership.countDocuments({ groupId, status: 'active', role: 'admin' });
+    if (admins >= MAX_ADMINS) throw new ConflictError(`A group can have at most ${MAX_ADMINS} admins (the owner is not counted). Change an existing admin first.`, 'ADMIN_LIMIT');
+  }
   target.role = role;
   await target.save();
   await audit(userId(user), 'group.member_role_changed', { groupId, targetUserId, meta: { role } });

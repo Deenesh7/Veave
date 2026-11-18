@@ -5,12 +5,14 @@ import { useCollabStore } from '../store/collabStore';
 import { useAuthStore } from '../store/authStore';
 import { PageHeader, Btn, Card, EmptyState, Spinner, RoleBadge, Notice, StatusBadge } from '../features/collaboration/ui';
 import CreateGroupDialog from '../features/collaboration/CreateGroupDialog';
+import GroupPeekDialog from '../features/collaboration/GroupPeekDialog';
 
 export default function GroupsPage() {
   const navigate = useNavigate();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const { groups, groupsLoading, groupsError, fetchGroups, invitations, fetchInvitations } = useCollabStore();
   const [creating, setCreating] = useState(false);
+  const [peek, setPeek] = useState(null); // { group, kind: 'members' | 'projects' }
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -31,7 +33,7 @@ export default function GroupsPage() {
           <Btn variant="outline" icon={Mail} onClick={() => navigate('/invitations')}>
             Invitations{invitations.length ? ` (${invitations.length})` : ''}
           </Btn>
-          <Btn icon={Plus} onClick={() => setCreating(true)}>Create group</Btn>
+          <Btn icon={Plus} onClick={() => setCreating(true)}>Create website group</Btn>
         </>}
       />
 
@@ -47,38 +49,52 @@ export default function GroupsPage() {
       {groupsLoading && groups.length === 0 ? <Spinner label="Loading groups..." /> : groups.length === 0 ? (
         <EmptyState
           icon={UsersRound}
-          title="You are not in any group yet"
-          text="Create a group, invite teammates, then share a project with it so everyone works on the same code."
-          action={<Btn icon={Plus} onClick={() => setCreating(true)}>Create your first group</Btn>}
+          title="You are not in any website group yet"
+          text="Create a website group, invite teammates, then share a project with it so everyone works on the same code."
+          action={<Btn icon={Plus} onClick={() => setCreating(true)}>Create your first website group</Btn>}
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {groups.map((group) => (
-            <Link key={group.id} to={`/groups/${group.id}`} className="group">
-              <Card className="p-4 h-full hover:border-zinc-300 hover:shadow-md transition-all">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-9 h-9 rounded-lg bg-zinc-900 text-white flex items-center justify-center text-sm font-bold shrink-0">
-                      {group.name.slice(0, 1).toUpperCase()}
-                    </div>
-                    <div className="min-w-0">
-                      <h3 className="text-sm font-bold text-[#111827] truncate">{group.name}</h3>
-                      <p className="text-[10px] font-mono text-zinc-400 truncate">{group.groupId}</p>
-                    </div>
+            // The whole box opens the group. The two counters open a box with the members or the projects instead (and do not open the group).
+            <Card
+              key={group.id}
+              role="link"
+              tabIndex={0}
+              onClick={() => navigate(`/groups/${group.id}`)}
+              onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); navigate(`/groups/${group.id}`); } }}
+              className="h-full cursor-pointer p-4 transition-all hover:border-zinc-300 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/20"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-lg bg-zinc-900 text-white flex items-center justify-center text-sm font-bold shrink-0">
+                    {group.name.slice(0, 1).toUpperCase()}
                   </div>
-                  {group.myStatus === 'pending' ? <StatusBadge status="pending" /> : <RoleBadge role={group.myRole} />}
+                  <h3 className="text-sm font-bold text-[#111827] truncate">{group.name}</h3>
                 </div>
-                <p className="text-xs text-zinc-500 mt-3 line-clamp-2 min-h-[2rem]">{group.description || 'No description.'}</p>
-                <div className="flex items-center gap-4 mt-3 pt-3 border-t border-zinc-100 text-[11px] text-zinc-500">
-                  <span className="flex items-center gap-1"><UsersRound className="w-3.5 h-3.5" />{group.memberCount} member{group.memberCount === 1 ? '' : 's'}</span>
-                  <span className="flex items-center gap-1"><FolderOpen className="w-3.5 h-3.5" />{group.projectCount} project{group.projectCount === 1 ? '' : 's'}</span>
-                </div>
-              </Card>
-            </Link>
+                {group.myStatus === 'pending' ? <StatusBadge status="pending" /> : <RoleBadge role={group.myRole} />}
+              </div>
+              <p className="text-xs text-zinc-500 mt-3 line-clamp-2 min-h-[2rem]">{group.description || 'No description.'}</p>
+              <div className="flex items-center gap-2 mt-3 pt-3 border-t border-zinc-100 text-[11px] text-zinc-600">
+                {[['members', UsersRound, group.memberCount, 'member'], ['projects', FolderOpen, group.projectCount, 'project']].map(([kind, Icon, count, noun]) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    disabled={group.myStatus === 'pending'}
+                    onClick={(event) => { event.stopPropagation(); setPeek({ group, kind }); }}
+                    title={`Show the ${kind} of this group`}
+                    className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 transition hover:bg-zinc-100 hover:text-[#111827] disabled:opacity-50 disabled:hover:bg-transparent"
+                  >
+                    <Icon className="w-3.5 h-3.5" />{count} {noun}{count === 1 ? '' : 's'}
+                  </button>
+                ))}
+              </div>
+            </Card>
           ))}
         </div>
       )}
 
+      <GroupPeekDialog open={Boolean(peek)} onClose={() => setPeek(null)} group={peek?.group} kind={peek?.kind} />
       <CreateGroupDialog open={creating} onClose={() => setCreating(false)} onCreated={(group) => navigate(`/groups/${group.id}`)} />
     </div>
   );

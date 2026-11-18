@@ -20,18 +20,18 @@ const requireAccount = (req, res, next) => {
 };
 
 // OpenAI Whisper Voice Message Transcription
-router.post('/whisper', upload.single('audio'), aiCreationController.transcribeVoice);
-router.post('/transcribe', upload.single('audio'), aiCreationController.transcribeVoice);
+router.post('/whisper', aiLimiter, upload.single('audio'), aiCreationController.transcribeVoice);
+router.post('/transcribe', aiLimiter, upload.single('audio'), aiCreationController.transcribeVoice);
 
-router.post('/enhance-prompt', aiCreationController.enhancePrompt);
-router.post('/generate', requireAccount, aiCreationController.generateDesign);
-router.post('/stream-generate', requireAccount, aiCreationController.streamGenerateDesign);
-router.post('/modify', aiCreationController.modifyDesign);
+router.post('/enhance-prompt', aiLimiter, aiCreationController.enhancePrompt);
+router.post('/generate', aiLimiter, requireAccount, aiCreationController.generateDesign);
+router.post('/stream-generate', aiLimiter, requireAccount, aiCreationController.streamGenerateDesign);
+router.post('/modify', aiLimiter, aiCreationController.modifyDesign);
 router.post('/screenshot', requireAccount, aiCreationController.recreateScreenshot);
 router.post('/recreate-screenshot', requireAccount, aiCreationController.recreateScreenshot);
-router.post('/github-import', requireAccount, aiCreationController.importGitHub);
-router.post('/figma-import', requireAccount, aiCreationController.importFigma);
-router.post('/slide-deck', requireAccount, aiCreationController.generateSlideDeck);
+router.post('/github-import', aiLimiter, requireAccount, aiCreationController.importGitHub);
+router.post('/figma-import', aiLimiter, requireAccount, aiCreationController.importFigma);
+router.post('/slide-deck', aiLimiter, requireAccount, aiCreationController.generateSlideDeck);
 
 // Persistent Background Generation Job Endpoints
 router.post('/jobs/start', aiLimiter, requireAccount, aiCreationController.startJob);

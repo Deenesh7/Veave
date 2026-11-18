@@ -5,8 +5,9 @@ const CustomFont = require('../models/CustomFont');
 // @access  Public / Optional Auth
 exports.getFonts = async (req, res, next) => {
   try {
-    const query = req.user ? { $or: [{ userId: req.user.id }, { userId: null }] } : {};
-    const fonts = await CustomFont.find(query).sort({ createdAt: -1 });
+    // Guests only see shared (ownerless) fonts; accounts see their own plus the shared ones.
+    const query = req.user ? { $or: [{ userId: req.user.id }, { userId: null }] } : { userId: null };
+    const fonts = await CustomFont.find(query).sort({ createdAt: -1 }).limit(500).lean();
 
     res.status(200).json({
       success: true,
@@ -35,9 +36,7 @@ exports.createFont = async (req, res, next) => {
     const query = {
       name: { $regex: new RegExp(`^${trimmedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
     };
-    if (req.user) {
-      query.$or = [{ userId: req.user.id }, { userId: null }];
-    }
+    query.userId = req.user ? req.user.id : null;
 
     // Check if already exists
     let font = await CustomFont.findOne(query);
@@ -75,10 +74,9 @@ exports.createFont = async (req, res, next) => {
 exports.deleteFont = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const query = { _id: id };
-    if (req.user) {
-      query.$or = [{ userId: req.user.id }, { userId: null }];
-    }
+    // Only the owner can delete a font; shared (ownerless) fonts are never deletable through the API.
+    if (!req.user) return res.status(401).json({ success: false, error: 'Log in to remove fonts' });
+    const query = { _id: id, userId: req.user.id };
 
     const font = await CustomFont.findOneAndDelete(query);
     if (!font) {

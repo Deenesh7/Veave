@@ -5,7 +5,7 @@ const Group = require('../../models/Group');
 const GroupMembership = require('../../models/GroupMembership');
 const User = require('../../models/User');
 const { AppError, NotFoundError, ValidationError, ForbiddenError, ConflictError } = require('../../utils/errors');
-const { notify, audit, sid } = require('./support');
+const { notify, audit, sid, isSupportAdmin } = require('./support');
 const access = require('./projectAccess');
 const { requireMember, ADMIN_ROLES, userId } = require('./groupService');
 
@@ -169,7 +169,15 @@ async function listGroupProjects(user, groupId) {
     const own = sid(p.userId) === uid;
     return [String(p._id), { rank: own ? access.LEVELS.owner : Math.max(rank, mine.get(String(p._id))?.rank || 0), groupIds: [String(groupId)], direct: false }];
   })));
-  return rows.map((row) => ({ ...row, groupPermission: shares.find((s) => String(s.projectId) === String(row._id))?.permission }));
+  // The people who administer each project: members given the project's admin role (a direct "admin" share).
+  const adminShares = await ProjectSharing.find({ projectId: { $in: projects.map((p) => p._id) }, targetType: 'user', permission: 'admin' }).select('projectId userId').lean();
+  const adminUsers = await User.find({ _id: { $in: adminShares.map((s) => s.userId) } }).select('name email avatar').lean();
+  const adminById = new Map(adminUsers.map((u) => [sid(u._id), { id: sid(u._id), name: u.name, email: u.email }]));
+  return rows.map((row) => ({
+    ...row,
+    groupPermission: shares.find((s) => String(s.projectId) === String(row._id))?.permission,
+    admins: adminShares.filter((s) => String(s.projectId) === String(row._id)).map((s) => adminById.get(sid(s.userId))).filter(Boolean)
+  }));
 }
 
 async function createGroupProject(user, groupId, { name, description = '', permission } = {}) {
@@ -190,4 +198,41 @@ async function createGroupProject(user, groupId, { name, description = '', permi
   return { _id: project._id, name: project.name, description: project.description, permission: level };
 }
 
-module.exports = { createGroupProject, listShares, shareProject, updateSharePermission, unshare, listSharedWithMe, listGroupProjects, PERMISSIONS };
+/**
+ * Makes a member of the group an admin of one of the group's projects (or takes that role away).
+ * Who may: the group's owner and admins, or a support admin. The person must be an active member of the group and not the project's owner.
+ */
+async function setProjectAdmin(user, groupId, projectId, targetUserId, enable) {
+  let group;
+  if (isSupportAdmin(user)) {
+    if (!mongoose.isValidObjectId(groupId)) throw new NotFoundError('Group');
+    group = await Group.findById(groupId);
+    if (!group) throw new NotFoundError('Group');
+  } else {
+    ({ group } = await requireMember(user, groupId, { roles: ADMIN_ROLES }));
+  }
+  if (!mongoose.isValidObjectId(projectId) || !mongoose.isValidObjectId(targetUserId)) throw new NotFoundError('Project');
+  const shared = await ProjectSharing.exists({ projectId, groupId, targetType: 'group' });
+  const project = shared && await Project.findOne({ _id: projectId, status: 'active' }).select('name userId').lean();
+  if (!project) throw new NotFoundError('Project');
+  if (!(await GroupMembership.exists({ groupId, userId: targetUserId, status: 'active' }))) throw new ValidationError('Only a member of this group can be made a project admin.');
+  if (sid(project.userId) === String(targetUserId)) throw new ValidationError('That member already owns this project.');
+  const actorId = userId(user);
+
+  if (enable) {
+    await ProjectSharing.findOneAndUpdate(
+      { projectId, targetType: 'user', userId: targetUserId },
+      { $set: { permission: 'admin', grantedBy: actorId }, $setOnInsert: { projectId, targetType: 'user', userId: targetUserId } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    await notify(targetUserId, { type: 'role_changed', title: `You are now an admin of ${project.name}`, message: `Assigned in ${group.name}.`, data: { projectId: sid(projectId), groupId: sid(group._id) } });
+  } else {
+    const removed = await ProjectSharing.findOneAndDelete({ projectId, targetType: 'user', userId: targetUserId, permission: 'admin' });
+    if (!removed) throw new NotFoundError('Project admin');
+    await notify(targetUserId, { type: 'role_changed', title: `You are no longer an admin of ${project.name}`, message: 'You still have the access the group gives you.', data: { projectId: sid(projectId), groupId: sid(group._id) } });
+  }
+  await audit(actorId, enable ? 'project.admin_assigned' : 'project.admin_removed', { projectId, groupId, targetUserId });
+  return { projectId: sid(projectId), userId: String(targetUserId), admin: Boolean(enable) };
+}
+
+module.exports = { setProjectAdmin, createGroupProject, listShares, shareProject, updateSharePermission, unshare, listSharedWithMe, listGroupProjects, PERMISSIONS };

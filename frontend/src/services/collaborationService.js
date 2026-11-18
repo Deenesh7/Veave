@@ -23,6 +23,11 @@ export const collaborationService = {
   rejectInvitation: (invitationId) => api.post(`/invitations/${invitationId}/reject`),
   // Projects
   listGroupProjects: (id) => api.get(`/groups/${id}/projects`),
+  setProjectAdmin: (id, projectId, userId, enable) => (enable ? api.put(`/groups/${id}/projects/${projectId}/admins/${userId}`) : api.delete(`/groups/${id}/projects/${projectId}/admins/${userId}`)),
+  groupCredits: (id) => api.get(`/groups/${id}/credits`),
+  changeGroupCredits: (id, data) => api.post(`/groups/${id}/credits`, data),
+  groupCreditsHistory: (id) => api.get(`/groups/${id}/credits/history`),
+  manageProjectCredits: (id, projectId, data) => api.post(`/groups/${id}/projects/${projectId}/credits`, data),
   createGroupProject: (id, data) => api.post(`/groups/${id}/projects`, data),
   listSharedWithMe: () => api.get('/projects/shared-with-me'),
   getProjectRevision: (projectId) => api.get(`/projects/${projectId}/revision`),

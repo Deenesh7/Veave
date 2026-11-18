@@ -92,7 +92,7 @@ export function useFlash() {
   return [message, setMessage];
 }
 
-export function Modal({ open, onClose, title, description, children, footer, wide }) {
+export function Modal({ open, onClose, title, description, children, footer, wide, actions }) {
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
@@ -109,6 +109,7 @@ export function Modal({ open, onClose, title, description, children, footer, wid
             <h3 className="text-sm font-bold text-[#111827]">{title}</h3>
             {description && <p className="text-xs text-zinc-500 mt-1 leading-relaxed">{description}</p>}
           </div>
+          {actions && <div className="ml-auto flex shrink-0 items-center gap-2">{actions}</div>}
           <button type="button" onClick={onClose} aria-label="Close" className="text-zinc-400 hover:text-zinc-700 p-1 rounded"><X className="w-4 h-4" /></button>
         </div>
         <div className="py-4 space-y-4">{children}</div>
@@ -153,8 +154,12 @@ const ROLE_STYLE = {
   admin: ['bg-zinc-900 text-white border-zinc-900', Shield],
   member: ['bg-zinc-100 text-zinc-700 border-zinc-200', User],
   viewer: ['bg-zinc-100 text-zinc-600 border-zinc-200', Eye],
+  support: ['bg-amber-50 text-amber-700 border-amber-200', Shield],
   editor: ['bg-emerald-50 text-emerald-700 border-emerald-200', Pencil],
 };
+
+// A platform support admin (made by the root administrator). Only they assign group admins and manage group credits; the server enforces it.
+export const isSupportUser = (user) => user?.role === 'ADMIN' && user?.status !== 'suspended' && (user?.isRootAdmin === true || user?.adminRole === 'support');
 
 export const roleLabel = (role) => (role === 'member' ? 'Staff' : role ? role.charAt(0).toUpperCase() + role.slice(1) : '');
 
@@ -198,11 +203,12 @@ export function Card({ className = '', children, ...props }) {
 
 const ROLE_OPTIONS = {
   member: { label: 'Staff', hint: 'Can work on shared projects', icon: User },
+  editor: { label: 'Editor', hint: 'Can edit shared projects', icon: Pencil },
   admin: { label: 'Admin', hint: 'Can manage members and projects', icon: Shield },
 };
 
 // Styled dropdown for choosing a group role (stored values: 'member' = Staff, 'admin').
-export function RoleSelect({ value, onChange, options = ['member', 'admin'], label, className = '' }) {
+export function RoleSelect({ value, onChange, options = ['member', 'editor', 'admin'], label, className = '' }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {

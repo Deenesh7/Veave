@@ -80,21 +80,28 @@ function appUrl(pathname = '') {
   return `${base}${pathname}`;
 }
 
-function sendGroupInvitation({ to, inviterName, groupName, groupDescription, role, expiresAt, isRegistered }) {
+function sendGroupInvitation({ to, inviterName, groupName, groupDescription, role, expiresAt, isRegistered, scope = 'group', projectName = '', projectPermission = 'viewer' }) {
   const link = appUrl('/invitations');
   const signup = appUrl(`/register?redirect=${encodeURIComponent('/invitations')}`);
   const expires = new Date(expiresAt).toDateString();
   const action = isRegistered ? `Open ${link} to accept or decline.` : `Create a free account with this email address at ${signup}, then open ${link} to accept.`;
-  const text = `${inviterName} invited you to join "${groupName}" on Veave as ${role === 'admin' ? 'an admin' : 'a member'}.\n${groupDescription ? `\n${groupDescription}\n` : ''}\n${action}\n\nThis invitation expires on ${expires}. If you do not know ${inviterName}, ignore this email.`;
+  const groupRole = role === 'admin' ? 'an admin' : role === 'editor' ? 'an editor' : 'a member';
+  const projectRole = projectPermission === 'editor' ? 'an editor' : 'a viewer';
+  const what = scope === 'project' ? `the project "${projectName}" (in the group "${groupName}") as ${projectRole}`
+    : scope === 'both' ? `the whole group "${groupName}" as ${groupRole}, and the project "${projectName}" as ${projectRole}`
+    : `the whole group "${groupName}" as ${groupRole}`;
+  const scopeLabel = scope === 'project' ? 'Single project only' : scope === 'both' ? 'Whole group and a project' : 'Whole group';
+  const text = `${inviterName} invited you to join ${what} on Veave.\nInvitation type: ${scopeLabel}.\n${groupDescription ? `\n${groupDescription}\n` : ''}\n${action}\n\nThis invitation expires on ${expires}. If you do not know ${inviterName}, ignore this email.`;
   const button = (href, label) => `<a href="${esc(href)}" style="display:inline-block;background:#18181b;color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:10px 18px;border-radius:10px">${esc(label)}</a>`;
   const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#111827">
-<h2 style="margin:0 0 12px;font-size:18px">You're invited to ${esc(groupName)}</h2>
-<p style="font-size:14px;line-height:1.6;margin:0 0 12px"><b>${esc(inviterName)}</b> invited you to join <b>${esc(groupName)}</b> on Veave as ${role === 'admin' ? 'an admin' : 'a member'}.</p>
+<h2 style="margin:0 0 12px;font-size:18px">You're invited to ${esc(scope === 'project' ? projectName : groupName)}</h2>
+<p style="font-size:14px;line-height:1.6;margin:0 0 12px"><b>${esc(inviterName)}</b> invited you to join ${esc(what)} on Veave.</p>
+<p style="font-size:13px;margin:0 0 12px"><b>Invitation type:</b> ${esc(scopeLabel)}</p>
 ${groupDescription ? `<p style="font-size:13px;color:#52525b;margin:0 0 16px">${esc(groupDescription)}</p>` : ''}
 <p style="margin:20px 0">${isRegistered ? button(link, 'View invitation') : button(signup, 'Create account & join')}</p>
 ${isRegistered ? '' : `<p style="font-size:12px;color:#52525b">Already have an account? ${button(link, 'View invitation').replace('background:#18181b;color:#fff', 'background:#fff;color:#18181b;border:1px solid #e2e5e8')}</p>`}
 <p style="font-size:12px;color:#71717a;margin-top:20px">This invitation expires on ${esc(expires)}. If you do not know ${esc(inviterName)}, you can ignore this email.</p></div>`;
-  return sendMail({ to, subject: `${inviterName} invited you to ${groupName} on Veave`, text, html });
+  return sendMail({ to, subject: `${inviterName} invited you to ${scope === 'project' ? projectName : groupName} on Veave`, text, html });
 }
 
 function layout({ heading, body, href, label }) {

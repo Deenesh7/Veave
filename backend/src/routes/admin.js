@@ -1,7 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const auth = require('../middleware/auth');
-const { requireAdmin, requireRootAdmin, requireStepUp } = require('../middleware/admin');
+const { requireAdmin, requireRootAdmin, requireStepUp, requireFullAdmin } = require('../middleware/admin');
 const { adminLimiter, adminSensitiveLimiter } = require('../middleware/rateLimiter');
 const c = require('../controllers/adminController');
 const { LIMITS } = require('../services/admin/adminTemplateService');
@@ -18,8 +18,8 @@ const imageUpload = (req, res, next) => multer({ storage: multer.memoryStorage()
 
 router.get('/me', c.me);
 router.get('/dashboard', c.dashboard);
-router.get('/analytics', c.analytics);
-router.get('/analytics/export', c.analyticsExport);
+router.get('/analytics', requireFullAdmin, c.analytics);
+router.get('/analytics/export', requireFullAdmin, c.analyticsExport);
 
 router.get('/users', c.listUsers);
 router.get('/users/:id', c.getUser);
@@ -34,39 +34,45 @@ router.patch('/users/:id/role', adminSensitiveLimiter, requireRootAdmin, require
 
 router.get('/credits/summary', c.creditSummary);
 router.get('/credits/transactions', c.creditTransactions);
-router.get('/credits/transactions/export', adminSensitiveLimiter, c.creditExport);
+router.get('/credits/transactions/export', adminSensitiveLimiter, requireFullAdmin, c.creditExport);
 router.post('/credits/adjust', adminSensitiveLimiter, c.creditAdjust);
-router.post('/credits/allocate', adminSensitiveLimiter, c.creditAllocate);
+router.post('/credits/allocate', adminSensitiveLimiter, requireFullAdmin, c.creditAllocate);
 
-router.get('/templates', c.listTemplates);
-router.post('/templates', adminSensitiveLimiter, zipUpload, c.uploadTemplate);
-router.get('/templates/:id', c.getTemplate);
-router.post('/templates/:id/versions', adminSensitiveLimiter, zipUpload, c.replaceTemplate);
-router.get('/templates/:id/preview', c.templatePreview);
-router.post('/templates/:id/duplicate', adminSensitiveLimiter, c.duplicateTemplate);
-router.delete('/templates/:id', adminSensitiveLimiter, c.deleteTemplate);
-router.patch('/templates/:id/versions/:version', adminSensitiveLimiter, c.updateTemplate);
-router.post('/templates/:id/versions/:version/status', adminSensitiveLimiter, c.setTemplateStatus);
-router.post('/templates/:id/versions/:version/images', adminSensitiveLimiter, imageUpload, c.addTemplateImage);
-router.get('/templates/:id/versions/:version/images/:key', c.templateImage);
-router.delete('/templates/:id/versions/:version/images/:key', adminSensitiveLimiter, c.removeTemplateImage);
+// Credits of a single project (a project's own balance is spent before its owner's).
+router.get('/projects', c.searchProjects);
+router.get('/projects/:id/credits', c.getProjectCredits);
+router.post('/projects/:id/credits', adminSensitiveLimiter, c.changeProjectCredits);
 
-router.get('/plans', c.listPlans);
-router.get('/plans/transactions', c.planTransactions);
-router.get('/plans/:name/users', c.planUsers);
+router.get('/templates', requireFullAdmin, c.listTemplates);
+router.post('/templates', requireFullAdmin, adminSensitiveLimiter, zipUpload, c.uploadTemplate);
+router.get('/templates/:id', requireFullAdmin, c.getTemplate);
+router.post('/templates/:id/versions', requireFullAdmin, adminSensitiveLimiter, zipUpload, c.replaceTemplate);
+router.get('/templates/:id/preview', requireFullAdmin, c.templatePreview);
+router.post('/templates/:id/duplicate', requireFullAdmin, adminSensitiveLimiter, c.duplicateTemplate);
+router.delete('/templates/:id', requireFullAdmin, adminSensitiveLimiter, c.deleteTemplate);
+router.patch('/templates/:id/versions/:version', requireFullAdmin, adminSensitiveLimiter, c.updateTemplate);
+router.post('/templates/:id/versions/:version/status', requireFullAdmin, adminSensitiveLimiter, c.setTemplateStatus);
+router.post('/templates/:id/versions/:version/images', requireFullAdmin, adminSensitiveLimiter, imageUpload, c.addTemplateImage);
+router.get('/templates/:id/versions/:version/images/:key', requireFullAdmin, c.templateImage);
+router.delete('/templates/:id/versions/:version/images/:key', requireFullAdmin, adminSensitiveLimiter, c.removeTemplateImage);
+
+router.get('/plans', requireFullAdmin, c.listPlans);
+router.get('/plans/transactions', requireFullAdmin, c.planTransactions);
+router.get('/plans/:name/users', requireFullAdmin, c.planUsers);
 router.put('/plans/:name', adminSensitiveLimiter, requireRootAdmin, c.updatePlan);
 
-router.get('/audit-logs', c.auditLogs);
+router.get('/audit-logs', requireFullAdmin, c.auditLogs);
 
 router.get('/notifications', c.notifications);
 router.get('/notifications/unread-count', c.unreadCount);
 router.post('/notifications/read', c.markRead);
 
-router.get('/admins', c.listAdmins);
+router.get('/admins', requireFullAdmin, c.listAdmins);
 router.post('/admins', adminSensitiveLimiter, requireRootAdmin, requireStepUp, c.addAdmin);
 router.delete('/admins/:id', adminSensitiveLimiter, requireRootAdmin, requireStepUp, c.removeAdmin);
+router.patch('/admins/:id/type', adminSensitiveLimiter, requireRootAdmin, requireStepUp, c.setAdminType);
 
-router.get('/settings', c.getSettings);
+router.get('/settings', requireFullAdmin, c.getSettings);
 router.put('/settings/:group', adminSensitiveLimiter, requireRootAdmin, c.updateSettings);
 
 module.exports = router;

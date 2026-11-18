@@ -6,7 +6,7 @@ import { Async, Badge, Btn, Card, ConfirmDialog, EmptyState, Field, Input, Page,
 import CreditDialog from './CreditDialog';
 
 const TYPES = ['CREDIT_ALLOCATION', 'CREDIT_USAGE', 'CREDIT_DEDUCTION', 'CREDIT_ADJUSTMENT', 'CREDIT_REFUND', 'MONTHLY_CREDIT_ALLOCATION', 'CREDIT_EXPIRY'];
-const TABS = ['Transactions', 'Adjust a user', 'Allocate to many', 'Credit rules'];
+const TABS = ['Transactions', 'Adjust a user', 'Project credits', 'Allocate to many', 'Credit rules'];
 
 export default function CreditsPage() {
   const [tab, setTab] = useState('Transactions');
@@ -27,6 +27,7 @@ export default function CreditsPage() {
         {TABS.map((name) => <button key={name} type="button" onClick={() => setTab(name)} className={`-mb-px border-b-2 px-3 py-2 text-sm ${tab === name ? 'border-[#2F4A35] font-medium text-[#2F4A35]' : 'border-transparent text-[#7A7366] hover:text-[#2B2823]'}`}>{name}</button>)}
       </div>
       {tab === 'Transactions' ? <Transactions onChanged={summary.reload} /> : null}
+      {tab === 'Project credits' ? <ProjectCredits onChanged={summary.reload} /> : null}
       {tab === 'Adjust a user' ? <AdjustUser onChanged={() => { summary.reload(); setTab('Transactions'); }} /> : null}
       {tab === 'Allocate to many' ? <Allocate onChanged={summary.reload} /> : null}
       {tab === 'Credit rules' ? <Rules /> : null}
@@ -115,6 +116,70 @@ function AdjustUser({ onChanged }) {
       </div>
       {user?.open ? <CreditDialog open user={user} onClose={() => setUser({ ...user, open: false })} onDone={() => { setUser(null); onChanged(); }} /> : null}
     </Card>
+  );
+}
+
+/** Credits of one project: a project with a balance of its own pays for the generations in it before its owner does. */
+function ProjectCredits({ onChanged }) {
+  const [text, setText] = useState('');
+  const q = useDebounced(text, 300);
+  const list = useAsync(() => adminService.searchProjects({ q }), [q]);
+  const [picked, setPicked] = useState(null);
+  const detail = useAsync(() => (picked ? adminService.projectCredits(picked) : Promise.resolve(null)), [picked]);
+  const [form, setForm] = useState({ action: 'add', amount: '', reason: '' });
+  const [busy, setBusy] = useState(false);
+  const valid = Number.isInteger(Number(form.amount)) && Number(form.amount) >= (form.action === 'set' ? 0 : 1) && form.amount !== '' && form.reason.trim().length >= 3;
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await adminService.changeProjectCredits(picked, { action: form.action, amount: Number(form.amount), reason: form.reason.trim(), idempotencyKey: `proj-${picked}-${Date.now()}` });
+      toast.success('Project credits updated.');
+      setForm({ action: 'add', amount: '', reason: '' }); detail.reload(); list.reload(); onChanged?.();
+    } catch (error) { toast.error(adminError(error)); } finally { setBusy(false); }
+  };
+  const project = detail.data?.project;
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card title="Choose a project">
+        <div className="space-y-3">
+          <Input value={text} onChange={(event) => setText(event.target.value)} placeholder="Search by project name, owner name or email" aria-label="Search projects" />
+          <ul className="max-h-80 divide-y divide-[#EFEBE1] overflow-y-auto rounded-lg border border-[#E2DCCF] bg-white">
+            {(list.data?.projects || []).map((item) => (
+              <li key={item.id}>
+                <button type="button" onClick={() => setPicked(item.id)} className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-[#F5F1E8] ${picked === item.id ? 'bg-[#F5F1E8]' : ''}`}>
+                  <span className="min-w-0"><span className="block truncate font-medium">{item.name}</span><span className="block truncate text-xs text-[#7A7366]">{item.owner?.name} · {item.owner?.email}</span></span>
+                  <span className="shrink-0 text-xs tabular-nums text-[#5B554A]">{item.creditBalance === null ? 'owner pays' : `${fmt(item.creditBalance)} credits`}</span>
+                </button>
+              </li>
+            ))}
+            {!list.loading && !(list.data?.projects || []).length ? <li className="px-3 py-3 text-sm text-[#7A7366]">No projects found.</li> : null}
+          </ul>
+        </div>
+      </Card>
+      <Card title={project ? `Credits of ${project.name}` : 'Project credits'}>
+        {!picked ? <p className="text-sm text-[#7A7366]">Pick a project to see its balance and give it credits. Generations in the project use these first; when they run out, the owner's own credits are used.</p> : (
+          <Async state={detail} errorFallback={(error) => adminError(error)} skeleton={<TableSkeleton rows={3} />}>
+            {(data) => data && (
+              <div className="space-y-4">
+                <div className="rounded-lg bg-[#F5F1E8] px-3 py-2 text-sm"><strong>{data.project.name}</strong> · owner {data.project.owner?.email} · <strong>{data.project.creditBalance === null ? 'no balance of its own (the owner pays)' : `${fmt(data.project.creditBalance)} credits`}</strong></div>
+                <div className="flex gap-1 rounded-lg border border-[#E2DCCF] bg-[#F3EFE5] p-0.5 text-xs" role="group" aria-label="Action">
+                  {[['add', 'Add'], ['deduct', 'Deduct'], ['set', 'Set to']].map(([id, label]) => <button key={id} type="button" onClick={() => setForm({ ...form, action: id })} aria-pressed={form.action === id} className={`flex-1 rounded-md px-2 py-1.5 font-medium ${form.action === id ? 'bg-white shadow-sm' : 'text-[#7A7366]'}`}>{label}</button>)}
+                </div>
+                <Field label="Credits"><Input type="number" min={form.action === 'set' ? 0 : 1} value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} /></Field>
+                <Field label="Reason" hint="Saved in the ledger and the audit log; the owner is notified."><Textarea rows={2} value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} /></Field>
+                <Btn variant="primary" busy={busy} disabled={!valid} onClick={submit}>Apply</Btn>
+                {data.history.length ? (
+                  <div>
+                    <p className="mb-1 text-xs font-medium uppercase tracking-wide text-[#7A7366]">Recent changes</p>
+                    <ul className="max-h-48 divide-y divide-[#EFEBE1] overflow-y-auto text-xs">{data.history.map((row) => <li key={row.transactionId} className="flex items-center justify-between gap-3 py-1.5"><span className="min-w-0 truncate" title={row.reason}>{row.reason}</span><span className={`shrink-0 tabular-nums font-medium ${row.amount > 0 ? 'text-[#33503A]' : 'text-[#7A3A2E]'}`}>{row.amount > 0 ? '+' : ''}{row.amount} → {row.newBalance}</span><span className="shrink-0 text-[#7A7366]">{dateTime(row.createdAt)}</span></li>)}</ul>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </Async>
+        )}
+      </Card>
+    </div>
   );
 }
 

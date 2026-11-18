@@ -5,8 +5,8 @@ const ThemePalette = require('../models/ThemePalette');
 // @access  Public / Optional Auth
 exports.getPalettes = async (req, res, next) => {
   try {
-    const query = req.user ? { $or: [{ userId: req.user.id }, { userId: null }] } : {};
-    let palettes = await ThemePalette.find(query).sort({ isDefault: -1, createdAt: -1 });
+    const query = req.user ? { $or: [{ userId: req.user.id }, { userId: null }] } : { userId: null };
+    let palettes = await ThemePalette.find(query).sort({ isDefault: -1, createdAt: -1 }).limit(200);
 
     // If no palettes exist yet, automatically seed the initial modern palette
     if (palettes.length === 0) {
@@ -101,9 +101,8 @@ exports.getPalettes = async (req, res, next) => {
 exports.getPalette = async (req, res, next) => {
   try {
     const query = { _id: req.params.id };
-    if (req.user) {
-      query.$or = [{ userId: req.user.id }, { userId: null }];
-    }
+    if (req.user) query.$or = [{ userId: req.user.id }, { userId: null }];
+    else query.userId = null;
 
     const palette = await ThemePalette.findOne(query);
     if (!palette) {
@@ -128,7 +127,7 @@ exports.createPalette = async (req, res, next) => {
     }
 
     if (isDefault) {
-      const filter = req.user ? { userId: req.user.id } : {};
+      const filter = { userId: req.user ? req.user.id : null };
       await ThemePalette.updateMany(filter, { isDefault: false });
     }
 
@@ -186,13 +185,10 @@ exports.updatePalette = async (req, res, next) => {
     const { id } = req.params;
     const { name, description, colors, typography, radius, geometry, isDefault, tags } = req.body;
 
-    const query = { _id: id };
-    if (req.user) {
-      query.$or = [{ userId: req.user.id }, { userId: null }];
-    }
+    const query = { _id: id, userId: req.user ? req.user.id : null };
 
     if (isDefault) {
-      const filter = req.user ? { userId: req.user.id } : {};
+      const filter = { userId: req.user ? req.user.id : null };
       await ThemePalette.updateMany(filter, { isDefault: false });
     }
 
@@ -232,10 +228,7 @@ exports.updatePalette = async (req, res, next) => {
 exports.deletePalette = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const query = { _id: id };
-    if (req.user) {
-      query.$or = [{ userId: req.user.id }, { userId: null }];
-    }
+    const query = { _id: id, userId: req.user ? req.user.id : null };
 
     const palette = await ThemePalette.findOneAndDelete(query);
     if (!palette) {
@@ -258,13 +251,10 @@ exports.deletePalette = async (req, res, next) => {
 exports.setDefaultPalette = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const filter = req.user ? { userId: req.user.id } : {};
+    const filter = { userId: req.user ? req.user.id : null };
     await ThemePalette.updateMany(filter, { isDefault: false });
 
-    const query = { _id: id };
-    if (req.user) {
-      query.$or = [{ userId: req.user.id }, { userId: null }];
-    }
+    const query = { _id: id, userId: req.user ? req.user.id : null };
 
     const palette = await ThemePalette.findOneAndUpdate(
       query,

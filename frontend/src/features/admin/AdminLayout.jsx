@@ -10,16 +10,19 @@ import { ErrorState } from './ui';
 const AdminContext = createContext({ admin: null, unread: 0, refreshUnread: () => {} });
 export const useAdmin = () => useContext(AdminContext);
 
+// `full: true` areas are not available to a Support admin (the server refuses them too; hiding them is only for convenience).
 export const NAV = [
   { to: '/admin', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/admin/users', label: 'Users', icon: Users },
-  { to: '/admin/templates', label: 'Templates', icon: LayoutTemplate },
+  { to: '/admin/templates', label: 'Templates', icon: LayoutTemplate, full: true },
   { to: '/admin/credits', label: 'Credit Management', icon: WalletCards },
-  { to: '/admin/plans', label: 'Subscriptions & Plans', icon: CreditCard },
-  { to: '/admin/analytics', label: 'Analytics', icon: LineChart },
+  { to: '/admin/plans', label: 'Subscriptions & Plans', icon: CreditCard, full: true },
+  { to: '/admin/analytics', label: 'Analytics', icon: LineChart, full: true },
   { to: '/admin/notifications', label: 'Notifications', icon: Bell, badge: true },
-  { to: '/admin/admins', label: 'Admin Management', icon: UsersRound }
+  { to: '/admin/admins', label: 'Admin Management', icon: UsersRound, full: true }
 ];
+export const isSupportAdmin = (user) => user?.role === 'ADMIN' && user?.isRootAdmin !== true && user?.isRoot !== true && user?.adminRole === 'support';
+export const navFor = (user) => NAV.filter((item) => !(item.full && isSupportAdmin(user)));
 
 // Unread notification count, shared with the main sidebar (the admin pages now live inside the same app shell).
 export const useAdminUnread = create((set) => ({ unread: 0, setUnread: (unread) => set({ unread }) }));
@@ -58,6 +61,8 @@ export default function AdminLayout() {
   if (state.status === 'forbidden') return <Navigate to="/dashboard" replace />;
   if (state.status === 'error') return <ErrorState message="The admin dashboard could not be loaded." onRetry={load} />;
 
+  // A Support admin who opens a full-admin page (typed address, old bookmark) goes back to the dashboard.
+  if (isSupportAdmin(state.admin) && NAV.some((item) => item.full && pathname.startsWith(item.to))) return <Navigate to="/admin" replace />;
   const refreshUnread = () => adminService.unreadCount().then(({ unread }) => setUnread(unread)).catch(() => {});
   return (
     <AdminContext.Provider value={{ admin: state.admin, unread: state.unread, refreshUnread }}>

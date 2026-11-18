@@ -86,7 +86,7 @@ async function queueEnhancement({ user, siteId, assetId, auto = false }) {
     throw new ValidationError('AI photo enhancement is not available right now.');
   }
   const credits = imageEnhanceCredits();
-  try { await billing.assertCanSpendCredits(idOf(user), credits); }
+  try { await billing.assertCanSpendCredits(idOf(user), credits, { projectId: site.projectId }); }
   catch (error) {
     if (!auto) throw error;
     await TemplateAsset.updateOne({ _id: asset._id, 'enhancement.status': { $in: [null, 'none'] } }, { $set: { 'enhancement.status': 'skipped', 'enhancement.errorCode': 'PLAN_LIMIT', 'enhancement.error': String(error.message).slice(0, 300) } });
@@ -180,7 +180,7 @@ async function charge({ userId, assetId, projectId, result }) {
   if (!claimed) return;
   try {
     await AIUsage.create({ userId, projectId, model: result.model, provider: 'openrouter', inputTokens: result.usage.promptTokens, outputTokens: result.usage.completionTokens, totalTokens: 0, cost: result.usage.cost, usageSource: 'reported' });
-    await billing.chargeFixedCredits(userId, credits);
+    await billing.chargeFixedCredits(userId, credits, { projectId });
   } catch (error) {
     await TemplateAsset.updateOne({ _id: assetId }, { $set: { 'enhancement.chargedAt': null } }).catch(() => {});
     logger.error(`Enhancement ${assetId}: billing failed: ${error.message}`);

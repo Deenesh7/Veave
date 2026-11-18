@@ -1,35 +1,40 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import AppLayout from './layouts/AppLayout';
 import AuthLayout from './layouts/AuthLayout';
 import EditorLayout from './layouts/EditorLayout';
 import VeaveDashboard from './pages/VeaveDashboard';
-import PromptEnginePage from './pages/PromptEnginePage';
-import RecentPage from './pages/RecentPage';
-import FilesPage from './pages/FilesPage';
-import SharedPage from './pages/SharedPage';
-import DesignSystemsPage from './pages/DesignSystemsPage';
-import DocumentationPage from './pages/DocumentationPage';
-import Settings from './pages/Settings';
-import BillingPage from './pages/BillingPage';
+const PromptEnginePage = lazy(() => import('./pages/PromptEnginePage'));
+const RecentPage = lazy(() => import('./pages/RecentPage'));
+const FilesPage = lazy(() => import('./pages/FilesPage'));
+const SharedPage = lazy(() => import('./pages/SharedPage'));
+const DesignSystemsPage = lazy(() => import('./pages/DesignSystemsPage'));
+const DocumentationPage = lazy(() => import('./pages/DocumentationPage'));
+const Settings = lazy(() => import('./pages/Settings'));
+const BillingPage = lazy(() => import('./pages/BillingPage'));
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Register from './pages/Register';
-import Editor from './pages/Editor';
-import TemplateStudio from './features/template-studio/TemplateStudio';
+const Editor = lazy(() => import('./pages/Editor'));
+const TemplateStudio = lazy(() => import('./features/template-studio/TemplateStudio'));
 import ProtectedRoute from './components/common/ProtectedRoute';
 import NotFound from './pages/NotFound';
-import GroupsPage from './pages/GroupsPage';
-import GroupDetailPage from './pages/GroupDetailPage';
-import InvitationsPage from './pages/InvitationsPage';
-import SharedProjectsPage from './pages/SharedProjectsPage';
+const GroupsPage = lazy(() => import('./pages/GroupsPage'));
+const GroupDetailPage = lazy(() => import('./pages/GroupDetailPage'));
+const InvitationsPage = lazy(() => import('./pages/InvitationsPage'));
+const SharedProjectsPage = lazy(() => import('./pages/SharedProjectsPage'));
 import UpgradePlanModal from './components/common/UpgradePlanModal';
-import AdminLayout from './features/admin/AdminLayout';
-import DashboardPage from './features/admin/DashboardPage';
-import { UsersPage, UserDetailPage } from './features/admin/UsersPage';
-import TemplatesPage from './features/admin/TemplatesPage';
-import CreditsPage from './features/admin/CreditsPage';
-import { PlansPage, AnalyticsPage, NotificationsPage, AdminsPage } from './features/admin/MorePages';
+const AdminLayout = lazy(() => import('./features/admin/AdminLayout'));
+const DashboardPage = lazy(() => import('./features/admin/DashboardPage'));
+const UsersPage = lazy(() => import('./features/admin/UsersPage').then((m) => ({ default: m.UsersPage })));
+const UserDetailPage = lazy(() => import('./features/admin/UsersPage').then((m) => ({ default: m.UserDetailPage })));
+const TemplatesPage = lazy(() => import('./features/admin/TemplatesPage'));
+const CreditsPage = lazy(() => import('./features/admin/CreditsPage'));
+const PlansPage = lazy(() => import('./features/admin/MorePages').then((m) => ({ default: m.PlansPage })));
+const AnalyticsPage = lazy(() => import('./features/admin/MorePages').then((m) => ({ default: m.AnalyticsPage })));
+const NotificationsPage = lazy(() => import('./features/admin/MorePages').then((m) => ({ default: m.NotificationsPage })));
+const AdminsPage = lazy(() => import('./features/admin/MorePages').then((m) => ({ default: m.AdminsPage })));
 
 function HomeRoute() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -40,6 +45,7 @@ export default function App() {
   return (
     <>
     <UpgradePlanModal />
+    <Suspense fallback={<div style={{ minHeight: '100vh' }} aria-busy="true" />}>
     <Routes>
       {/* Main Veave SaaS Dashboard & Navigation Routes */}
       <Route element={<AppLayout />}>
@@ -93,6 +99,7 @@ export default function App() {
       {/* 404 Fallback */}
       <Route path="*" element={<NotFound />} />
     </Routes>
+    </Suspense>
     </>
   );
 }

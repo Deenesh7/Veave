@@ -49,6 +49,7 @@ async function levelForProject(project, userId) {
     let rank = LEVELS[share.permission] || 0;
     // Group owners/admins manage the projects shared with their group.
     if (share.targetType === 'group' && ['owner', 'admin'].includes(roleByGroup.get(String(share.groupId)))) rank = Math.max(rank, LEVELS.admin);
+    if (share.targetType === 'group' && roleByGroup.get(String(share.groupId)) === 'editor') rank = Math.max(rank, LEVELS.editor);
     if (rank > best) { best = rank; via = share.targetType === 'group' ? { type: 'group', groupId: String(share.groupId) } : { type: 'user' }; }
   }
   return { level: levelName(best), via };
@@ -97,6 +98,7 @@ async function listSharedWithUser(userId) {
   for (const share of shares) {
     let rank = LEVELS[share.permission] || 0;
     if (share.targetType === 'group' && ['owner', 'admin'].includes(roleByGroup.get(String(share.groupId)))) rank = Math.max(rank, LEVELS.admin);
+    if (share.targetType === 'group' && roleByGroup.get(String(share.groupId)) === 'editor') rank = Math.max(rank, LEVELS.editor);
     const entry = byProject.get(String(share.projectId)) || { rank: 0, groupIds: [], direct: false };
     entry.rank = Math.max(entry.rank, rank);
     if (share.targetType === 'group') entry.groupIds.push(String(share.groupId)); else entry.direct = true;

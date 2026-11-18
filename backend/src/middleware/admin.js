@@ -5,7 +5,8 @@ const { ForbiddenError } = require('../utils/errors');
  * nothing the client sends (body, header, token claims) can grant it. A refused attempt raises a security notification.
  */
 const requireAdmin = (req, res, next) => {
-  if (req.user && req.user.role === 'ADMIN' && req.user.status !== 'suspended') return next();
+  // The admin portal belongs to the root administrator alone. Another account that still has the ADMIN role is refused like anyone else.
+  if (req.user && req.user.role === 'ADMIN' && req.user.isRootAdmin === true && req.user.status !== 'suspended') return next();
   if (req.user) {
     const hour = new Date().toISOString().slice(0, 13);
     require('../services/admin/notificationService').create({
@@ -47,4 +48,14 @@ const requireStepUp = async (req, res, next) => {
   } catch (error) { return next(error); }
 };
 
-module.exports = { requireAdmin, requireRootAdmin, requireStepUp };
+/**
+ * Areas a "support" administrator may NOT use: templates, plans, analytics, audit logs, settings, bulk credit grants and exports, and anything
+ * about administrators. The root administrator and full administrators pass. Mount after requireAdmin.
+ */
+const requireFullAdmin = (req, res, next) => {
+  if (req.user?.isRootAdmin === true || (req.user?.adminRole || 'admin') !== 'support') return next();
+  audit().record(req.user, 'ADMIN_AREA_DENIED', { resourceType: 'route', resourceId: `${req.method} ${req.originalUrl.split('?')[0]}`, req }).catch(() => {});
+  return next(new ForbiddenError('Your administrator role (Support) does not include this area.', 'ADMIN_ROLE_LIMITED'));
+};
+
+module.exports = { requireAdmin, requireRootAdmin, requireStepUp, requireFullAdmin };

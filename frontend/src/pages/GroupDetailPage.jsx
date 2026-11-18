@@ -4,10 +4,12 @@ import { ArrowLeft, UsersRound, FolderOpen, Mail, Settings, Plus, Share2, UserPl
 import { collaborationService as svc, apiErrorMessage } from '../services/collaborationService';
 import { useCollabStore } from '../store/collabStore';
 import { useProjectStore } from '../store/projectStore';
+import { useTemplateStudioStore } from '../store/templateStudioStore';
 import { useAuthStore } from '../store/authStore';
 import ProjectsTable from '../features/collaboration/ProjectsTable';
+import ProjectAdminDialog from '../features/collaboration/ProjectAdminDialog';
 import {
-  PageHeader, Btn, Card, EmptyState, Spinner, RoleBadge, StatusBadge, Notice, Modal, ConfirmDialog, Field, inputClass, useFlash, timeAgo, RoleSelect, roleLabel
+  PageHeader, Btn, Card, EmptyState, Spinner, RoleBadge, StatusBadge, Notice, Modal, ConfirmDialog, Field, inputClass, useFlash, timeAgo, RoleSelect, roleLabel, isSupportUser
 } from '../features/collaboration/ui';
 import Dropdown from '../components/ui/Dropdown';
 
@@ -56,7 +58,7 @@ export default function GroupDetailPage() {
       <PageHeader
         back={<Link to="/groups" className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-[#111827] mb-2"><ArrowLeft className="w-3.5 h-3.5" />All groups</Link>}
         title={<span className="flex items-center gap-2">{group.name} <RoleBadge role={group.myRole} /></span>}
-        subtitle={`${group.groupId}${group.description ? ` · ${group.description}` : ''}`}
+        subtitle={group.description || undefined}
       />
 
       {pending && <div className="mb-4"><Notice kind="success">Your membership is waiting for an admin to approve it. You will get access to the group's projects once approved.</Notice></div>}
@@ -94,6 +96,10 @@ function ProjectsTab({ group, isAdmin }) {
   const [error, setError] = useState(null);
   const [creating, setCreating] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [adminFor, setAdminFor] = useState(null);
+  const [membersFor, setMembersFor] = useState(null);
+  const viewer = useAuthStore((s) => s.user);
+  const canAssign = isAdmin || isSupportUser(viewer);
 
   const load = useCallback(async () => {
     try {
@@ -121,7 +127,9 @@ function ProjectsTab({ group, isAdmin }) {
           title="No projects shared with this group"
           text={isAdmin ? 'Create a project for the group, or share one of your existing projects. Members only see projects shared here.' : 'An admin has not shared any project with this group yet.'}
         />
-      ) : <ProjectsTable projects={projects} showGroup={false} />}
+      ) : <ProjectsTable projects={projects} showGroup={false} showAdmins onAssignAdmin={canAssign ? setAdminFor : null} onSelect={setMembersFor} />}
+      <ProjectMembersDialog project={membersFor} group={group} onClose={() => setMembersFor(null)} />
+      <ProjectAdminDialog open={Boolean(adminFor)} onClose={() => setAdminFor(null)} group={group} project={adminFor && projects ? projects.find((p) => p._id === adminFor._id) || adminFor : null} onChanged={load} />
 
       <CreateGroupProjectDialog open={creating} onClose={() => setCreating(false)} group={group} onDone={load} />
       <ShareExistingDialog open={sharing} onClose={() => setSharing(false)} group={group} projects={myProjects} alreadyShared={(projects || []).map((p) => p._id)} onDone={load} />
@@ -129,42 +137,77 @@ function ProjectsTab({ group, isAdmin }) {
   );
 }
 
-function CreateGroupProjectDialog({ open, onClose, group, onDone }) {
+function ProjectMembersDialog({ project, group, onClose }) {
   const navigate = useNavigate();
+  const [members, setMembers] = useState(null);
+  const [error, setError] = useState(null);
+  const pid = project?._id;
+  useEffect(() => {
+    if (!pid) return undefined;
+    let alive = true;
+    setMembers(null); setError(null);
+    svc.listMembers(group.id)
+      .then((res) => { if (alive) setMembers((res.data.data || []).filter((m) => m.status === 'active')); })
+      .catch((err) => { if (alive) setError(apiErrorMessage(err, 'Could not load the members.')); });
+    return () => { alive = false; };
+  }, [pid, group.id]);
+  const adminIds = new Set((project?.admins || []).map((a) => String(a.id)));
+  const access = project?.groupPermission || 'viewer';
+
+  return (
+    <Modal open={Boolean(project)} onClose={onClose} wide title={project?.name || 'Project'} description={`Members with access to this project through ${group.name}.`}
+      footer={<><Btn variant="outline" onClick={onClose}>Close</Btn><Btn onClick={() => navigate(`/editor/${pid}`)}>Open project</Btn></>}>
+      {error && <Notice>{error}</Notice>}
+      {!error && members === null ? <Spinner label="Loading members..." /> : members && (
+        <div className="overflow-x-auto rounded-lg border border-[#E2E5E8]">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-zinc-50 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              <tr><th className="px-3 py-2">#</th><th className="px-3 py-2">Name</th><th className="px-3 py-2">Email</th><th className="px-3 py-2">Group role</th><th className="px-3 py-2">Project access</th></tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100">
+              {members.length === 0 ? <tr><td colSpan={5} className="px-3 py-4 text-center text-zinc-500">No members yet.</td></tr> : members.map((m, i) => (
+                <tr key={m.userId}>
+                  <td className="px-3 py-2 text-zinc-400">{i + 1}</td>
+                  <td className="px-3 py-2 font-semibold text-[#111827]">{m.user?.name || '-'}</td>
+                  <td className="px-3 py-2 text-zinc-600">{m.user?.email || '-'}</td>
+                  <td className="px-3 py-2"><RoleBadge role={m.role} /></td>
+                  <td className="px-3 py-2">{String(m.userId) === String(project.owner?.id) ? 'Owner' : adminIds.has(String(m.userId)) ? 'Admin' : roleLabel(access)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+export function CreateGroupProjectDialog({ open, onClose, group }) {
+  const navigate = useNavigate();
+  const setGroupLink = useTemplateStudioStore((state) => state.setGroupLink);
   const [name, setName] = useState('');
   const [permission, setPermission] = useState(group.settings?.defaultProjectPermission || 'editor');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  useEffect(() => { if (open) { setName(''); setError(null); } }, [open]);
+  useEffect(() => { if (open) setName(''); }, [open]);
 
-  const submit = async (e) => {
+  // The project is made in Template Studio, where the website is built from a template; it is shared with this group when it is created.
+  const submit = (e) => {
     e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await svc.createGroupProject(group.id, { name, permission });
-      onClose();
-      onDone?.();
-      navigate(`/editor/${res.data.data._id}`);
-    } catch (err) {
-      setError(apiErrorMessage(err, 'Could not create the project.'));
-    } finally {
-      setBusy(false);
-    }
+    setGroupLink({ groupId: group.id, groupName: group.name, permission, name: name.trim() });
+    onClose();
+    navigate('/template-studio');
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="New group project" description={`Creates a project you own and shares it with ${group.name}.`}>
+    <Modal open={open} onClose={onClose} title="New group project" description={`Next you choose a template in Template Studio. The new website is shared with ${group.name}.`}>
       <form onSubmit={submit} className="space-y-4">
-        <Field label="Project name"><input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} maxLength={100} required autoFocus /></Field>
+        <Field label="Project name"><input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} maxLength={80} required autoFocus /></Field>
         <Field label="Member access" hint="Editors can change code and use the AI. Viewers can only look.">
           <Dropdown className={inputClass} value={permission} onChange={(e) => setPermission(e.target.value)}>
             <option value="editor">Editor</option>
             <option value="viewer">Viewer</option>
           </Dropdown>
         </Field>
-        {error && <Notice>{error}</Notice>}
-        <div className="flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn type="submit" loading={busy} disabled={!name.trim()}>Create and open</Btn></div>
+        <div className="flex justify-end gap-2"><Btn variant="outline" onClick={onClose}>Cancel</Btn><Btn type="submit" disabled={!name.trim()}>Continue to templates</Btn></div>
       </form>
     </Modal>
   );
@@ -172,15 +215,23 @@ function CreateGroupProjectDialog({ open, onClose, group, onDone }) {
 
 function ShareExistingDialog({ open, onClose, group, projects, alreadyShared, onDone }) {
   const user = useAuthStore((s) => s.user);
+  const fetchProjects = useProjectStore((s) => s.fetchProjects);
+  const loadingProjects = useProjectStore((s) => s.isLoading);
+  const me = String(user?._id || user?.id || '');
+  // Your own projects that are not in this group yet. When the account is not loaded yet, nothing is hidden by owner (the server still checks).
   const candidates = useMemo(
-    () => (projects || []).filter((p) => !alreadyShared.includes(p._id) && (!p.userId || String(p.userId) === String(user?._id || user?.id))),
-    [projects, alreadyShared, user]
+    () => (projects || []).filter((p) => !alreadyShared.includes(p._id) && (!me || !p.userId || String(p.userId) === me)),
+    [projects, alreadyShared, me]
   );
-  const [projectId, setProjectId] = useState('');
+  const [picked, setPicked] = useState('');
   const [permission, setPermission] = useState('editor');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  useEffect(() => { if (open) { setProjectId(candidates[0]?._id || ''); setError(null); } }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The chosen project is always one that is really in the list: the first one until the owner picks another. (It used to be set once, when
+  // the dialog opened; if the list was still loading it stayed empty and the Share button never turned on.)
+  const projectId = candidates.some((p) => p._id === picked) ? picked : (candidates[0]?._id || '');
+  // The list is read again every time the dialog opens, so a project made a moment ago is there.
+  useEffect(() => { if (open) { setPicked(''); setError(null); fetchProjects(); } }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async (e) => {
     e.preventDefault();
@@ -199,10 +250,10 @@ function ShareExistingDialog({ open, onClose, group, projects, alreadyShared, on
 
   return (
     <Modal open={open} onClose={onClose} title="Share a project with this group" description="Only the project you pick is shared. Group members never get access to your other projects.">
-      {candidates.length === 0 ? <p className="text-xs text-zinc-500">You have no other projects to share. Create one from the dashboard first.</p> : (
+      {candidates.length === 0 ? (loadingProjects ? <Spinner label="Loading your projects..." /> : <p className="text-xs text-zinc-500">You have no other projects to share. Create one from the dashboard first.</p>) : (
         <form onSubmit={submit} className="space-y-4">
           <Field label="Project">
-            <Dropdown className={inputClass} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+            <Dropdown className={inputClass} value={projectId} onChange={(e) => setPicked(e.target.value)}>
               {candidates.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
             </Dropdown>
           </Field>
@@ -225,11 +276,13 @@ function ShareExistingDialog({ open, onClose, group, projects, alreadyShared, on
 function MembersTab({ group, onChanged }) {
   const navigate = useNavigate();
   const me = useAuthStore((s) => s.user);
+  const support = isSupportUser(me);
   const myId = String(me?._id || me?.id || '');
   const [members, setMembers] = useState(null);
   const [error, setError] = useState(null);
   const [flash, setFlash] = useFlash();
   const [confirmRemove, setConfirmRemove] = useState(null);
+  const [selected, setSelected] = useState(null);
   const [confirmTransfer, setConfirmTransfer] = useState(null);
   const [leaving, setLeaving] = useState(false);
   const isOwner = group.myRole === 'owner';
@@ -280,11 +333,11 @@ function MembersTab({ group, onChanged }) {
           <ul className="divide-y divide-zinc-100">
             {active.map((m) => {
               const isMe = m.userId === myId;
-              const canChangeRole = m.role !== 'owner' && !isMe && (isOwner || (group.myRole === 'admin' && m.role === 'member'));
+              const canChangeRole = m.role !== 'owner' && !isMe && (support || (m.role !== 'admin' && (isOwner || (group.myRole === 'admin' && m.role === 'member'))));
               const canRemove = isAdmin && m.role !== 'owner' && !isMe && (isOwner || m.role === 'member');
               return (
                 <li key={m.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-                  <div className="flex items-center gap-3 min-w-0">
+                  <div role="button" tabIndex={0} onClick={() => setSelected(m)} onKeyDown={(e) => { if (e.key === 'Enter') setSelected(m); }} className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer rounded-lg hover:bg-zinc-50">
                     <div className="w-8 h-8 rounded-full bg-zinc-200 text-zinc-700 flex items-center justify-center text-xs font-bold shrink-0">{(m.user?.name || '?').slice(0, 1).toUpperCase()}</div>
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-[#111827] truncate">{m.user?.name}{isMe && <span className="text-zinc-400 font-normal"> (you)</span>}</p>
@@ -292,11 +345,12 @@ function MembersTab({ group, onChanged }) {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    {canChangeRole && isOwner ? (
+                    {canChangeRole && (isOwner || support) ? (
                       <RoleSelect
+                        options={support ? ['member', 'editor', 'admin'] : ['member', 'editor']}
                         label={`Role of ${m.user?.name}`}
                         value={m.role}
-                        onChange={(v) => act(() => svc.setMemberRole(group.id, m.userId, v), `${m.user?.name} is now ${v === 'admin' ? 'an admin' : 'staff'}.`)}
+                        onChange={(v) => act(() => svc.setMemberRole(group.id, m.userId, v), `${m.user?.name} is now ${v === 'admin' ? 'an admin' : v === 'editor' ? 'an editor' : 'staff'}.`)}
                       />
                     ) : <RoleBadge role={m.role} />}
                     {isOwner && m.role !== 'owner' && !isMe && <Btn variant="ghost" onClick={() => setConfirmTransfer(m)}>Make owner</Btn>}
@@ -308,6 +362,19 @@ function MembersTab({ group, onChanged }) {
           </ul>
         </Card>
       )}
+
+      <Modal open={!!selected} onClose={() => setSelected(null)} title={selected?.user?.name || 'Member'} description={selected?.user?.email}>
+        {selected && (
+          <dl className="grid grid-cols-[110px_1fr] gap-y-2 text-sm">
+            <dt className="text-zinc-500">Role</dt><dd><RoleBadge role={selected.role} /></dd>
+            <dt className="text-zinc-500">Email</dt><dd className="break-all">{selected.user?.email}</dd>
+            <dt className="text-zinc-500">Status</dt><dd className="capitalize">{selected.status}</dd>
+            <dt className="text-zinc-500">Joined</dt><dd>{selected.joinedAt ? new Date(selected.joinedAt).toLocaleDateString() : 'Unknown'}</dd>
+            <dt className="text-zinc-500">Can do</dt>
+            <dd>{{ owner: 'Everything, including deleting the group', admin: 'Manage members and projects', editor: 'Edit shared projects', member: 'Open shared projects' }[selected.role]}</dd>
+          </dl>
+        )}
+      </Modal>
 
       {group.myRole !== 'owner' && (
         <div><Btn variant="outline" icon={LogOut} onClick={() => setLeaving(true)}>Leave group</Btn></div>
@@ -367,6 +434,10 @@ function LeaveDialog({ open, onClose, group, onLeft }) {
 function InvitationsTab({ group }) {
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('member');
+  const [scope, setScope] = useState('group');
+  const [projectId, setProjectId] = useState('');
+  const [projectPermission, setProjectPermission] = useState('viewer');
+  const [groupProjects, setGroupProjects] = useState([]);
   const [busy, setBusy] = useState(false);
   const [list, setList] = useState(null);
   const [error, setError] = useState(null);
@@ -377,13 +448,16 @@ function InvitationsTab({ group }) {
     try { setList((await svc.listGroupInvitations(group.id)).data.data || []); } catch (err) { setError(apiErrorMessage(err, 'Could not load invitations.')); }
   }, [group.id]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { svc.listGroupProjects(group.id).then((res) => setGroupProjects(res.data.data || [])).catch(() => setGroupProjects([])); }, [group.id]);
+  const needsProject = scope !== 'group';
+  const pickedProject = projectId || groupProjects[0]?._id || '';
 
   const send = async (e) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const res = await svc.inviteToGroup(group.id, { email, role });
+      const res = await svc.inviteToGroup(group.id, { email, role, scope, ...(needsProject ? { projectId: pickedProject, projectPermission } : {}) });
       const d = res.data.data;
       setFlash(d.email?.sent
         ? `Invitation emailed to ${email}.${d.inviteeRegistered ? '' : ' They will need to create an account with that address first.'}`
@@ -408,14 +482,36 @@ function InvitationsTab({ group }) {
         <h3 className="text-xs font-bold text-[#111827] mb-3 flex items-center gap-1.5"><UserPlus className="w-3.5 h-3.5" />Invite by email</h3>
         <form onSubmit={send} className="flex flex-wrap gap-2 items-end">
           <div className="flex-1 min-w-[220px]"><Field label="Email address"><input type="email" className={inputClass} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="teammate@company.com" required /></Field></div>
-          {isOwner && (
-            <Field label="Role">
-              <RoleSelect value={role} onChange={setRole} className="w-44" />
+          <Field label="Invite to">
+            <Dropdown className={`${inputClass} w-52`} value={scope} onChange={(e) => setScope(e.target.value)}>
+              <option value="group">Whole group</option>
+              <option value="project">Single project only</option>
+              <option value="both">Whole group + a project</option>
+            </Dropdown>
+          </Field>
+          {needsProject && (
+            <>
+              <Field label="Project">
+                <Dropdown className={`${inputClass} w-52`} value={pickedProject} onChange={(e) => setProjectId(e.target.value)}>
+                  {groupProjects.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+                </Dropdown>
+              </Field>
+              <Field label="Project access">
+                <Dropdown className={`${inputClass} w-36`} value={projectPermission} onChange={(e) => setProjectPermission(e.target.value)}>
+                  <option value="viewer">Viewer</option>
+                  <option value="editor">Editor</option>
+                </Dropdown>
+              </Field>
+            </>
+          )}
+          {isOwner && scope !== 'project' && (
+            <Field label="Group role">
+              <RoleSelect value={role} onChange={setRole} options={['member', 'editor']} className="w-44" />
             </Field>
           )}
-          <Btn type="submit" loading={busy} disabled={!email}>Send invitation</Btn>
+          <Btn type="submit" loading={busy} disabled={!email || (needsProject && !pickedProject)}>Send invitation</Btn>
         </form>
-        <p className="text-[11px] text-zinc-500 mt-2">We email the invitation (and notify them in the app if they have an account). They join only after they accept. Invitations expire after 7 days.</p>
+        <p className="text-[11px] text-zinc-500 mt-2">We email the invitation (and notify them in the app if they have an account). The email says whether it is for the whole group, a single project, or both. Their role is set automatically when they accept. Invitations expire after 7 days.</p>
       </Card>
       {error && <Notice onClose={() => setError(null)}>{error}</Notice>}
       {flash && <Notice kind="success">{flash}</Notice>}
@@ -427,7 +523,7 @@ function InvitationsTab({ group }) {
               <li key={inv.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold truncate">{inv.invitee?.name || inv.inviteeEmail}</p>
-                  <p className="text-[11px] text-zinc-500 truncate">{inv.inviteeEmail} · invited by {inv.inviter?.name} · {timeAgo(inv.createdAt)} · as {roleLabel(inv.role)}</p>
+                  <p className="text-[11px] text-zinc-500 truncate">{inv.inviteeEmail} · invited by {inv.inviter?.name} · {timeAgo(inv.createdAt)} · {inv.scope === 'project' ? `project ${inv.projectName || ''} only (${inv.projectPermission})` : inv.scope === 'both' ? `whole group as ${roleLabel(inv.role)} + project ${inv.projectName || ''} (${inv.projectPermission})` : `whole group as ${roleLabel(inv.role)}`}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <StatusBadge status={inv.status} />

@@ -8,8 +8,9 @@ export const line = 'border-[#E2DCCF]';
 export const inputClass = 'rounded-lg border border-[#D9D2C2] bg-white px-3 py-2 text-sm text-[#2B2823] placeholder:text-[#A39C8C] focus:border-[#5E7B5F] focus:outline-none focus:ring-1 focus:ring-[#5E7B5F] disabled:opacity-60';
 
 export const fmt = (value) => Number(value || 0).toLocaleString('en-US');
-export const dateTime = (value) => (value ? new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—');
-export const dateOnly = (value) => (value ? new Date(value).toLocaleDateString(undefined, { dateStyle: 'medium' }) : '—');
+// Dates are stored in UTC and always shown in Indian time (IST), whatever the browser's own time zone is.
+export const dateTime = (value) => (value ? `${new Date(value).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' })} IST` : '—');
+export const dateOnly = (value) => (value ? new Date(value).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium' }) : '—');
 export function ago(value) {
   if (!value) return 'Never';
   const seconds = Math.max(0, (Date.now() - new Date(value).getTime()) / 1000);

@@ -37,6 +37,13 @@ exports.rejectInvitation = wrap((req) => invitationService.reject(req.user, req.
 
 // Group projects
 exports.listGroupProjects = wrap((req) => sharingService.listGroupProjects(req.user, req.params.groupId));
+const groupCredits = () => require('../services/collaboration/groupCreditService');
+exports.groupCreditsOverview = wrap((req) => groupCredits().overview(req.user, req.params.groupId));
+exports.changeGroupCredits = wrap((req) => groupCredits().changeCredits(req.user, req.params.groupId, { ...(req.body || {}), idempotencyKey: req.body?.idempotencyKey || req.get('Idempotency-Key') }));
+exports.groupCreditsHistory = wrap((req) => groupCredits().history(req.user, req.params.groupId, req.query));
+exports.manageProjectCredits = wrap((req) => require('../services/collaboration/groupCreditService').manageProjectCredits(req.user, req.params.groupId, req.params.projectId, req.body || {}));
+exports.assignProjectAdmin = wrap((req) => sharingService.setProjectAdmin(req.user, req.params.groupId, req.params.projectId, req.params.userId, true));
+exports.removeProjectAdmin = wrap((req) => sharingService.setProjectAdmin(req.user, req.params.groupId, req.params.projectId, req.params.userId, false));
 exports.createGroupProject = wrap((req) => sharingService.createGroupProject(req.user, req.params.groupId, req.body || {}), 201);
 
 // Project sharing

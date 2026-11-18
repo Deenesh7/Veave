@@ -5781,7 +5781,7 @@ class JobManager {
         const claimed = await GenerationJob.findOneAndUpdate({ jobId, creditChargedAt: null }, { $set: { creditChargedAt: new Date() } });
         if (claimed) {
           try {
-      const updatedUser = await require('../billing/usageService').chargeCredits(userId, tokenUsage?.totalTokens);
+      const updatedUser = await require('../billing/usageService').chargeCredits(userId, tokenUsage?.totalTokens, { projectId: project?._id });
             if (updatedUser) userCredits = updatedUser.credits;
           } catch (billingError) {
             await GenerationJob.updateOne({ jobId }, { $set: { creditChargedAt: null } }).catch(() => {});

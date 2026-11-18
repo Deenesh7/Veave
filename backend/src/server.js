@@ -23,6 +23,9 @@ const startServer = async () => {
     const templateService = require('./services/templates/templateService');
     const loaded = await templateService.preload();
     logger.info(`Loaded ${loaded} template version(s) from the database.`);
+    // Compile the template previews in the background so the first visitor does not wait for it.
+    // Delayed so the boot (job recovery, listen) is not competing with template compilation for the 2 CPUs.
+    setTimeout(() => require('./controllers/templateController').warmSiteHtml().then((count) => logger.info(`Warmed ${count} template preview(s).`)).catch(() => {}), Number(process.env.TEMPLATE_WARM_DELAY_MS) || 20000).unref();
     for (const problem of templateService.loadRegistry().problems || []) logger.error(`Template ${problem.id}@${problem.version} not loaded: ${problem.message}`);
   } catch (error) { logger.error(`Templates could not be loaded: ${error.message}`); }
 
@@ -79,6 +82,8 @@ const startServer = async () => {
 
 // Graceful shutdown on nodemon restart (SIGUSR2) and termination signals
 const handleShutdown = () => {
+  // Never hang on open connections or long streams: force exit after the grace period.
+  setTimeout(() => process.exit(0), Number(process.env.SHUTDOWN_TIMEOUT_MS) || 30000).unref();
   require('./services/lsp/lspManager').disposeAll().catch(() => {}); require('./services/search/projectIndex').disposeAll(); // stop language servers and remove their scratch workspaces
   if (server) {
     server.close(() => {
@@ -88,6 +93,10 @@ const handleShutdown = () => {
     process.exit(0);
   }
 };
+
+// A stray rejection or exception must not silently kill (or wedge) the single API process: log it and keep serving.
+process.on('unhandledRejection', (reason) => logger.error(`Unhandled rejection: ${reason && reason.stack ? reason.stack : reason}`));
+process.on('uncaughtException', (error) => logger.error(`Uncaught exception: ${error && error.stack ? error.stack : error}`));
 
 process.once('SIGUSR2', handleShutdown);
 process.on('SIGINT', handleShutdown);

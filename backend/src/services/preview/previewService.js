@@ -284,4 +284,4 @@ async function readPreviewAsset(token, assetPath) {
 /** Compiles a template's own files (no project, nothing saved) for the New Site preview. */
 const compileTemplateFiles = (files) => runCompileWorker(files.map((file) => ({ path: file.path, content: file.content || '', language: file.language })), { assetBase: ASSET_BASE_PLACEHOLDER, sourceMaps: false });
 
-module.exports = { validateCompiledAssets, htmlOf, compileTemplateFiles, compileFilesPreview, compileWithOverrides, ensurePrecompiled, schedulePrecompile, previewSourceHash, readPreviewAsset, ASSET_BASE_PLACEHOLDER };
+module.exports = { COMPILER_VERSION, validateCompiledAssets, htmlOf, compileTemplateFiles, compileFilesPreview, compileWithOverrides, ensurePrecompiled, schedulePrecompile, previewSourceHash, readPreviewAsset, ASSET_BASE_PLACEHOLDER };

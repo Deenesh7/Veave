@@ -9,6 +9,17 @@ const { resolveInside } = require('./safePath');
 
 const TTL_MS = 5000;
 const cache = new Map();
+const MAX_CACHE_ENTRIES = 2000;
+
+// Bounded: probes for random hostnames must not grow the map forever.
+function remember(key, value) {
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    const now = Date.now();
+    for (const [k, v] of cache) if (now - v.at >= TTL_MS) cache.delete(k);
+    if (cache.size >= MAX_CACHE_ENTRIES) cache.clear();
+  }
+  cache.set(key, value);
+}
 
 function invalidateSite(slug, customDomain) {
   if (slug) cache.delete(slug);
@@ -19,7 +30,7 @@ async function lookupSite(slug) {
   const hit = cache.get(slug);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.site;
   const site = await PublishedSite.findOne({ slug }).select('slug status activeVersion').lean();
-  cache.set(slug, { site, at: Date.now() });
+  remember(slug, { site, at: Date.now() });
   return site;
 }
 
@@ -46,7 +57,7 @@ async function lookupSiteByDomain(hostname) {
     const legacy = await PublishedSite.findOne({ customDomain: bare, customDomainStatus: 'verified' }).select('slug status activeVersion customDomainWww').lean();
     if (legacy && (host === bare || legacy.customDomainWww !== false) && !(await DomainConnection.exists({ siteId: legacy._id, live: true }))) result = { site: legacy, redirect: null };
   }
-  cache.set(key, { result, at: Date.now() });
+  remember(key, { result, at: Date.now() });
   return result;
 }
 

@@ -17,6 +17,9 @@ const projectSchema = new mongoose.Schema({
   provenance: { type: mongoose.Schema.Types.Mixed, default: null },
   // Reusable template this project was generated from ({ id, version }); null for projects not started from a template.
   template: { type: mongoose.Schema.Types.Mixed, default: null },
+  // A credit balance of this project's own, set by the root administrator. null (the default) = the project has none and everything is charged
+  // to its owner's account as before. A number is spent FIRST by generations in this project; when it is used up, the owner's balance takes over.
+  creditBalance: { type: Number, default: null, min: 0 },
   settings: {
     framework: { type: String, default: 'react' },
     styling: { type: String, default: 'tailwindcss' },

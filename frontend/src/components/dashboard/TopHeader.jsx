@@ -116,7 +116,7 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
             <form onSubmit={handleInvite} className="mt-4 space-y-4">
               {adminGroups.length === 0 ? (
                 <div className="text-xs text-[#64748B] leading-relaxed space-y-3">
-                  <p>Invitations are sent through a group. Create a group first, then invite teammates to it.</p>
+                  <p>Invitations are sent through a group. Create a website group first, then invite teammates to it.</p>
                   <button
                     type="button"
                     onClick={() => { setInviteModalOpen(false); navigate('/groups'); }}

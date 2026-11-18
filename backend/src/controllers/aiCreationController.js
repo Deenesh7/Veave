@@ -897,7 +897,7 @@ ${GSAP_ANIMATION_RULES}`;
 
     let userCredits = null;
     if (userId && !degraded) {
-      const updatedUser = await require('../services/billing/usageService').chargeCredits(userId, tokenUsage?.totalTokens);
+      const updatedUser = await require('../services/billing/usageService').chargeCredits(userId, tokenUsage?.totalTokens, { projectId: project?._id });
       if (updatedUser) userCredits = updatedUser.credits;
     }
 
@@ -1780,7 +1780,7 @@ exports.startJob = async (req, res, next) => {
       try {
         const usageService = require('../services/billing/usageService');
         await usageService.assertCanCreate(userId, { newProject: type !== 'modify' && !projectId });
-        await usageService.assertCanUseAI(userId);
+        await usageService.assertCanUseAI(userId, { projectId });
       } catch (limitError) {
         if (limitError.code === 'PLAN_LIMIT_REACHED') {
           return res.status(403).json({ success: false, code: limitError.code, error: limitError.message });

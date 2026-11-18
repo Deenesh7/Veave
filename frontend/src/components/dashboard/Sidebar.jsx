@@ -16,7 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen
 } from 'lucide-react';
-import { NAV as ADMIN_NAV, useAdminUnread } from '../../features/admin/AdminLayout';
+import { navFor, useAdminUnread } from '../../features/admin/AdminLayout';
 import CreateButton from './CreateButton';
 import SearchBar from './SearchBar';
 import DocumentationLink from './DocumentationLink';
@@ -30,7 +30,7 @@ import MySitesPanel from '../../features/template-studio/MySitesPanel';
 export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }) {
   const { user } = useAuthStore();
   const projects = useProjectStore((s) => s.projects);
-  const isAdmin = user?.role === 'ADMIN';
+  const isAdmin = user?.role === 'ADMIN' && user?.isRootAdmin === true;
   const adminUnread = useAdminUnread((s) => s.unread);
   const pendingInvitations = useCollabStore((s) => s.invitations.length);
 
@@ -66,7 +66,7 @@ export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }
   ];
 
   // Administrators see only the admin dashboard; the server enforces the role on every admin request regardless.
-  const adminNavItems = ADMIN_NAV.map((item) => ({
+  const adminNavItems = navFor(user).map((item) => ({
     label: item.label, href: item.to, icon: item.icon, end: item.end, onClick: onCloseMobileMenu,
     badge: item.badge && adminUnread > 0 ? (adminUnread > 99 ? '99+' : String(adminUnread)) : undefined
   }));

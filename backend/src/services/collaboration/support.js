@@ -51,4 +51,10 @@ async function audit(actorId, action, { groupId = null, projectId = null, target
 
 const sid = (value) => (value && value._id ? String(value._id) : value ? String(value) : '');
 
-module.exports = { withTransaction, notify, audit, sid, supportsTransactions };
+/**
+ * A platform support admin: an account the root administrator made an administrator of the "support" kind (the root administrator counts too).
+ * It is read from the database record that `auth` loaded, never from the request. Only they may assign group admins and manage group credits.
+ */
+const isSupportAdmin = (user) => !!user && user.role === 'ADMIN' && user.status !== 'suspended' && (user.isRootAdmin === true || user.adminRole === 'support');
+
+module.exports = { withTransaction, notify, audit, sid, supportsTransactions, isSupportAdmin };

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Download, ShieldCheck, Trash2 } from 'lucide-react';
+import { Download, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { adminService, adminError } from '../../services/adminService';
 import { toast } from '../../store/toastStore';
@@ -211,56 +211,38 @@ export function AuditLogsPage() {
 
 export function AdminsPage() {
   const { admin } = useAdmin();
-  const isRoot = Boolean(admin?.isRoot);
   const state = useAsync(() => adminService.admins(), []);
-  const [mode, setMode] = useState('create');
-  const [form, setForm] = useState({ name: '', email: '', password: '', currentPassword: '' });
   const [busy, setBusy] = useState(false);
   const [removing, setRemoving] = useState(null);
   const [removePassword, setRemovePassword] = useState('');
-  const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }));
-  const strong = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{10,128}$/.test(form.password);
-  const ready = form.currentPassword && form.email.includes('@') && (mode === 'promote' || (form.name.trim().length > 1 && strong));
-  const add = async () => {
-    setBusy(true);
-    try {
-      await adminService.addAdmin(mode === 'create' ? form : { email: form.email, currentPassword: form.currentPassword });
-      toast.success(mode === 'create' ? 'Administrator created.' : 'Administrator added.');
-      setForm({ name: '', email: '', password: '', currentPassword: '' }); state.reload();
-    } catch (error) { toast.error(adminError(error)); } finally { setBusy(false); }
-  };
   const remove = async () => {
     setBusy(true);
     try { await adminService.removeAdmin(removing.id, removePassword); toast.success('Administrator role removed.'); setRemoving(null); setRemovePassword(''); state.reload(); }
     catch (error) { toast.error(adminError(error)); } finally { setBusy(false); }
   };
   return (
-    <Page title="Admin Management" subtitle="Only the root administrator can create or remove administrators. Every change asks for your password and is written to the audit log.">
-      <div className="grid gap-4 lg:grid-cols-3">
-        {isRoot ? (
-          <Card title="Add an administrator">
-            <div className="space-y-3">
-              <div className="flex gap-1 rounded-lg border border-[#E2DCCF] bg-[#F3EFE5] p-0.5 text-xs" role="group" aria-label="How to add">
-                {[['create', 'New account'], ['promote', 'Existing account']].map(([id, label]) => <button key={id} type="button" onClick={() => setMode(id)} aria-pressed={mode === id} className={`flex-1 rounded-md px-2 py-1.5 font-medium ${mode === id ? 'bg-white shadow-sm' : 'text-[#7A7366]'}`}>{label}</button>)}
-              </div>
-              {mode === 'create' ? <Field label="Name"><Input value={form.name} onChange={set('name')} placeholder="Full name" autoComplete="off" /></Field> : null}
-              <Field label="Email"><Input type="email" value={form.email} onChange={set('email')} placeholder="name@example.com" autoComplete="off" /></Field>
-              {mode === 'create' ? <Field label="Temporary password" hint={form.password && !strong ? '10+ characters with an upper-case letter, a lower-case letter and a number.' : 'Share it with them privately; they should change it.'}><Input type="password" value={form.password} onChange={set('password')} autoComplete="new-password" /></Field> : null}
-              <Field label="Your password" hint="Confirms it is really you."><Input type="password" value={form.currentPassword} onChange={set('currentPassword')} autoComplete="current-password" /></Field>
-              <Btn variant="primary" busy={busy} disabled={!ready} onClick={add}><ShieldCheck className="h-4 w-4" />{mode === 'create' ? 'Create administrator' : 'Make admin'}</Btn>
+    <Page title="Admin Management" subtitle="The admin portal belongs to the root administrator alone. Every change here asks for your password and is written to the audit log.">
+      <Card title="Administrators" pad={false}>
+        <Async state={state} errorFallback={(error) => adminError(error)} skeleton={<TableSkeleton rows={3} />}>
+          {({ admins }) => (
+            <div className="px-3 pb-3">
+              {admins.some((user) => !user.isRoot) ? <p className="mb-2 rounded-lg bg-[#FBF1DC] p-2 text-xs text-[#7A5A1E]">Accounts below that are not Root have the ADMIN role but cannot open the admin portal. Remove the role if they should not have it.</p> : null}
+              <Table>
+                <thead><tr><Th>Name</Th><Th>Email</Th><Th>Status</Th><Th>Last active</Th><Th /></tr></thead>
+                <tbody>{admins.map((user) => (
+                  <tr key={user.id}>
+                    <Td className="font-medium">{user.name}{user.id === admin?.id ? <span className="ml-1 text-xs text-[#7A7366]">(you)</span> : null}{user.isRoot ? <span className="ml-1 rounded bg-[#E8F0E8] px-1.5 py-0.5 text-[10px] text-[#33503A]">Root</span> : null}</Td>
+                    <Td>{user.email}</Td><Td><StatusBadge status={user.status} /></Td><Td>{ago(user.lastActiveAt)}</Td>
+                    <Td className="text-right">{user.id !== admin?.id && !user.isRoot ? <Btn size="sm" variant="ghost" onClick={() => setRemoving(user)} aria-label={`Remove ${user.name}`}><Trash2 className="h-3.5 w-3.5 text-[#A4493A]" /></Btn> : null}</Td>
+                  </tr>
+                ))}</tbody>
+              </Table>
             </div>
-          </Card>
-        ) : (
-          <Card title="Administrators"><p className="text-sm text-[#7A7366]">Only the root administrator can add or remove administrators. You can see who has access here.</p></Card>
-        )}
-        <Card title="Administrators" className={isRoot ? 'lg:col-span-2' : 'lg:col-span-2'} pad={false}>
-          <Async state={state} errorFallback={(error) => adminError(error)} skeleton={<TableSkeleton rows={3} />}>
-            {({ admins }) => <div className="px-3 pb-3"><Table><thead><tr><Th>Name</Th><Th>Email</Th><Th>Status</Th><Th>Last active</Th><Th /></tr></thead><tbody>{admins.map((user) => <tr key={user.id}><Td className="font-medium">{user.name}{user.id === admin?.id ? <span className="ml-1 text-xs text-[#7A7366]">(you)</span> : null}{user.isRoot ? <span className="ml-1 rounded bg-[#E8F0E8] px-1.5 py-0.5 text-[10px] text-[#33503A]">Root</span> : null}</Td><Td>{user.email}</Td><Td><StatusBadge status={user.status} /></Td><Td>{ago(user.lastActiveAt)}</Td><Td className="text-right">{isRoot && user.id !== admin?.id && !user.isRoot ? <Btn size="sm" variant="ghost" onClick={() => setRemoving(user)} aria-label={`Remove ${user.name}`}><Trash2 className="h-3.5 w-3.5 text-[#A4493A]" /></Btn> : null}</Td></tr>)}</tbody></Table></div>}
-          </Async>
-        </Card>
-      </div>
+          )}
+        </Async>
+      </Card>
       <ConfirmDialog open={Boolean(removing)} title="Remove administrator access?" danger confirmLabel="Remove access" busy={busy || !removePassword} onClose={() => { setRemoving(null); setRemovePassword(''); }} onConfirm={remove}>
-        <p>{removing?.name} becomes a normal user and loses access to this dashboard immediately.</p>
+        <p>{removing?.name} becomes a normal user.</p>
         <div className="mt-3"><Field label="Your password"><Input type="password" value={removePassword} onChange={(event) => setRemovePassword(event.target.value)} autoComplete="current-password" /></Field></div>
       </ConfirmDialog>
     </Page>

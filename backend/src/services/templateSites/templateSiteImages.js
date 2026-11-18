@@ -31,7 +31,7 @@ async function generateSiteImages({ userId, projectId, plan, deps = {}, signal, 
     if (!enabled) { entry.status = 'skipped'; entry.error = 'Picture generation is not available.'; continue; }
     if (stop) { entry.status = 'skipped'; entry.error = stop; continue; }
     if (charge) {
-      try { await billing.assertCanSpendCredits(userId, credits); }
+      try { await billing.assertCanSpendCredits(userId, credits, { projectId }); }
       catch (error) { stop = error.message; entry.status = 'skipped'; entry.error = stop; notes.push(`Pictures were skipped: ${stop}`); continue; }
     }
     try {
@@ -42,7 +42,7 @@ async function generateSiteImages({ userId, projectId, plan, deps = {}, signal, 
       if (charge) {
         try {
           await AIUsage.create({ userId, projectId, model: made.model, provider: 'openrouter', inputTokens: made.usage.promptTokens, outputTokens: made.usage.completionTokens, totalTokens: 0, cost: made.usage.cost, usageSource: 'reported' });
-          await billing.chargeFixedCredits(userId, credits);
+          await billing.chargeFixedCredits(userId, credits, { projectId });
         } catch (error) { logger.error(`Could not bill picture ${entry.key}: ${error.message}`); }
       }
     } catch (error) {

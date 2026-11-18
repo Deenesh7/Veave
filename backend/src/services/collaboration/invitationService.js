@@ -6,10 +6,21 @@ const { AppError, NotFoundError, ValidationError, ForbiddenError, ConflictError 
 const { withTransaction, notify, audit, sid } = require('./support');
 const { requireMember, ADMIN_ROLES, userId, publicUser } = require('./groupService');
 const mail = require('../mail/mailService');
+const Project = require('../../models/Project');
+const ProjectSharing = require('../../models/ProjectSharing');
+const access = require('./projectAccess');
+
+const SCOPES = ['group', 'project', 'both'];
+const projectNames = async (rows) => {
+  const ids = [...new Set(rows.map((r) => r.projectId).filter(Boolean).map(String))];
+  if (!ids.length) return new Map();
+  const list = await Project.find({ _id: { $in: ids } }).select('name').lean();
+  return new Map(list.map((p) => [String(p._id), p.name]));
+};
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function toInvitation(inv, { group, inviter, invitee } = {}) {
+function toInvitation(inv, { group, inviter, invitee, projectName } = {}) {
   return {
     id: sid(inv._id),
     invitationId: inv.invitationId,
@@ -19,6 +30,10 @@ function toInvitation(inv, { group, inviter, invitee } = {}) {
     invitee: publicUser(invitee) || { id: sid(inv.inviteeId), email: inv.inviteeEmail },
     inviteeEmail: inv.inviteeEmail,
     role: inv.role,
+    scope: inv.scope || 'group',
+    projectId: inv.projectId ? sid(inv.projectId) : null,
+    projectName: projectName || null,
+    projectPermission: inv.projectPermission || 'viewer',
     status: inv.status,
     expiresAt: inv.expiresAt,
     respondedAt: inv.respondedAt,
@@ -31,12 +46,21 @@ async function expireOverdue(filter = {}) {
   await GroupInvitation.updateMany({ ...filter, status: 'pending', expiresAt: { $lte: new Date() } }, { $set: { status: 'expired', respondedAt: new Date() } });
 }
 
-async function invite(user, groupId, { email, userId: targetUserId, role = 'member' } = {}) {
+async function invite(user, groupId, { email, userId: targetUserId, role = 'member', scope = 'group', projectId = null, projectPermission } = {}) {
   const { group, membership } = await requireMember(user, groupId);
   const isAdmin = ADMIN_ROLES.includes(membership.role);
   if (!isAdmin && !group.settings?.membersCanInvite) throw new ForbiddenError('Only group admins can invite people.', 'GROUP_ADMIN_REQUIRED');
-  if (!['admin', 'member'].includes(role)) throw new ValidationError('Role must be "admin" or "member".');
-  if (role === 'admin' && membership.role !== 'owner') throw new ForbiddenError('Only the group owner can invite someone as an admin.', 'OWNER_REQUIRED');
+  if (!['admin', 'editor', 'member'].includes(role)) throw new ValidationError('Role must be "admin", "editor" or "member".');
+  if (role === 'admin') throw new ForbiddenError('Invite them as editor or staff. A support admin can then make them a group admin.', 'SUPPORT_ADMIN_REQUIRED');
+  if (!SCOPES.includes(scope)) throw new ValidationError('Scope must be "group", "project" or "both".');
+  let project = null;
+  if (scope !== 'group') {
+    if (!projectId) throw new ValidationError('Choose the project to invite them to.');
+    ({ project } = await access.requireProjectAccess(projectId, user, 'admin'));
+    const inGroup = await ProjectSharing.exists({ projectId, targetType: 'group', groupId: group._id });
+    if (!inGroup) throw new ValidationError('That project is not shared with this group.');
+  }
+  const projPerm = scope === 'group' ? 'viewer' : (['viewer', 'editor'].includes(projectPermission) ? projectPermission : (role === 'editor' ? 'editor' : 'viewer'));
 
   let invitee = null;
   let inviteeEmail;
@@ -51,7 +75,7 @@ async function invite(user, groupId, { email, userId: targetUserId, role = 'memb
   }
   if (invitee && sid(invitee._id) === userId(user)) throw new ValidationError('You are already in this group.');
 
-  if (invitee) {
+  if (invitee && scope !== 'project') {
     const existing = await GroupMembership.findOne({ groupId, userId: invitee._id });
     if (existing && ['active', 'pending'].includes(existing.status)) {
       throw new ConflictError(existing.status === 'active' ? `${invitee.email} is already a member of this group.` : `${invitee.email} already accepted and is waiting for admin approval.`, 'ALREADY_MEMBER');
@@ -61,14 +85,14 @@ async function invite(user, groupId, { email, userId: targetUserId, role = 'memb
   let invitation;
   try {
     invitation = await GroupInvitation.create({
-      groupId, inviterId: userId(user), inviteeId: invitee?._id || null, inviteeEmail, role,
+      groupId, inviterId: userId(user), inviteeId: invitee?._id || null, inviteeEmail, role, scope, projectId: scope === 'group' ? null : projectId, projectPermission: projPerm,
       expiresAt: new Date(Date.now() + GroupInvitation.TTL_MS)
     });
   } catch (error) {
     if (error.code === 11000) throw new ConflictError(`${inviteeEmail} already has a pending invitation to this group.`, 'DUPLICATE_INVITATION');
     throw error;
   }
-  await audit(userId(user), 'invitation.sent', { groupId, targetUserId: invitee?._id || null, meta: { invitationId: invitation.invitationId, role, email: inviteeEmail } });
+  await audit(userId(user), 'invitation.sent', { groupId, targetUserId: invitee?._id || null, meta: { invitationId: invitation.invitationId, role, scope, projectId, email: inviteeEmail } });
   if (invitee) {
     await notify(invitee._id, {
       type: 'group_invitation',
@@ -81,7 +105,7 @@ async function invite(user, groupId, { email, userId: targetUserId, role = 'memb
     to: inviteeEmail, inviterName: user.name || 'A Veave user', groupName: group.name, groupDescription: group.description,
     role, expiresAt: invitation.expiresAt, isRegistered: !!invitee
   });
-  return { ...toInvitation(invitation, { group, inviter: user, invitee }), email: { sent: delivery.sent, reason: delivery.reason || null }, inviteeRegistered: !!invitee };
+  return { ...toInvitation(invitation, { group, inviter: user, invitee, projectName: project?.name }), email: { sent: delivery.sent, reason: delivery.reason || null }, inviteeRegistered: !!invitee };
 }
 
 async function listForGroup(user, groupId) {
@@ -90,7 +114,8 @@ async function listForGroup(user, groupId) {
   const rows = await GroupInvitation.find({ groupId }).sort({ createdAt: -1 }).limit(100).lean();
   const users = await User.find({ _id: { $in: rows.flatMap((r) => [r.inviterId, r.inviteeId]).filter(Boolean) } }).select('name email avatar').lean();
   const byId = new Map(users.map((u) => [String(u._id), u]));
-  return rows.map((r) => toInvitation(r, { group, inviter: byId.get(String(r.inviterId)), invitee: byId.get(String(r.inviteeId)) }));
+  const names = await projectNames(rows);
+  return rows.map((r) => toInvitation(r, { group, inviter: byId.get(String(r.inviterId)), invitee: byId.get(String(r.inviteeId)), projectName: names.get(String(r.projectId)) }));
 }
 
 async function listMine(user, { status = 'pending' } = {}) {
@@ -106,8 +131,9 @@ async function listMine(user, { status = 'pending' } = {}) {
   ]);
   const groupById = new Map(groups.map((g) => [String(g._id), g]));
   const inviterById = new Map(inviters.map((u) => [String(u._id), u]));
+  const names = await projectNames(rows);
   return rows.map((r) => ({
-    ...toInvitation(r, { group: groupById.get(String(r.groupId)), inviter: inviterById.get(String(r.inviterId)), invitee: user }),
+    ...toInvitation(r, { group: groupById.get(String(r.groupId)), inviter: inviterById.get(String(r.inviterId)), invitee: user, projectName: names.get(String(r.projectId)) }),
     groupDescription: groupById.get(String(r.groupId))?.description || ''
   }));
 }
@@ -150,30 +176,52 @@ async function accept(user, invitationId) {
     await GroupInvitation.updateOne({ _id: claimed._id }, { $set: { status: 'revoked' } });
     throw new ConflictError('This group no longer exists.', 'INVITATION_NOT_PENDING');
   }
-  const needsApproval = !!group.settings?.requireApproval;
+  const scope = claimed.scope || 'group';
+  const joinsGroup = scope !== 'project';
+  const needsApproval = joinsGroup && !!group.settings?.requireApproval;
   try {
     await withTransaction(async (session) => {
-      await GroupMembership.findOneAndUpdate(
-        { groupId: claimed.groupId, userId: user._id },
-        { $set: { role: claimed.role, status: needsApproval ? 'pending' : 'active', invitedBy: claimed.inviterId, joinedAt: needsApproval ? null : new Date() } },
-        { upsert: true, new: true, setDefaultsOnInsert: true, ...(session ? { session } : {}) }
-      );
+      const opt = session ? { session } : {};
+      if (joinsGroup) {
+        // The invited role is applied automatically; an existing member is updated to it (never demoted owner/admin).
+        const existing = await GroupMembership.findOne({ groupId: claimed.groupId, userId: user._id }).session(session || null);
+        const keep = existing && existing.status === 'active' && ['owner', 'admin'].includes(existing.role);
+        await GroupMembership.findOneAndUpdate(
+          { groupId: claimed.groupId, userId: user._id },
+          { $set: { ...(keep ? {} : { role: claimed.role }), status: keep ? 'active' : (needsApproval ? 'pending' : 'active'), invitedBy: claimed.inviterId, ...(needsApproval ? {} : { joinedAt: existing?.joinedAt || new Date() }) } },
+          { upsert: true, new: true, setDefaultsOnInsert: true, ...opt }
+        );
+      }
+      if (scope !== 'group' && claimed.projectId) {
+        const project = await Project.findById(claimed.projectId).select('userId').lean();
+        if (project && sid(project.userId) !== userId(user)) {
+          const current = await ProjectSharing.findOne({ projectId: claimed.projectId, targetType: 'user', userId: user._id }).session(session || null);
+          // Never lower an existing higher grant (e.g. project admin).
+          const rank = { viewer: 1, editor: 2, admin: 3 };
+          const permission = current && rank[current.permission] > rank[claimed.projectPermission] ? current.permission : claimed.projectPermission;
+          await ProjectSharing.findOneAndUpdate(
+            { projectId: claimed.projectId, targetType: 'user', userId: user._id },
+            { $set: { permission, grantedBy: claimed.inviterId }, $setOnInsert: { projectId: claimed.projectId, targetType: 'user', userId: user._id } },
+            { upsert: true, new: true, setDefaultsOnInsert: true, ...opt }
+          );
+        }
+      }
     });
   } catch (error) {
-    // Membership could not be written: put the invitation back so the user can retry.
+    // Could not be written: put the invitation back so the user can retry.
     await GroupInvitation.updateOne({ _id: claimed._id }, { $set: { status: 'pending', respondedAt: null } });
     throw error;
   }
-  await audit(userId(user), 'invitation.accepted', { groupId: claimed.groupId, targetUserId: claimed.inviterId, meta: { invitationId, needsApproval } });
+  await audit(userId(user), 'invitation.accepted', { groupId: claimed.groupId, targetUserId: claimed.inviterId, meta: { invitationId, needsApproval, scope } });
   const admins = await GroupMembership.find({ groupId: claimed.groupId, status: 'active', role: { $in: ADMIN_ROLES } }).select('userId').lean();
   const recipients = [...new Set([sid(claimed.inviterId), ...admins.map((a) => sid(a.userId))])];
   await notify(recipients, {
     type: needsApproval ? 'membership_pending' : 'invitation_accepted',
-    title: needsApproval ? `${user.name} accepted and awaits approval` : `${user.name} joined ${group.name}`,
+    title: needsApproval ? `${user.name} accepted and awaits approval` : scope === 'project' ? `${user.name} joined a project in ${group.name}` : `${user.name} joined ${group.name}`,
     message: needsApproval ? 'Approve the member from the group page.' : `${user.email} accepted your invitation.`,
     data: { groupId: sid(group._id), invitationId, userId: userId(user) }
   });
-  return { invitation: toInvitation(claimed, { group }), membershipStatus: needsApproval ? 'pending' : 'active', groupId: sid(group._id) };
+  return { invitation: toInvitation(claimed, { group }), membershipStatus: !joinsGroup ? 'project' : needsApproval ? 'pending' : 'active', groupId: sid(group._id) };
 }
 
 async function reject(user, invitationId) {

@@ -14,6 +14,8 @@ const creditTransactionSchema = new mongoose.Schema({
   adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },   // null: done by the system / the user's own activity
   // Repeating the same request (a double click, a retry) must not change the balance twice.
   idempotencyKey: { type: String, default: undefined },
+  // Set when the change was to a PROJECT's own balance (previousBalance / newBalance are then the project's); userId is the project's owner.
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', default: undefined, index: true },
   status: { type: String, enum: ['pending', 'completed'], default: 'completed' },
   meta: { type: mongoose.Schema.Types.Mixed, default: undefined }
 }, { timestamps: { createdAt: true, updatedAt: false } });

@@ -19,7 +19,7 @@ export function LoginForm() {
 
     if (token) {
       useAuthStore.getState().loginWithToken(token).then((user) => {
-        navigate(user?.role === 'ADMIN' ? '/admin' : '/template-studio', { replace: true });
+        navigate(user?.role === 'ADMIN' && user?.isRootAdmin === true ? '/admin' : '/template-studio', { replace: true });
       }).catch((err) => {
         console.error('OAuth login failed:', err);
       });
@@ -41,7 +41,7 @@ export function LoginForm() {
       const redirect = searchParams.get('redirect');
       const safe = redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : null;
       // Administrators always land on the admin dashboard.
-      navigate(user?.role === 'ADMIN' ? (safe?.startsWith('/admin') ? safe : '/admin') : safe || '/template-studio');
+      navigate(user?.role === 'ADMIN' && user?.isRootAdmin === true ? (safe?.startsWith('/admin') ? safe : '/admin') : safe || '/template-studio');
     } catch (err) {
       // Error is handled by store
     } finally {

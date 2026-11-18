@@ -33,7 +33,7 @@ export default function AppLayout() {
   const waitingForRole = isAuthenticated && !user && !profileTried;
 
   // Administrators only get the admin dashboard, not the site-building workspace.
-  const isAdmin = user?.role === 'ADMIN';
+  const isAdmin = user?.role === 'ADMIN' && user?.isRootAdmin === true; // the admin portal is for the root administrator only
   if (isAdmin && !pathname.startsWith('/admin')) return <Navigate to="/admin" replace />;
   // An administrator who lost the role while signed in goes back to the normal app.
   if (user && !isAdmin && pathname.startsWith('/admin')) return <Navigate to="/dashboard" replace />;

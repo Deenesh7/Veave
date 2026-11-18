@@ -116,7 +116,7 @@ export function UserDetailPage() {
               </ConfirmDialog>
               <ConfirmDialog open={dialog === 'restore'} title="Restore this account?" confirmLabel="Restore account" busy={busy} onClose={() => setDialog(null)} onConfirm={() => act(() => adminService.setUserStatus(id, 'active', ''), 'Account restored.')}><p>{user.name} will be able to sign in and use Veave again.</p></ConfirmDialog>
               <ConfirmDialog open={dialog === 'role'} title={user.role === 'ADMIN' ? 'Remove the admin role?' : 'Make this user an admin?'} danger confirmLabel={user.role === 'ADMIN' ? 'Remove admin role' : 'Make admin'} busy={busy} onClose={() => setDialog(null)} onConfirm={() => act(() => adminService.setUserRole(id, user.role === 'ADMIN' ? 'USER' : 'ADMIN'), 'Role updated.')}>
-                <p>{user.role === 'ADMIN' ? `${user.name} will lose access to this dashboard immediately.` : `${user.name} will be able to manage users, credits and templates for the whole platform.`}</p>
+                <p>{user.role === 'ADMIN' ? `${user.name} loses the ADMIN role.` : `${user.name} gets the ADMIN role, but the admin portal can only be used by the root administrator, so this gives no extra access.`}</p>
               </ConfirmDialog>
             </>
           );

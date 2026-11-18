@@ -28,6 +28,9 @@ export const adminService = {
   creditSummary: (params) => api.get(`/admin/credits/summary${qs(params)}`).then(data),
   creditTransactions: (params) => api.get(`/admin/credits/transactions${qs(params)}`).then(data),
   creditExportUrl: (params) => `/admin/credits/transactions/export${qs(params)}`,
+  searchProjects: (params) => api.get(`/admin/projects${qs(params)}`).then(data),
+  projectCredits: (id) => api.get(`/admin/projects/${id}/credits`).then(data),
+  changeProjectCredits: (id, body) => api.post(`/admin/projects/${id}/credits`, body).then(data),
   adjustCredits: (body) => api.post('/admin/credits/adjust', body).then(data),
   allocateCredits: (body) => api.post('/admin/credits/allocate', body).then(data),
 
@@ -58,6 +61,7 @@ export const adminService = {
   admins: () => api.get('/admin/admins').then(data),
   // Both need the signed-in root administrator's own password (currentPassword) as a second check.
   addAdmin: (payload) => api.post('/admin/admins', payload).then(data),
+  setAdminType: (id, adminRole, currentPassword) => api.patch(`/admin/admins/${id}/type`, { adminRole, currentPassword }).then(data),
   removeAdmin: (id, currentPassword) => api.delete(`/admin/admins/${id}`, { data: { currentPassword } }).then(data),
 
   settings: () => api.get('/admin/settings').then(data),

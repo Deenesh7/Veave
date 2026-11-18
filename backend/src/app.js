@@ -36,14 +36,31 @@ const app = express();
 // Behind the production reverse proxy (Caddy/Nginx): trust one hop so req.ip, rate limits and HTTPS detection are the visitor's.
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
 
+// Liveness / readiness probes for uptime monitors and the process manager. Registered first so they stay cheap under load.
+app.get('/healthz', (req, res) => res.status(200).json({ ok: true, uptime: Math.round(process.uptime()) }));
+app.get('/readyz', (req, res) => {
+  const ready = require('mongoose').connection.readyState === 1;
+  const mem = process.memoryUsage();
+  res.status(ready ? 200 : 503).json({ ok: ready, db: ready ? 'up' : 'down', rssMb: Math.round(mem.rss / 1048576), heapMb: Math.round(mem.heapUsed / 1048576) });
+});
+
 app.use(require('./services/project/validatedPreview').servePreview);
 // Published sites: <slug>.<PUBLISH_BASE_DOMAIN>. Mounted before API middleware so site hosts never reach authenticated APIs.
 app.use(require('./services/hosting/staticServer').serveHostedSite);
 
+// Compress responses (the project list, compiled pages and template previews are 100 KB to several MB of text). Server-sent event
+// streams are never compressed: the compressor would hold their messages back until a buffer fills.
+app.use(require('compression')({
+  threshold: 1024,
+  filter: (req, res) => !String(res.getHeader('Content-Type') || '').includes('text/event-stream') && require('compression').filter(req, res)
+}));
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors(corsOptions));
 app.use('/api', require('./middleware/originGuard'));
-app.use(morgan('dev'));
+// Production: log only failed requests in a compact format (slow ones are reported by slowRequestLogger). Dev keeps the full log.
+app.use(process.env.NODE_ENV === 'production'
+  ? morgan(':method :url :status :res[content-length] - :response-time ms', { skip: (req, res) => res.statusCode < 400 })
+  : morgan('dev'));
 app.use(require('./utils/perfMonitor').slowRequestLogger);
 // Stored preview assets are public capability URLs (unguessable token); a page can legitimately request dozens of them.
 app.get('/api/preview-assets/:token/*', require('./controllers/previewController').getPreviewAsset);

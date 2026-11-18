@@ -130,6 +130,15 @@ async function recordApplied({ userId, previousBalance, newBalance, type, reason
   }
 }
 
+/** A charge that a project's own balance paid (CREDIT_USAGE with projectId). Never throws. */
+async function recordProjectUsage({ userId, projectId, previousBalance, newBalance, reason }) {
+  try {
+    const used = previousBalance - newBalance;
+    if (!(used > 0)) return null;
+    return await CreditTransaction.create({ transactionId: newId(), userId, projectId, previousBalance, amount: -used, newBalance, type: 'CREDIT_USAGE', reason: String(reason || 'AI generation').slice(0, 500), adminId: null });
+  } catch (error) { logger.warn(`Project credit usage was not recorded: ${error.message}`); return null; }
+}
+
 /**
  * A balance is stored twice (User.credits and User.subscription.creditsRemaining) and every reader uses creditsRemaining first. If an
  * older code path ever changed only one of them, the two screens would disagree. This makes the legacy field follow the authoritative one.
@@ -258,4 +267,4 @@ async function runExpiry(now = new Date()) {
   return { skipped: false, expired };
 }
 
-module.exports = { reconcileBalances, applyChange, adjustTo, recordUsage, recordApplied, list, exportCsv, toCsv, totals, runMonthlyAllocation, runExpiry, balanceOf, TYPES };
+module.exports = { recordProjectUsage, reconcileBalances, applyChange, adjustTo, recordUsage, recordApplied, list, exportCsv, toCsv, totals, runMonthlyAllocation, runExpiry, balanceOf, TYPES };

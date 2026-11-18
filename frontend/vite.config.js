@@ -5,6 +5,18 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_');
   return {
   plugins: [react()],
+  build: {
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        // Stable vendor chunks: cached across deploys and loaded in parallel instead of one 1.7 MB bundle.
+        manualChunks: {
+          react: ['react', 'react-dom', 'react-router-dom'],
+          motion: ['framer-motion', 'gsap']
+        }
+      }
+    }
+  },
   server: {
     port: 5173,
     cors: true,

@@ -25,5 +25,11 @@ router.delete('/:groupId/invitations/:invitationId', controller.revokeInvitation
 
 router.get('/:groupId/projects', controller.listGroupProjects);
 router.post('/:groupId/projects', controller.createGroupProject);
+router.put('/:groupId/projects/:projectId/admins/:userId', controller.assignProjectAdmin);
+router.delete('/:groupId/projects/:projectId/admins/:userId', controller.removeProjectAdmin);
+router.get('/:groupId/credits', controller.groupCreditsOverview);
+router.post('/:groupId/credits', controller.changeGroupCredits);
+router.get('/:groupId/credits/history', controller.groupCreditsHistory);
+router.post('/:groupId/projects/:projectId/credits', controller.manageProjectCredits);
 
 module.exports = router;

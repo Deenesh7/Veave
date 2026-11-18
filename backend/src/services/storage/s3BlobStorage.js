@@ -120,6 +120,29 @@ async function hydrateFiles(files = []) {
   return mapPool(files, BLOB_CONCURRENCY, (file) => hydrateFile(file.toObject ? file.toObject() : file));
 }
 
+const objectKey = (name) => `${String(process.env.S3_PREFIX || 'veave/blobs').replace(/^\/+|\/+$/g, '').replace(/\/blobs$/, '')}/${String(name).replace(/^\/+/, '')}`;
+
+/** Writes (or replaces) one object at a NAME the caller can compute again later (unlike uploadFile, whose key is the content's hash). */
+async function putNamedObject(name, body, contentType = 'application/octet-stream') {
+  if (!isConfigured()) throw new Error('S3_BUCKET must be configured.');
+  await getClient().send(new PutObjectCommand({
+    Bucket: process.env.S3_BUCKET, Key: objectKey(name), Body: Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8'), ContentType: contentType,
+    ...(process.env.S3_SERVER_SIDE_ENCRYPTION ? { ServerSideEncryption: process.env.S3_SERVER_SIDE_ENCRYPTION } : {})
+  }));
+}
+
+/** Reads an object written with putNamedObject. Returns null when it does not exist; other errors are thrown. */
+async function getNamedObject(name) {
+  if (!isConfigured()) return null;
+  try {
+    const result = await getClient().send(new GetObjectCommand({ Bucket: process.env.S3_BUCKET, Key: objectKey(name) }));
+    return await bodyToBuffer(result.Body);
+  } catch (error) {
+    if (error?.name === 'NoSuchKey' || error?.$metadata?.httpStatusCode === 404 || /NoSuchKey/.test(String(error?.message))) return null;
+    throw error;
+  }
+}
+
 /** Stores a JSON value as one content-addressed object and returns the blob reference to keep in the database. */
 async function putJson(name, value) {
   return uploadFile({ path: `${name}.json`, encoding: 'utf8', content: JSON.stringify(value) });
@@ -135,4 +158,4 @@ function setClientForTests(value) {
   client = value;
 }
 
-module.exports = { isConfigured, putJson, getJson, uploadFile, dehydrateFiles, hydrateFile, hydrateFiles, contentTypeForPath, setClientForTests };
+module.exports = { putNamedObject, getNamedObject, isConfigured, putJson, getJson, uploadFile, dehydrateFiles, hydrateFile, hydrateFiles, contentTypeForPath, setClientForTests };

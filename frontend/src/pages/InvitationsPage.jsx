@@ -31,6 +31,7 @@ export default function InvitationsPage() {
     try {
       const result = await respondToInvitation(invitation.invitationId, accept);
       if (!accept) setFlash(`You declined the invitation to ${invitation.groupName}.`);
+      else if (result.membershipStatus === 'project') setFlash(`You now have ${invitation.projectPermission} access to ${invitation.projectName}.`);
       else if (result.membershipStatus === 'pending') setFlash(`You accepted. An admin of ${invitation.groupName} still needs to approve you.`);
       else { setFlash(`You joined ${invitation.groupName}.`); }
     } catch (err) {
@@ -62,7 +63,9 @@ export default function InvitationsPage() {
                     <span>Invited by <b className="text-zinc-700">{inv.inviter?.name}</b></span>
                     <span>{new Date(inv.createdAt).toLocaleDateString()} ({timeAgo(inv.createdAt)})</span>
                     <span className="flex items-center gap-1"><Clock className="w-3 h-3" />expires {new Date(inv.expiresAt).toLocaleDateString()}</span>
-                    <span>as {inv.role === 'member' ? 'staff' : inv.role}</span>
+                    <span className="font-semibold text-zinc-700">
+                      {inv.scope === 'project' ? `Single project: ${inv.projectName || ''} (${inv.projectPermission})` : inv.scope === 'both' ? `Whole group as ${inv.role === 'member' ? 'staff' : inv.role} + project ${inv.projectName || ''} (${inv.projectPermission})` : `Whole group as ${inv.role === 'member' ? 'staff' : inv.role}`}
+                    </span>
                   </p>
                 </div>
                 <div className="flex items-center gap-2">

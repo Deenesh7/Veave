@@ -10,7 +10,11 @@ const groupInvitationSchema = new mongoose.Schema({
   // Null while the invited person has no account yet; filled in when they accept (their email must match).
   inviteeId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   inviteeEmail: { type: String, required: true, lowercase: true, trim: true },
-  role: { type: String, enum: ['admin', 'member'], default: 'member' },
+  role: { type: String, enum: ['admin', 'editor', 'member'], default: 'member' },
+  // What the invitation covers: the whole group, a single project, or both.
+  scope: { type: String, enum: ['group', 'project', 'both'], default: 'group' },
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', default: null },
+  projectPermission: { type: String, enum: ['viewer', 'editor'], default: 'viewer' },
   status: { type: String, enum: ['pending', 'accepted', 'rejected', 'revoked', 'expired'], default: 'pending' },
   expiresAt: { type: Date, required: true, default: () => new Date(Date.now() + INVITATION_TTL_MS) },
   respondedAt: { type: Date, default: null }

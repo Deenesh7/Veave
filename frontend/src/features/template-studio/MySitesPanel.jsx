@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Plus, Pencil, Trash2, Check, X, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useTemplateStudioStore } from '../../store/templateStudioStore';
 import { PanelHeader, EmptyState, ErrorNote, IconButton, Spinner, ConfirmModal, inputClass, ink, muted, line } from './ui';
@@ -7,6 +7,11 @@ import NewSiteModal from './NewSiteModal';
 export default function MySitesPanel({ className = '', embedded = false, onSelect }) {
   const { sites, sitesLoaded, sitesError, activeSiteId, selectSite, renameSite, deleteSite, loadSites, sitesCollapsed, setSitesCollapsed } = useTemplateStudioStore();
   const [creating, setCreating] = useState(false);
+  const groupLink = useTemplateStudioStore((state) => state.groupLink);
+  const setGroupLink = useTemplateStudioStore((state) => state.setGroupLink);
+  // Coming from a group's "New project": open the new-site dialog at once, so the user picks a template.
+  useEffect(() => { if (groupLink) { setSitesCollapsed(false); setCreating(true); } }, [groupLink]); // eslint-disable-line react-hooks/exhaustive-deps
+  const closeCreating = () => { setCreating(false); if (useTemplateStudioStore.getState().groupLink) setGroupLink(null); };
   const [editing, setEditing] = useState(null);   // { id, name }
   const [removing, setRemoving] = useState(null); // site
   const [deleting, setDeleting] = useState(false);
@@ -24,7 +29,7 @@ export default function MySitesPanel({ className = '', embedded = false, onSelec
       <aside aria-label="My sites" className={`${className} hidden w-12 shrink-0 flex-col items-center gap-3 border-r ${line} bg-[#F7F4EE] py-3 lg:flex`}>
         <IconButton label="Show My Sites" onClick={() => setSitesCollapsed(false)}><ChevronsRight className="h-4 w-4" /></IconButton>
         <IconButton label="Add New Site" onClick={() => { setSitesCollapsed(false); setCreating(true); }}><Plus className="h-4 w-4" /></IconButton>
-        <NewSiteModal open={creating} onClose={() => setCreating(false)} />
+        <NewSiteModal open={creating} onClose={closeCreating} />
       </aside>
     );
   }
@@ -78,7 +83,7 @@ export default function MySitesPanel({ className = '', embedded = false, onSelec
           <Plus className="h-4 w-4" /> Add New Site
         </button>
       </div>
-      <NewSiteModal open={creating} onClose={() => setCreating(false)} />
+      <NewSiteModal open={creating} onClose={closeCreating} />
       <ConfirmModal
         open={Boolean(removing)} danger busy={deleting} title="Delete this site?" confirmLabel="Delete site"
         message={removing ? `"${removing.name}" and all of its pages and revisions will be deleted. This cannot be undone.` : ''}

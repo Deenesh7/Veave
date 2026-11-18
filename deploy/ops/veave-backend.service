@@ -1,0 +1,22 @@
+# /etc/systemd/system/veave-backend.service  (systemctl daemon-reload && systemctl enable --now veave-backend)
+[Unit]
+Description=Veave backend API
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=veave
+WorkingDirectory=/var/www/veave/backend
+Environment=NODE_ENV=production
+# Cap the V8 heap below the 8 GiB host so one runaway cannot push the box into swap.
+ExecStart=/usr/bin/node --max-old-space-size=3072 --no-warnings src/server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=40
+MemoryHigh=5G
+MemoryMax=6G
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -179,6 +179,7 @@ function GenerationProgress({ job, pages, starting, onRetry, onOpen }) {
 
 export default function NewSiteModal({ open, onClose }) {
   const createSite = useTemplateStudioStore((state) => state.createSite);
+  const groupLink = useTemplateStudioStore((state) => state.groupLink);
   const generateSite = useTemplateStudioStore((state) => state.generateSite);
   const creating = useTemplateStudioStore((state) => Boolean(state.busy.createSite));
   const job = useTemplateStudioStore((state) => state.job);
@@ -211,7 +212,7 @@ export default function NewSiteModal({ open, onClose }) {
         const list = res.data.templates || [];
         setTemplates(list);
         const first = list.find((item) => item.id === 'studio-editorial-001') || list[0];
-        setSelected((current) => { if (current || !first) return current; setName(suggestedName(first)); setNameTouched(false); return first; });
+        setSelected((current) => { if (current || !first) return current; setName(groupLink?.name || suggestedName(first)); setNameTouched(false); return first; });
       })
       .catch((err) => setError(apiMessage(err, 'The templates could not be loaded.')))
       .finally(() => setLoading(false));
@@ -246,7 +247,7 @@ export default function NewSiteModal({ open, onClose }) {
     setTheme(DEFAULT_THEME()); // the new template's own typography, colours and appearance; name and description are kept
     setAdjusted([]);
     setScratchPages([]);
-    if (!nameTouched) setName(suggestedName(template));
+    if (!nameTouched) setName(groupLink?.name || suggestedName(template));
   };
 
   const submit = async (event) => {
@@ -284,6 +285,7 @@ export default function NewSiteModal({ open, onClose }) {
             {/* Workspace, three columns: 1) templates, 2) theme and typography, 3) live preview. On small screens they stack and the body scrolls. */}
             <div className="min-h-0 flex-1 overflow-y-auto md:grid md:grid-rows-[minmax(0,1fr)] md:grid-cols-[200px_260px_minmax(0,1fr)] md:overflow-hidden lg:grid-cols-[236px_320px_minmax(0,1fr)]">
               <nav className={`min-h-0 min-w-0 border-b ${line} bg-[#FBF9F4] md:overflow-y-auto md:overscroll-contain md:border-b-0 md:border-r`} aria-label="Templates">
+                {groupLink ? <p className="mx-3 mt-3 rounded-md border border-[#B8CBB9] bg-[#E8F0E8] px-2.5 py-2 text-[11px] leading-snug text-[#33503A]">This website will be shared with the group <b>{groupLink.groupName}</b>.</p> : null}
                 <p className={`px-3 pb-1 pt-4 text-xs font-medium uppercase tracking-wider ${muted}`}>1. Template</p>
                 <div className="flex flex-col gap-3 px-3 pb-4 pt-2" role="group" aria-label="Choose a design">
                   <ScratchCard selected={Boolean(selected?.scratch)} onSelect={select} />

@@ -1,3 +1,4 @@
+import { collaborationService } from '../services/collaborationService';
 import { create } from 'zustand';
 import { templateSiteService, apiMessage } from '../services/templateSiteService';
 import { useBillingStore } from './billingStore';
@@ -55,6 +56,9 @@ const initialCollapsed = () => {
 };
 
 export const useTemplateStudioStore = create((set, get) => ({
+  // Set when a group's "New project" sent the user here: the site created next is shared with that group ({ groupId, groupName, permission, name }).
+  groupLink: null,
+  setGroupLink: (groupLink) => set({ groupLink }),
   sitesCollapsed: initialCollapsed(),
   setSitesCollapsed: (value) => { try { localStorage.setItem(COLLAPSE_KEY, value ? '1' : '0'); } catch { /* ignore */ } set({ sitesCollapsed: value }); },
   pagesCollapsed: false,
@@ -166,7 +170,16 @@ export const useTemplateStudioStore = create((set, get) => ({
       const res = await templateSiteService.createSite({ templateId, templateVersion, name, description, theme: theme || undefined, idempotencyKey: `site-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` });
       await get().loadSites();
       await get().selectSite(res.data.site.id);
-      get().flash('success', `${res.data.site.name} was created from the template.`);
+      const link = get().groupLink;
+      if (link) {
+        try {
+          await collaborationService.shareProject(res.data.site.projectId, { groupId: link.groupId, permission: link.permission });
+          get().flash('success', `${res.data.site.name} was created and shared with ${link.groupName}.`);
+        } catch (error) {
+          get().flash('error', `${res.data.site.name} was created, but it could not be shared with ${link.groupName}: ${apiMessage(error, 'try sharing it from the group page')}`);
+        }
+        set({ groupLink: null });
+      } else get().flash('success', `${res.data.site.name} was created from the template.`);
       // Photos added in the creation dialog are uploaded to the new site first; the website generation then places them on their pages.
       const used = photos.length ? await get().uploadCreationPhotos(res.data.site.id, photos) : [];
       if (brief && brief.trim()) await get().generateSite(brief.trim(), used);

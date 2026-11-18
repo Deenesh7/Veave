@@ -3,6 +3,7 @@ const Project = require('../../models/Project');
 const User = require('../../models/User');
 const AIUsage = require('../../models/AIUsage');
 const { AppError } = require('../../utils/errors');
+const logger = require('../../utils/logger');
 const { limitsFor, resolvePlanName, creditsForTokens, TOKENS_PER_CREDIT } = require('./plans');
 
 class PlanLimitError extends AppError {
@@ -85,9 +86,17 @@ function billingPeriodStart(user, now = new Date()) {
   return new Date(now.getFullYear(), now.getMonth(), 1);
 }
 
+/** The project's own credit balance, or 0 when it has none. A project with a balance pays for generations in it before the owner does. */
+async function projectCredits(projectId) {
+  if (!projectId || !mongoose.isValidObjectId(projectId)) return 0;
+  const project = await Project.findById(projectId).select('creditBalance').lean();
+  return Number(project?.creditBalance) > 0 ? Number(project.creditBalance) : 0;
+}
+
 // Throws PlanLimitError when the account has no credits left or has used its monthly token allowance.
-async function assertCanUseAI(userId) {
+async function assertCanUseAI(userId, { projectId = null } = {}) {
   if (!userId) return;
+  if (await projectCredits(projectId) > 0) return; // the project has credits of its own: they pay, so the owner's balance and monthly allowance are not in the way
   const user = await User.findById(userId).select('plan credits subscription creditsExempt').lean();
   if (!user || user.creditsExempt) return;
   const name = resolvePlanName(user.plan);
@@ -107,11 +116,33 @@ async function assertCanUseAI(userId) {
   }
 }
 
+/**
+ * Pays `cost` credits for a generation in a project that has its own balance: takes what the project has (never more than it has,
+ * atomically, so two jobs cannot spend the same credits) and returns how many credits are still to be paid by the owner.
+ */
+async function chargeProjectCredits(userId, projectId, cost) {
+  if (!(await projectCredits(projectId))) return cost;
+  // Straight on the collection: a pipeline update must not go through the Project model's update hooks (revision, preview rebuild).
+  const before = await Project.collection.findOneAndUpdate(
+    { _id: new mongoose.Types.ObjectId(String(projectId)), creditBalance: { $gt: 0 } },
+    [{ $set: { creditBalance: { $max: [0, { $subtract: ['$creditBalance', cost] }] } } }],
+    { returnDocument: 'before', projection: { creditBalance: 1, userId: 1 } }
+  );
+  if (!before) return cost;
+  const used = Math.min(Number(before.creditBalance), cost);
+  try {
+    await require('../admin/creditLedgerService').recordProjectUsage({ userId: before.userId || userId, projectId, previousBalance: before.creditBalance, newBalance: before.creditBalance - used, reason: 'AI generation (paid from the project\'s credits)' });
+  } catch (error) { logger.warn(`Project credit usage was not recorded: ${error.message}`); }
+  return cost - used;
+}
+
 // Deducts credits for a finished generation (1 credit per 20,000 tokens, never below zero). Returns the updated user.
-async function chargeCredits(userId, totalTokens) {
+// With a projectId, the project's own balance (if it has one) pays first and the owner only pays what is left.
+async function chargeCredits(userId, totalTokens, { projectId = null } = {}) {
   const exempt = await User.findOne({ _id: userId, creditsExempt: true }).select('_id').lean();
   if (exempt) return User.findById(userId);
-  const cost = creditsForTokens(totalTokens);
+  let cost = creditsForTokens(totalTokens);
+  if (projectId) { cost = await chargeProjectCredits(userId, projectId, cost); if (cost <= 0) return User.findById(userId); }
   const floor = (field) => ({ $max: [0, { $subtract: [{ $ifNull: [field, '$credits'] }, cost] }] });
   const before = await User.findByIdAndUpdate(
     userId,
@@ -128,9 +159,12 @@ async function chargeCredits(userId, totalTokens) {
 }
 
 // Throws PlanLimitError unless the account can pay `credits` more credits (used before starting a paid AI task that has a fixed price).
-async function assertCanSpendCredits(userId, credits) {
+async function assertCanSpendCredits(userId, credits, { projectId = null } = {}) {
   if (!userId || !credits) return;
-  await assertCanUseAI(userId);
+  const fromProject = await projectCredits(projectId);
+  if (fromProject >= credits) return;
+  await assertCanUseAI(userId, { projectId });
+  credits -= fromProject; // the project pays what it has; the owner must cover the rest
   const user = await User.findById(userId).select('plan credits subscription creditsExempt').lean();
   if (!user || user.creditsExempt) return;
   const left = user.subscription?.creditsRemaining ?? user.credits ?? limitsFor(resolvePlanName(user.plan)).credits;
@@ -138,9 +172,9 @@ async function assertCanSpendCredits(userId, credits) {
 }
 
 // Deducts a fixed number of credits (never below zero) for a finished task that is priced per item.
-async function chargeFixedCredits(userId, credits) {
+async function chargeFixedCredits(userId, credits, { projectId = null } = {}) {
   if (!credits) return User.findById(userId);
-  return chargeCredits(userId, credits * TOKENS_PER_CREDIT);
+  return chargeCredits(userId, credits * TOKENS_PER_CREDIT, { projectId });
 }
 
 module.exports = { assertCanSpendCredits, chargeFixedCredits, chargeCredits, getProjectUsage, assertCanCreate, assertCanUseAI, PlanLimitError, formatBytes };

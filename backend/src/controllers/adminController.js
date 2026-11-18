@@ -145,7 +145,8 @@ exports.listAdmins = wrap(async (req, res) => ok(res, { admins: await users.admi
 // A new administrator is either a brand-new account (name, email, password) or an existing account promoted by email. Root only.
 exports.addAdmin = wrap(async (req, res) => ok(res, { user: req.body?.password
   ? await users.createAdmin(req.user, req.body, req)
-  : await users.promoteByEmail(req.user, req.body?.email, req) }, 201));
+  : await users.promoteByEmail(req.user, req.body?.email, req, req.body?.adminRole) }, 201));
+exports.setAdminType = wrap(async (req, res) => ok(res, { user: await users.setAdminType(req.user, req.params.id, req.body?.adminRole, req) }));
 exports.removeAdmin = wrap(async (req, res) => ok(res, { user: await users.setRole(req.user, req.params.id, 'USER', req) }));
 
 /* platform settings */
@@ -159,3 +160,12 @@ exports.updateSettings = wrap(async (req, res) => {
   ok(res, { [group]: after });
 });
 exports.me = wrap(async (req, res) => ok(res, { user: users.present(req.user), unread: await AdminNotification.countDocuments({ readAt: null }) }));
+
+/* project credits (root administrator) */
+const projectCredits = () => require('../services/admin/adminProjectCreditService');
+exports.searchProjects = wrap(async (req, res) => ok(res, { projects: await projectCredits().search(req.query) }));
+exports.getProjectCredits = wrap(async (req, res) => ok(res, await projectCredits().get(req.params.id)));
+exports.changeProjectCredits = wrap(async (req, res) => {
+  const result = await projectCredits().change(req.user, req.params.id, { ...req.body, idempotencyKey: req.body?.idempotencyKey || req.get('Idempotency-Key') || null }, req);
+  ok(res, result, result.duplicate ? 200 : 201);
+});

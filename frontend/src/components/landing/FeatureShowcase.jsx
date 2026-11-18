@@ -47,7 +47,7 @@ export default function FeatureShowcase() {
       key="card-4"
       category="TEAM COLLABORATION"
       title="Work on projects together"
-      description="Create groups, invite teammates, and share projects with viewer, editor, or admin access."
+      description="Create website groups, invite teammates, and share projects with viewer, editor, or admin access."
       illustration={<CollaborationIllustration />}
     />,
     <FeatureCard

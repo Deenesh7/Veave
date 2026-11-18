@@ -14,10 +14,10 @@ const { ValidationError, NotFoundError, ForbiddenError } = require('../../utils/
 
 const escapeRegex = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const isId = (value) => /^[a-f0-9]{24}$/i.test(String(value || ''));
-const LIST_FIELDS = 'name email role isRootAdmin status plan credits subscription createdAt lastActiveAt lastLoginAt creditsExempt avatar';
+const LIST_FIELDS = 'name email role isRootAdmin adminRole status plan credits subscription createdAt lastActiveAt lastLoginAt creditsExempt avatar';
 
 const present = (user) => ({
-  id: String(user._id), name: user.name, email: user.email, role: user.role || 'USER', isRoot: user.isRootAdmin === true, status: user.status || 'active', avatar: user.avatar || '',
+  id: String(user._id), name: user.name, email: user.email, role: user.role || 'USER', isRoot: user.isRootAdmin === true, adminRole: user.role === 'ADMIN' ? (user.adminRole || 'admin') : null, status: user.status || 'active', avatar: user.avatar || '',
   plan: user.plan || 'Free Tier', balance: ledger.balanceOf(user), creditsExempt: Boolean(user.creditsExempt),
   subscription: { tier: user.subscription?.tier || user.plan || 'Free Tier', status: user.subscription?.status || 'active', billingCycle: user.subscription?.billingCycle || 'monthly', creditsAllocated: user.subscription?.creditsAllocated ?? null, bonusCredits: user.subscription?.bonusCredits ?? 0, renewsAt: user.subscription?.renewsAt || null },
   createdAt: user.createdAt, lastActiveAt: user.lastActiveAt || null, lastLoginAt: user.lastLoginAt || null,
@@ -111,7 +111,10 @@ async function setStatus(admin, id, status, reason, req) {
   return present(updated);
 }
 
-async function setRole(admin, id, role, req) {
+const ADMIN_TYPES = ['admin', 'support'];
+const cleanType = (type) => { const value = type === undefined || type === null || type === '' ? 'admin' : String(type); if (!ADMIN_TYPES.includes(value)) throw new ValidationError('The administrator type must be "admin" or "support".'); return value; };
+
+async function setRole(admin, id, role, req, adminRole = 'admin') {
   if (!['USER', 'ADMIN'].includes(role)) throw new ValidationError('Role must be USER or ADMIN.');
   if (!admin.isRootAdmin) throw new ForbiddenError('Only the root administrator can change roles.', 'ROOT_ADMIN_REQUIRED');
   const user = await mustFind(id);
@@ -120,8 +123,8 @@ async function setRole(admin, id, role, req) {
   if ((user.role || 'USER') === role) throw new ValidationError(`The account already has the ${role} role.`);
   if (role === 'USER' && (await activeAdminCount(user._id)) < 1) throw new ForbiddenError('At least one administrator must remain.', 'LAST_ADMIN');
   if (role === 'ADMIN' && user.status === 'suspended') throw new ValidationError('Restore the account before making it an administrator.');
-  const updated = await User.findByIdAndUpdate(id, { $set: { role } }, { new: true }).select(LIST_FIELDS).lean();
-  await audit.record(admin, 'USER_ROLE_CHANGED', { resourceType: 'user', resourceId: id, before: { role: user.role || 'USER' }, after: { role }, meta: { email: user.email }, req });
+  const updated = await User.findByIdAndUpdate(id, { $set: { role, adminRole: role === 'ADMIN' ? cleanType(adminRole) : 'admin' } }, { new: true }).select(LIST_FIELDS).lean();
+  await audit.record(admin, 'USER_ROLE_CHANGED', { resourceType: 'user', resourceId: id, before: { role: user.role || 'USER' }, after: { role, adminRole: role === 'ADMIN' ? cleanType(adminRole) : null }, meta: { email: user.email }, req });
   await notifications.create({ type: 'SECURITY', severity: 'warning', title: 'Role changed', message: `${user.email} is now ${role} (changed by ${admin.email}).`, data: { userId: id } });
   return present(updated);
 }
@@ -146,12 +149,12 @@ async function admins() {
   return rows.map(present);
 }
 
-async function promoteByEmail(admin, email, req) {
+async function promoteByEmail(admin, email, req, adminRole = 'admin') {
   const address = String(email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) throw new ValidationError('Enter a valid email address.');
   const user = await User.findOne({ email: address }).select('_id').lean();
   if (!user) throw new NotFoundError('A user with that email');
-  return setRole(admin, String(user._id), 'ADMIN', req);
+  return setRole(admin, String(user._id), 'ADMIN', req, adminRole);
 }
 
 const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{10,128}$/;
@@ -160,7 +163,7 @@ const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{10,128}$/;
  * Creates a brand-new administrator account (root only). The root gives a one-time password, which the new administrator should change.
  * A new account is always a normal ADMIN: never root, never created from a request that is not the root's.
  */
-async function createAdmin(admin, { name, email, password }, req) {
+async function createAdmin(admin, { name, email, password, adminRole }, req) {
   if (!admin.isRootAdmin) throw new ForbiddenError('Only the root administrator can create administrators.', 'ROOT_ADMIN_REQUIRED');
   const cleanName = String(name || '').trim().slice(0, 80);
   const address = String(email || '').trim().toLowerCase();
@@ -168,10 +171,24 @@ async function createAdmin(admin, { name, email, password }, req) {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) throw new ValidationError('Enter a valid email address.');
   if (!PASSWORD_RULE.test(String(password || ''))) throw new ValidationError('The password needs 10 or more characters with an upper-case letter, a lower-case letter and a number.');
   if (await User.exists({ email: address })) throw new ValidationError('An account with that email already exists. Use "Promote an existing account" instead.');
-  const created = await User.create({ name: cleanName, email: address, password, role: 'ADMIN', isRootAdmin: false });
-  await audit.record(admin, 'ADMIN_CREATED', { resourceType: 'user', resourceId: String(created._id), after: { role: 'ADMIN' }, meta: { email: address }, req });
+  const created = await User.create({ name: cleanName, email: address, password, role: 'ADMIN', isRootAdmin: false, adminRole: cleanType(adminRole) });
+  await audit.record(admin, 'ADMIN_CREATED', { resourceType: 'user', resourceId: String(created._id), after: { role: 'ADMIN', adminRole: cleanType(adminRole) }, meta: { email: address }, req });
   await notifications.create({ type: 'SECURITY', severity: 'warning', title: 'Administrator created', message: `${address} was made an administrator by ${admin.email}.`, data: { userId: String(created._id) } });
   return present(created);
 }
 
-module.exports = { createAdmin, list, get, websites, activity, setStatus, setRole, addNote, notes, admins, promoteByEmail, present, mustFind, isId };
+/** Changes what kind of administrator someone is (root only): "admin" (all areas except root-only ones) or "support" (users and credits). */
+async function setAdminType(admin, id, type, req) {
+  if (!admin.isRootAdmin) throw new ForbiddenError('Only the root administrator can change administrator types.', 'ROOT_ADMIN_REQUIRED');
+  const next = cleanType(type);
+  const user = await mustFind(id);
+  if (user.role !== 'ADMIN') throw new ValidationError('That account is not an administrator.');
+  if (user.isRootAdmin) throw new ForbiddenError('The root administrator cannot be changed.', 'ROOT_PROTECTED');
+  if ((user.adminRole || 'admin') === next) throw new ValidationError(`That administrator is already ${next === 'support' ? 'a Support admin' : 'a full Admin'}.`);
+  const updated = await User.findByIdAndUpdate(id, { $set: { adminRole: next } }, { new: true }).select(LIST_FIELDS).lean();
+  await audit.record(admin, 'ADMIN_TYPE_CHANGED', { resourceType: 'user', resourceId: id, before: { adminRole: user.adminRole || 'admin' }, after: { adminRole: next }, meta: { email: user.email }, req });
+  await notifications.create({ type: 'SECURITY', severity: 'info', title: 'Administrator type changed', message: `${user.email} is now ${next === 'support' ? 'a Support admin' : 'a full Admin'} (changed by ${admin.email}).`, data: { userId: id } });
+  return present(updated);
+}
+
+module.exports = { setAdminType, createAdmin, list, get, websites, activity, setStatus, setRole, addNote, notes, admins, promoteByEmail, present, mustFind, isId };

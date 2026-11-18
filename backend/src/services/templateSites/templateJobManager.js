@@ -143,7 +143,7 @@ class TemplateJobManager {
       if (existing) return existing;
     }
     const photos = await require('./templateUploadService').resolveAttachments(site, attachments);
-    await this.assertCanUseAI(userId);
+    await this.assertCanUseAI(userId, site.projectId);
     // A page and a whole-website run must never write at the same time.
     if (await TemplateGenerationJob.exists({ siteId: site._id, type: 'site-customize', status: { $in: ACTIVE } })) throw new ConflictError('The whole website is being generated. Wait for it to finish or cancel it first.');
     // The state the job starts from is saved first (nothing new is made when it already is a saved version).
@@ -185,7 +185,7 @@ class TemplateJobManager {
       if (existing) return existing;
     }
     if (await TemplateGenerationJob.exists({ siteId: site._id, status: { $in: ACTIVE } })) throw new ConflictError('A generation is already running for this site.');
-    await this.assertCanUseAI(userId);
+    await this.assertCanUseAI(userId, site.projectId);
     const pages = await TemplatePage.find({ siteId: site._id }).sort({ order: 1 });
     if (!pages.length) throw new ValidationError('This website has no pages to generate.');
     // Photos added while creating the site must really belong to it (the same check the page instructions use).
@@ -216,9 +216,9 @@ class TemplateJobManager {
     return this.startRegenerate({ user, siteId, pageId, instruction, attachments: await this.pageAttachmentInputs(site, page), idempotencyKey, rewrite: true });
   }
 
-  async assertCanUseAI(userId) {
+  async assertCanUseAI(userId, projectId = null) {
     if (this.deps.skipCreditCheck) return;
-    await require('../billing/usageService').assertCanUseAI(userId);
+    await require('../billing/usageService').assertCanUseAI(userId, { projectId });
   }
 
   schedule(jobId) {
@@ -545,7 +545,7 @@ class TemplateJobManager {
         const site = await TemplateSite.findById(fresh.siteId).select('projectId').lean();
         await require('../../models/AIUsage').create({ userId: job.userId, projectId: site?.projectId, model: 'template-studio', provider: 'openrouter', inputTokens: 0, outputTokens: tokens, totalTokens: tokens, usageSource: 'reported' });
       }
-      if (delta) await billing.chargeFixedCredits(job.userId, delta);
+      if (delta) await billing.chargeFixedCredits(job.userId, delta, { projectId: (await TemplateSite.findById(fresh.siteId).select('projectId').lean())?.projectId });
     } catch (error) {
       await TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $set: { creditsCharged: already, tokensRecorded: recorded } }).catch(() => {});
       logger.error(`Template job ${job.jobId}: credit charge failed: ${error.message}`);
@@ -561,7 +561,8 @@ class TemplateJobManager {
   /** Before paid work continues: the account must still have credits (and monthly allowance). Throws the billing error otherwise. */
   async assertCredits(job) {
     if (this.deps.skipCreditCheck) return;
-    await require('../billing/usageService').assertCanUseAI(job.userId);
+    const owner = await TemplateSite.findById(job.siteId).select('projectId').lean();
+    await require('../billing/usageService').assertCanUseAI(job.userId, { projectId: owner?.projectId });
   }
 
   /** Saves one finished picture into the site (right away, so an interrupted run keeps what it already paid for). */

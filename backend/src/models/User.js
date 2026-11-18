@@ -31,6 +31,8 @@ const userSchema = new mongoose.Schema({
   // The one root administrator. Only the root can create or remove other administrators, and nobody can demote, suspend or delete the root
   // through the API. It is set only by services/admin/rootAdminService (server start) or the command-line scripts, never from a request.
   isRootAdmin: { type: Boolean, default: false },
+  // Kind of administrator (only meaningful when role is ADMIN): 'admin' = every area except what is root-only; 'support' = users and credits only.
+  adminRole: { type: String, enum: ['admin', 'support'], default: 'admin' },
   // A suspended account cannot sign in or use the API until an admin restores it.
   status: { type: String, enum: ['active', 'suspended'], default: 'active', index: true },
   suspendedAt: { type: Date, default: null },
@@ -38,7 +40,13 @@ const userSchema = new mongoose.Schema({
   lastActiveAt: { type: Date, default: null },
   lastLoginAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
+  // The same moment as createdAt, written in Indian time for anyone reading the database directly (createdAt itself stays UTC).
+  createdAtIST: { type: String, default: '' },
   updatedAt: { type: Date, default: Date.now }
+});
+
+userSchema.pre('validate', function setIndianCreationTime() {
+  if (this.isNew && !this.createdAtIST) this.createdAtIST = require('../utils/istTime').toIST(this.createdAt || new Date());
 });
 
 userSchema.pre('save', async function(next) {
