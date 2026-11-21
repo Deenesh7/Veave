@@ -12,6 +12,12 @@ const singlePhoto = (req, res, next) => upload.single('photo')(req, res, (error)
   return res.status(tooBig ? 413 : 400).json({ success: false, error: { message: tooBig ? 'The picture is too large (the limit is 8 MB).' : 'The upload could not be read.', statusCode: tooBig ? 413 : 400 } });
 });
 
+// A short voice note for the AI instruction box (a WAV clip, held in memory only while it is transcribed).
+const voiceUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
+const singleVoice = (req, res, next) => voiceUpload.single('audio')(req, res, (error) => (error
+  ? res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ success: false, error: { message: error.code === 'LIMIT_FILE_SIZE' ? 'The recording is too long.' : 'The recording could not be read.', statusCode: 400 } })
+  : next()));
+
 const sites = express.Router();
 const jobs = express.Router();
 
@@ -23,6 +29,7 @@ const requireAccount = (req, res, next) => (req.user
 sites.use(auth.optionalAuth, requireAccount);
 jobs.use(auth.optionalAuth, requireAccount);
 
+sites.post('/transcribe', aiLimiter, singleVoice, controller.transcribeVoice); // before /:siteId routes
 sites.post('/', controller.createSite);
 sites.get('/', controller.listSites);
 sites.get('/:siteId', controller.getSite);
@@ -36,6 +43,7 @@ sites.patch('/:siteId/pages/reorder', controller.reorderPages); // before /:page
 sites.get('/:siteId/pages/:pageId', controller.getPage);
 sites.patch('/:siteId/pages/:pageId', controller.updatePage);
 sites.delete('/:siteId/pages/:pageId', controller.deletePage);
+sites.post('/:siteId/pages/:pageId/text', controller.editText);
 
 // Website versions, history, comparison, branches. (Fixed words come before the :versionId routes.)
 sites.get('/:siteId/versions', controller.listVersions);

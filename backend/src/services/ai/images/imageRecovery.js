@@ -11,7 +11,7 @@
  * Placement is deterministic JSX editing (imagePlacement.js), not another model call, so it cannot re-introduce invented links and it
  * costs nothing. Nothing here creates a job or charges the user: recovery is part of the job that is already running.
  */
-const { imageConfig } = require('./imageConfig');
+const { imageConfig, applyFloor } = require('./imageConfig');
 const imageValidation = require('./imageValidation');
 const imageDiscovery = require('./imageDiscoveryService');
 const { placeAssets } = require('./imagePlacement');
@@ -59,7 +59,8 @@ function formatDiagnostic({ before, after, cfg, log, rendered = null }) {
  * @param placeOnly     true = only place what already exists (no searching), used for the final pass
  * @returns {{ files, changed, satisfied, log, report, diagnostic }}
  */
-async function recoverImages({ files, imageContext, prompt, spec, signal, cfg = imageConfig(), onStage = null, placeOnly = false, deps = {} } = {}) {
+async function recoverImages({ files, imageContext, prompt, spec, signal, cfg: baseCfg = imageConfig(), onStage = null, placeOnly = false, deps = {} } = {}) {
+  const cfg = applyFloor(baseCfg, imageContext); // slots deliberately left empty (nothing relevant was found) lower the floor; they are never filled with an unrelated picture
   const stage = (name, info = {}) => { try { onStage?.(name, info); } catch { /* progress reporting must never break recovery */ } };
   const inspect = deps.inspectProjectImages || imageValidation.inspectProjectImages;
   const discover = deps.discoverImages || imageDiscovery.discoverImages;
@@ -81,7 +82,7 @@ async function recoverImages({ files, imageContext, prompt, spec, signal, cfg = 
     const stored = (imageContext.files || []).find((file) => file.path === asset.path);
     if (!byPath.has(asset.path) && stored) { current = imageDiscovery.mergeAssetFiles(current, [stored]); changed = true; }
     else if (byPath.has(asset.path) && info.get(asset.path) && !info.get(asset.path).valid && !placeOnly) {
-      const replacement = await (deps.replaceAsset || imageDiscovery.replaceAsset)(asset, { signal, taken, exclude: [asset.sha256] });
+      const replacement = await (deps.replaceAsset || imageDiscovery.replaceAsset)(asset, { signal, taken, exclude: [asset.sha256], vision: imageContext.vision || null, ask: imageContext.ask || null, site: imageContext.site || {} });
       if (replacement.ok) {
         current = current.map((file) => (file.path === asset.path ? replacement.file : file));
         Object.assign(asset, replacement.asset);
@@ -100,7 +101,7 @@ async function recoverImages({ files, imageContext, prompt, spec, signal, cfg = 
   const place = (assets, entry) => {
     if (!assets.length) return;
     stage('image_placement_repair', { count: assets.length });
-    const placed = placeAssets(current, assets, { pageFor: pageResolver(current) });
+    const placed = placeAssets(current, assets, { pageFor: pageResolver(current), force: !satisfied() }); // still short of the requirement: a section-planned picture is better placed in a gallery than not at all
     if (placed.placements.length) { current = placed.files; changed = true; stage('component_update', { files: [...new Set(placed.placements.map((item) => item.file))] }); }
     entry.placed.push(...placed.placements);
     entry.failed.push(...placed.failed);
@@ -145,7 +146,7 @@ async function recoverImages({ files, imageContext, prompt, spec, signal, cfg = 
     requirements.forEach((requirement) => tried.add(requirement.query));
     let found;
     try {
-      found = await discover({ prompt, spec, scope: `${imageContext.jobId}-recovery-${log.length + 1}`, signal, taken, requirements, existingPaths: new Set(current.map((file) => file.path)), onStage: (name, data) => stage(name, data) });
+      found = await discover({ prompt, spec, vision: imageContext.vision || null, ask: imageContext.ask || null, siteContext: imageContext.site || null, scope: `${imageContext.jobId}-recovery-${log.length + 1}`, signal, taken, requirements, existingPaths: new Set(current.map((file) => file.path)), onStage: (name, data) => stage(name, data) });
     } catch (error) {
       if (signal?.aborted) throw error;
       log.push({ ...entry, note: `discovery failed: ${String(error.message).slice(0, 120)}` });

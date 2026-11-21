@@ -6,7 +6,10 @@
 const { imageConfig } = require('./imageConfig');
 
 const INDUSTRIES = [
-  { id: 'restaurant', match: /\b(restaurant|cafe|café|coffee|bistro|bakery|bar\b|pub\b|diner|catering|menu|chef|pizzeria|food)\b/i, subject: 'restaurant',
+  { id: 'cafe', match: /\b(cafe|café|cafes|coffee|espresso|barista|roastery|tea house|tea room)\b/i, subject: 'coffee shop',
+    hero: 'cozy coffee shop interior barista counter', features: ['barista pouring latte art', 'espresso coffee cup on wooden table', 'fresh pastries display cafe counter'],
+    about: 'neighbourhood coffee shop interior seating', team: 'baristas team coffee shop', service: ['espresso machine pouring shot', 'coffee beans roasting', 'croissant and cappuccino'], gallery: ['pour over coffee brewing', 'cafe window seat morning light', 'coffee shop menu board'] },
+  { id: 'restaurant', match: /\b(restaurant|bistro|bakery|bar\b|pub\b|diner|catering|menu|chef|pizzeria|food)\b/i, subject: 'restaurant',
     hero: 'restaurant interior warm lighting', features: ['plated gourmet dish close up', 'chef cooking in professional kitchen', 'friendly dining experience guests table'],
     about: 'restaurant dining room interior', team: 'chefs team restaurant kitchen', service: ['pasta dish served', 'fresh dessert plated', 'cocktail drink bar'], gallery: ['fresh ingredients market', 'restaurant table setting', 'bakery bread fresh'] },
   { id: 'technology', match: /\b(software|saas|tech|technology|startup|ai\b|artificial intelligence|app\b|platform|cloud|cyber|it services|developer|data|analytics|digital agency|web agency)\b/i, subject: 'technology company',
@@ -56,10 +59,33 @@ const DEFAULT_INDUSTRY = { id: 'general', subject: 'business',
 const slug = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'page';
 const ASPECTS = { hero: '16/9', feature: '4/3', service: '4/3', about: '4/3', team: '4/5', gallery: '1/1', news: '16/9', product: '1/1', section: '4/3' };
 
+// Words that appear in many kinds of site ("data", "app", "care", "community") say little about the industry on their own.
+const WEAK_WORDS = /^(?:data|app|platform|care|food|community|business|bar|car|cars|agency|digital|health|product|products|creative|studio|training|learning|corporate|consult|consulting|design|designer)$/i;
+
+/** Scores every industry by how much of the request it explains (specific words count fully, broad ones a third) instead of taking the first pattern that matches. */
 function detectIndustry(prompt = '', spec = null) {
   const text = `${prompt} ${(spec?.pages || []).map((page) => `${page.name || ''} ${page.purpose || ''}`).join(' ')}`;
-  return INDUSTRIES.find((industry) => industry.match.test(text)) || DEFAULT_INDUSTRY;
+  let best = null;
+  let bestScore = 0;
+  for (const industry of INDUSTRIES) {
+    const hits = text.match(new RegExp(industry.match.source, 'gi')) || [];
+    const score = hits.reduce((sum, word) => sum + (WEAK_WORDS.test(word.trim()) ? 0.34 : 1), 0);
+    if (score > bestScore) { best = industry; bestScore = score; }
+  }
+  return best || DEFAULT_INDUSTRY;
 }
+
+// Subjects that would contradict a site of this kind (an office photograph on an architecture or restaurant site).
+const INDUSTRY_AVOID = {
+  architecture: ['office workers', 'business meeting', 'handshake', 'laptop', 'call center'],
+  restaurant: ['office', 'business meeting', 'laptop', 'handshake'],
+  cafe: ['office meeting', 'business meeting', 'handshake'],
+  travel: ['office', 'business meeting', 'handshake'],
+  education: ['handshake', 'nightclub'],
+  fitness: ['office', 'business meeting'],
+  healthcare: ['handshake', 'stock office']
+};
+const HERO_STYLE = 'wide, high resolution, natural light, calm area for headline text';
 
 /** Subject words from the request itself ("a bakery in Chennai" -> "bakery"): they make every query specific to this site. */
 function promptSubject(prompt = '') {
@@ -68,6 +94,7 @@ function promptSubject(prompt = '') {
 }
 
 function pagesFor(prompt, spec, industry) {
+  if (/\b(?:one|single|1)[- ]page\b|\blanding page\b|\bsingle[- ]screen\b/i.test(String(prompt)) && !(Array.isArray(spec?.pages) && spec.pages.length > 1)) return [{ name: 'Home', route: '/', purpose: '' }];
   if (Array.isArray(spec?.pages) && spec.pages.length) {
     return spec.pages.filter((page) => page?.route).slice(0, 8).map((page) => ({ name: page.name || page.route, route: page.route, purpose: page.purpose || '' }));
   }
@@ -123,7 +150,9 @@ function heuristicRequirements({ prompt, spec, cfg = imageConfig() }) {
     requirements.push(slot(page, `extra-0${extra + 1}`, 'gallery', industry.gallery[extra], { section: 'Gallery' }));
     extra += 1;
   }
-  return { industry: industry.id, subject: topic || industry.subject, pages, requirements: requirements.slice(0, cfg.maxAssets) };
+  const avoid = INDUSTRY_AVOID[industry.id] || [];
+  const enriched = requirements.slice(0, cfg.maxAssets).map((item) => ({ ...item, subject: item.query, style: item.hero ? HERO_STYLE : '', avoid, component: item.hero ? 'hero image' : `${item.category} image` }));
+  return { industry: industry.id, subject: topic || industry.subject, pages, requirements: enriched };
 }
 
 const clean = (value, max = 120) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -147,14 +176,15 @@ function normalizeModelPlan(raw, { cfg = imageConfig() } = {}) {
       let id = `${category}-01`; let n = 1;
       while (used.has(`${slug(name)}-${id}`)) { n += 1; id = `${category}-0${n}`; }
       used.add(`${slug(name)}-${id}`);
-      requirements.push(baseSlot(page, id, category, query, { section: clean(image.section, 40) || category, altHint: clean(image.alt, 140) || query, alternates: (Array.isArray(image.alternates) ? image.alternates : []).map((q) => clean(q, 90)).filter(Boolean).slice(0, 2) }));
+      const slot = baseSlot(page, id, category, query, { section: clean(image.section, 40) || category, altHint: clean(image.alt, 140) || query, alternates: (Array.isArray(image.alternates) ? image.alternates : []).map((q) => clean(q, 90)).filter(Boolean).slice(0, 2) });
+      requirements.push({ ...slot, subject: clean(image.subject, 140) || query, style: clean(image.style, 100) || (slot.hero ? HERO_STYLE : ''), avoid: (Array.isArray(image.avoid) ? image.avoid : []).map((term) => clean(term, 30)).filter(Boolean).slice(0, 6), component: clean(image.component, 60) || (slot.hero ? 'hero image' : `${category} image`) });
     }
   }
   if (!pages.length || requirements.length < 3) return null;
-  return { industry: clean(raw.industry, 40) || 'general', subject: clean(raw.subject, 60) || 'website', pages, requirements: requirements.slice(0, cfg.maxAssets) };
+  return { industry: clean(raw.industry, 40) || 'general', subject: clean(raw.subject, 60) || 'website', visualDirection: clean(raw.visualDirection, 220), pages, requirements: requirements.slice(0, cfg.maxAssets) };
 }
 
-const PLAN_SYSTEM = 'You plan the photographs a website needs. Reply with ONLY JSON, no prose: {"industry": string, "subject": string, "pages": [{"name": string, "route": string, "purpose": string, "images": [{"section": string, "category": "hero"|"feature"|"service"|"about"|"team"|"gallery"|"news"|"product", "query": string, "alt": string, "alternates": [string]}]}]}. Rules: 3 to 7 pages; the home page has a hero image and 2-3 feature images; every content page has 1-3 images that show what that page is about; "query" is a concrete 3-7 word stock-photography search for REAL photographs (subject, setting, style) - never a brand name, never "logo", never an illustration; "alt" is a meaningful sentence describing the picture; at most 14 images in total.';
+const PLAN_SYSTEM = 'You plan the photographs a website needs. Reply with ONLY JSON, no prose: {"industry": string, "subject": string, "pages": [{"name": string, "route": string, "purpose": string, "images": [{"section": string, "category": "hero"|"feature"|"service"|"about"|"team"|"gallery"|"news"|"product", "subject": string, "style": string, "avoid": [string], "query": string, "alternates": [string], "alt": string}]}], "visualDirection": string}. Rules: 3 to 7 pages; the home page has a hero image and 2-3 feature images; every content page has 1-3 images that show what that page is about; "subject" is exactly what this picture must show for this page; "style" is the photographic style; "avoid" lists subjects that would be wrong for this site (for an architecture studio: office workers, handshakes); "query" is a concrete 3-7 word stock-photography search for REAL photographs built from subject and style - specific to the section, never generic words like business, professional, modern or creative alone, never a brand name, never "logo", never an illustration; "visualDirection" is one sentence on the photographic direction of the whole site; "alt" is a meaningful sentence describing the picture; at most 14 images in total.';
 
 /**
  * @param ask async (system, user) => string; optional (the model plan is an improvement, not a dependency)
@@ -171,4 +201,4 @@ async function buildRequirements({ prompt, spec = null, ask = null, cfg = imageC
   return { ...heuristicRequirements({ prompt, spec, cfg }), source: 'heuristic' };
 }
 
-module.exports = { buildRequirements, heuristicRequirements, normalizeModelPlan, detectIndustry, pagesFor, baseSlot, promptSubject, ASPECTS, slug };
+module.exports = { INDUSTRY_AVOID, buildRequirements, heuristicRequirements, normalizeModelPlan, detectIndustry, pagesFor, baseSlot, promptSubject, ASPECTS, slug };

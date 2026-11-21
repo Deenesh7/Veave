@@ -27,7 +27,33 @@ const issue = (stage, message, { path = null, route = null, cause = '', action =
  * The files a regeneration of `page` may change: the page's component and the files only it uses. The shared components, the
  * routing and navigation, the configuration and every other page (and what they use) are out of scope.
  */
-function pageScope({ files, page, pages, template }) {
+/**
+ * A prompt that is about the whole website (menu, footer, logo, site name, "everywhere", rebranding) or that names a shared component
+ * (e.g. "remove the search tabs") cannot be done inside one page file. Those prompts get a wider scope: see pageScope.
+ */
+const SITE_WIDE_WORDS = /\b(nav(?:bar|igation)?|menu|header|footer|logo|brand(?:ing)?|re-?brand|site[ -]?name|site[ -]?wide|whole (?:web)?site|entire (?:web)?site|all (?:the )?pages|every page|other pages|across (?:the )?(?:web)?site|throughout|everywhere|all references|favicon|page title|tagline)\b/i;
+function wantsSiteWide(instruction, files = []) {
+  const text = String(instruction || '');
+  if (SITE_WIDE_WORDS.test(text)) return true;
+  // "remove/replace/rename X" where X also lives in the shared parts of the site (menu, footer, shared components, site data).
+  if (/\b(remove|delete|get rid of|replace|rename|drop|eliminate|references?)\b/i.test(text)) {
+    const stop = new Set(['remove', 'delete', 'replace', 'rename', 'with', 'this', 'that', 'page', 'pages', 'section', 'sections', 'from', 'about', 'make', 'instead', 'add', 'and', 'the', 'all', 'references', 'reference', 'lot', 'unique', 'features', 'home', 'text', 'content', 'there', 'which', 'them', 'they', 'into', 'then', 'also', 'more']);
+    const shared = files.filter((file) => /^(?:src\/(?:components|data)\/|index\.html$)/.test(file.path) && typeof file.content === 'string');
+    const words = [...new Set((text.toLowerCase().match(/[a-z]{4,}/g) || []).filter((word) => !stop.has(word)))];
+    for (const word of words) {
+      const stem = word.length > 6 ? word.slice(0, word.length - 2) : word.length > 4 ? word.slice(0, 4) : word;
+      const pattern = new RegExp(`\\b${stem.replace(/[^a-z]/g, '')}`, 'i');
+      if (shared.some((file) => pattern.test(file.content))) return true;
+    }
+  }
+  const squashed = text.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return files.some((file) => /^src\/components\/[A-Za-z0-9]+\.jsx?$/.test(file.path) && (() => {
+    const name = file.path.split('/').pop().replace(/\.jsx?$/, '').toLowerCase();
+    return name.length >= 6 && squashed.includes(name);
+  })());
+}
+
+function pageScope({ files, page, pages, template, siteWide = false }) {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const locked = new Set([...(template?.scaffold?.sharedFiles || []), ...(template?.scaffold?.protectedFiles || []), ...(template?.scaffold?.requiredFiles || []), 'src/App.jsx', 'src/main.jsx', 'src/data/site.js', 'src/index.css', 'package.json', 'index.html']);
   const usedElsewhere = new Set();
@@ -36,8 +62,18 @@ function pageScope({ files, page, pages, template }) {
   }
   const reachable = pageDistinctness.reachableFiles(page.componentPath, byPath, 2).filter((path) => byPath.has(path) && SOURCE.test(path));
   const owned = reachable.filter((path) => path === page.componentPath || (!locked.has(path) && !usedElsewhere.has(path) && path.startsWith('src/')));
+  if (siteWide) {
+    // Site-wide prompt: the shared components, shared data, site data and the HTML shell may change too. Other pages, the router, config and styles may not.
+    const otherPageFiles = new Set(pages.filter((item) => String(item._id) !== String(page._id)).map((item) => item.componentPath));
+    const hard = new Set(['src/App.jsx', 'src/main.jsx', 'src/index.css', 'package.json', 'package-lock.json']);
+    for (const file of files) {
+      const path = file.path;
+      if (owned.includes(path) || otherPageFiles.has(path) || hard.has(path) || file.encoding === 'base64') continue;
+      if (path === 'index.html' || path === 'src/data/site.js' || (/^src\/(?:components|data)\//.test(path) && SOURCE.test(path))) owned.push(path);
+    }
+  }
   const shared = reachable.filter((path) => !owned.includes(path));
-  return { owned: new Set(owned), ownedList: owned, sharedList: shared, locked, canCreate: (path) => CREATE_PREFIXES.some((prefix) => path.startsWith(prefix)) && !byPath.has(path) && SOURCE.test(path) };
+  return { siteWide, owned: new Set(owned), ownedList: owned, sharedList: shared, locked, canCreate: (path) => CREATE_PREFIXES.some((prefix) => path.startsWith(prefix)) && !byPath.has(path) && SOURCE.test(path) };
 }
 
 /** Splits operations into those inside the scope and those that are dropped (with the reason, which goes into the repair prompt). */
@@ -88,8 +124,73 @@ function pageWords(files, componentPath) {
  * Static checks of a candidate against the files before the change. Returns the list of problems (empty = acceptable).
  * @param {object} p  { baseline, candidate, scope, page, pages, template, changedPaths }
  */
-function checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments = [] }) {
+/**
+ * "Add images / use these photos" is a picture-only edit: the words of the page must stay. A rewrite, a removal or a new subject is
+ * not picture-only, so the instruction must name pictures and must not ask for any change of the text.
+ */
+const PICTURE_WORDS = /\b(images?|photos?|pictures?|photographs?|gallery|banner|logo)s?\b/i;
+const TEXT_CHANGE_WORDS = /\b(rewrite|re-?write|remove|delete|replace the (?:text|heading|content|copy)|(?:change|edit|update|shorten|lengthen|translate) the (?:text|heading|title|content|copy|wording)|text|heading|title|content|copy|wording|about|instead|for (?:a|an|the|my) |turn|convert|transform|redesign|rebuild|new section)\b/i;
+function isPictureOnlyEdit(instruction, attachments = []) {
+  const text = String(instruction || '');
+  if (TEXT_CHANGE_WORDS.test(text.replace(/\b(image|photo|picture)s? (?:and|or) (?:text|content)\b/gi, ''))) return false;
+  return PICTURE_WORDS.test(text) || (attachments.length > 0 && text.split(/\s+/).length <= 30);
+}
+const REWRITE_WORDS = /\b(rewrite|re-?write|redo|redesign|rebuild|recreate|revamp|overhaul|start over|from scratch|transform|convert|turn (?:this|the|it)|(?:make|change) (?:this|the) (?:page|website|site) (?:for|into|about)|for (?:a|an|the|my) [\p{L} ]{2,40}(?:website|site|college|school|hospital|company|business)|all (?:the )?(?:sections|content|text)|whole page|entire page|every section|across (?:all )?sections)\b/iu;
+/**
+ * How much of the page's existing wording must survive an instruction. A picture-only instruction keeps almost everything; any other
+ * edit keeps most of the page (it may change what it names, not the rest); a selected section leaves the other sections alone.
+ * A rewrite, a website-wide change or a change of subject is allowed to replace the content.
+ */
+function keepRatioFor({ instruction, attachments = [], siteWide = false, rewrite = false }) {
+  if (siteWide || rewrite || REWRITE_WORDS.test(String(instruction || ''))) return null;
+  if (isPictureOnlyEdit(instruction, attachments)) return 0.9;
+  return /The owner ticked only the section/.test(String(instruction || '')) || selectedSectionNumbers(instruction).length ? 0.8 : 0.7;
+}
+
+/** The section numbers the owner ticked: the panel sends 'In section 02 ("Name"), section 05 ("Name"): ...'. */
+function selectedSectionNumbers(instruction) {
+  const lead = String(instruction || '').match(/^In ((?:and |, )?section \d+ \("[^"]*"\)(?:,? ?(?:and )?)?)+:/i);
+  return lead ? [...new Set([...lead[0].matchAll(/section (\d+) \("/gi)].map((m) => Number(m[1])))] : [];
+}
+
+/**
+ * The sections the owner did NOT tick must be exactly as they were. Returns a problem for the ones that changed, or null.
+ * Only checked when the page has recognisable sections (the same ones the panel lists).
+ */
+function untouchedSectionProblem({ baselineSource, candidateSource, numbers, page }) {
+  if (!numbers.length) return null;
+  const blocks = require('./templatePageService').sectionBlocks(baselineSource);
+  const total = blocks.reduce((sum, block) => sum + block.numbers.length, 0);
+  if (!blocks.length || numbers.some((n) => n > total)) return null;
+  const squash = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const after = squash(candidateSource);
+  const changed = blocks.filter((block) => !block.numbers.some((n) => numbers.includes(n)) && !after.includes(squash(block.source)));
+  if (!changed.length) return null;
+  const names = changed.slice(0, 6).map((block) => `${String(block.number).padStart(2, '0')} "${block.name}"`).join(', ');
+  return issue('preserve', `Section${changed.length > 1 ? 's' : ''} ${names} ${changed.length > 1 ? 'were' : 'was'} changed, but the owner selected only section${numbers.length > 1 ? 's' : ''} ${numbers.map((n) => String(n).padStart(2, '0')).join(', ')}.`, { path: page.componentPath, route: page.route, cause: 'Sections that were not ticked must stay exactly as they are.', action: `Start again from the ORIGINAL page code. Change ONLY section${numbers.length > 1 ? 's' : ''} ${numbers.map((n) => String(n).padStart(2, '0')).join(', ')}; copy every other section character for character (same JSX, same text, same images).` });
+}
+
+function checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments = [], instruction = '', siteWide = false, rewrite = false }) {
   const problems = [];
+  // preserve: ticked sections only
+  const ticked = selectedSectionNumbers(instruction);
+  if (ticked.length) {
+    const text = (files) => (files.find((file) => file.path === page.componentPath) || {}).content;
+    const locked = untouchedSectionProblem({ baselineSource: text(baseline), candidateSource: text(candidate), numbers: ticked, page });
+    if (locked) problems.push(locked);
+  }
+  // preserve: the instruction may change what it names, not the rest of the page
+  const keepRatio = keepRatioFor({ instruction, attachments, siteWide, rewrite });
+  if (keepRatio) {
+    const before = pageWords(baseline, page.componentPath);
+    const after = pageWords(candidate, page.componentPath);
+    if (before.set.size >= 40) {
+      const kept = [...before.set].filter((word) => after.set.has(word)).length / before.set.size;
+      if (kept < keepRatio) {
+        problems.push(issue('preserve', `Only ${Math.round(kept * 100)}% of the page's existing wording is still there (${before.words} words before, ${after.words} now); this instruction should change only what it mentions.`, { path: page.componentPath, route: page.route, cause: 'Parts of the page the instruction did not mention were removed or rewritten.', action: 'Start again from the ORIGINAL page code. Change only the parts the instruction names; keep every other section, heading, paragraph, button, card and image exactly as it was. Use small exact "patch" edits.' }));
+      }
+    }
+  }
   // scope: nothing outside the page was changed
   const baselinePaths = new Set(baseline.map((file) => file.path));
   for (const path of changedPaths) {
@@ -128,12 +229,13 @@ function checkCandidate({ baseline, candidate, scope, page, pages, template, cha
   }
   // regression: locked and shared files are exactly as the template defines them / as they were
   for (const locked of template?.scaffold?.protectedFiles || []) {
-    if (locked === 'package.json') continue;
+    if (locked === 'package.json' || scope.owned.has(locked)) continue;
     const before = baseline.find((file) => file.path === locked);
     const after = candidate.find((file) => file.path === locked);
     if (before && (!after || after.content !== before.content)) problems.push(issue('regression', `${locked} is locked and was changed.`, { path: locked, cause: 'Locked files are part of the template.', action: 'Leave it unchanged.' }));
   }
   for (const sharedPath of template?.scaffold?.sharedFiles || []) {
+    if (scope.owned.has(sharedPath)) continue;
     const before = baseline.find((file) => file.path === sharedPath);
     const after = candidate.find((file) => file.path === sharedPath);
     if (before && (!after || after.content !== before.content)) problems.push(issue('regression', `The shared file ${sharedPath} was changed.`, { path: sharedPath, cause: 'Shared components are used by every page.', action: 'Leave it unchanged.' }));
@@ -223,4 +325,4 @@ function finalSiteChecks(files, pages) {
   return found;
 }
 
-module.exports = { finalSiteChecks, pageScope, filterOperations, checkCandidate, imageProblems, runBuildGate, pageWords, issue, sha, MIN_PAGE_WORDS };
+module.exports = { finalSiteChecks, pageScope, wantsSiteWide, filterOperations, checkCandidate, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, issue, sha, MIN_PAGE_WORDS };

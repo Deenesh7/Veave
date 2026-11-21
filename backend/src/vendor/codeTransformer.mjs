@@ -1611,9 +1611,11 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
           var qs = function(x) { return document.querySelector(x); };
           var lbl = norm(event.data.label);
           var found = null;
-          if (lbl === 'navigation' || lbl === 'navbar' || lbl === 'nav' || lbl === 'header') found = qs('nav') || qs('header');
-          else if (lbl.indexOf('footer') === 0) found = qs('footer');
-          else if (lbl.indexOf('hero') === 0) found = qs('[id*=hero i],[class*=hero i]') || qs('main section') || qs('section') || qs('h1');
+          // The page's own element id (when the section has one) is the exact target; names are only the fallback.
+          if (event.data.domId) found = document.getElementById(event.data.domId);
+          if (!found && (lbl === 'navigation' || lbl === 'navbar' || lbl === 'nav' || lbl === 'header')) found = qs('nav') || qs('header');
+          else if (!found && lbl.indexOf('footer') === 0) found = qs('footer');
+          else if (!found && lbl.indexOf('hero') === 0) found = qs('[id*=hero i],[class*=hero i]') || qs('main section') || qs('section') || qs('h1');
           if (!found && lbl) {
             var cands = document.querySelectorAll('h1,h2,h3,h4,section,[id],[aria-label]');
             for (var pass = 0; pass < 2 && !found; pass++) {

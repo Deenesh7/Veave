@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { UploadCloud, Check, X, RotateCcw, AlertCircle, ImageOff, Sparkles, SplitSquareHorizontal, MapPin, ChevronDown } from 'lucide-react';
 import { useTemplateStudioStore, PHOTO_TYPES, MAX_ATTACH } from '../../store/templateStudioStore';
-import { Spinner, Skeleton, IconButton, inputClass, ink, muted, line } from './ui';
+import { ConfirmModal, Spinner, Skeleton, IconButton, inputClass, ink, muted, line } from './ui';
+import { pagePhotos, imageFilesOf, isRetryable } from './panelLogic';
 import { useImageSrc, formatBytes, dimensionsOf } from './imageUtils';
 import ImageViewer from './ImageViewer';
 import Dropdown from './Dropdown';
@@ -123,17 +124,18 @@ function EnhancementBlock({ siteId, image, onCompare }) {
 }
 
 export default function ImageLibrary({ disabled = false }) {
-  const { site, pages, pageSections, activePageId, images, uploads, selection, uploadFiles, retryUpload, dismissUpload, clearFinishedUploads, toggleImage, setImageChoice } = useTemplateStudioStore();
+  const { site, pageSections, activePageId, images, imagesLoaded, imagesError, loadImages, uploads, selection, uploadFiles, retryUpload, dismissUpload, clearFinishedUploads, toggleImage, setImageChoice, removeImage, busy } = useTemplateStudioStore();
+  const pages = useTemplateStudioStore((state) => state.pages);
+  const [deleting, setDeleting] = useState(null);
   const [dragging, setDragging] = useState(false);
   const [viewing, setViewing] = useState(null);
   const [reviewing, setReviewing] = useState(null);
   const input = useRef(null);
   const chosen = (activePageId && selection[activePageId]) || {};
-  const chosenIds = Object.keys(chosen);
+  const { ids: chosenIds, count: photoCount, max: photoMax, missing: photoMissing } = pagePhotos(chosen, images, MAX_ATTACH);
   const siteId = site?.id;
   // Where a photo can go: only the sections that are on this page.
-  const activePage = pages.find((item) => item.id === activePageId);
-  const pageSectionNames = (Array.isArray(pageSections?.[activePageId]) && pageSections[activePageId].length ? pageSections[activePageId] : (activePage?.description || '').split(/\s*·\s*|\s*,\s*|\n+/)).map((name) => String(name).trim()).filter(Boolean);
+  const pageSectionNames = (Array.isArray(pageSections?.[activePageId]) ? pageSections[activePageId] : []).map((section) => String(section?.name ?? section).trim()).filter(Boolean);
   const placementOptionsFor = (current) => {
     const options = [{ value: '', label: 'Let the page decide', hint: 'The AI picks the best spot on this page' }, { value: 'page-background', label: 'Background of this page only', hint: 'The picture sits behind every section of this page. Other pages are not changed' }, ...[...new Set(pageSectionNames)].map((name) => ({ value: `section:${name}`, label: name, hint: 'Place it in this section of the page' }))];
     if (current && !options.some((option) => option.value === current)) options.push({ value: current, label: current.replace(/^section:/, ''), hint: 'Chosen earlier' });
@@ -143,6 +145,8 @@ export default function ImageLibrary({ disabled = false }) {
   const queue = uploads.filter((item) => item.status !== 'done' || !images.some((image) => image.id === item.imageId));
   const finished = queue.some((item) => item.status === 'done');
   const busyQueue = queue.some((item) => item.status === 'queued' || item.status === 'uploading');
+  // Pictures already in the site's library that this page is not using yet: one click adds them (the same picture can serve several pages).
+  const libraryRest = images.filter((image) => !chosenIds.includes(image.id));
   const accept = (files) => { if (!disabled) uploadFiles(files); };
 
   return (
@@ -151,7 +155,7 @@ export default function ImageLibrary({ disabled = false }) {
         onDragOver={(event) => { if (event.dataTransfer?.types?.includes('Files')) { event.preventDefault(); setDragging(true); } }}
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false); }}
         onDrop={(event) => { event.preventDefault(); setDragging(false); accept(event.dataTransfer.files); }}
-        onPaste={(event) => { const files = Array.from(event.clipboardData?.files || []).filter((file) => file.type.startsWith('image/')); if (files.length) { event.preventDefault(); accept(files); } }}
+        onPaste={(event) => { const files = imageFilesOf(event.clipboardData?.files); if (files.length) { event.preventDefault(); accept(files); } }}
         className={`rounded-md border border-dashed px-3 py-2.5 text-center transition-colors ${dragging ? 'border-[#5E7B5F] bg-[#E8F0E8]' : 'border-[#CFC8B6] bg-white hover:border-[#B9B2A2]'} ${disabled ? 'opacity-60' : ''}`}
       >
         <p className={`flex items-center justify-center gap-1.5 text-xs ${ink}`}><UploadCloud className={`h-4 w-4 shrink-0 ${dragging ? 'text-[#5E7B5F]' : muted}`} aria-hidden="true" />Drop photos or <button type="button" disabled={disabled} onClick={() => input.current?.click()} className="font-medium text-[#5E7B5F] underline underline-offset-2 hover:text-[#506B52] disabled:no-underline disabled:opacity-60">browse</button></p>
@@ -176,7 +180,7 @@ export default function ImageLibrary({ disabled = false }) {
               {item.status === 'uploading' ? <Spinner className="h-4 w-4 text-[#5E7B5F]" /> : null}
               {item.status === 'done' ? <Check className="h-4 w-4 text-[#5E7B5F]" /> : null}
               {item.duplicate && images.some((image) => image.id === item.imageId) ? <button type="button" onClick={() => setViewing(images.find((image) => image.id === item.imageId))} className="shrink-0 rounded border border-[#D9B8B0] bg-white px-1.5 py-0.5 text-[11px] font-medium text-[#7A3A2E] hover:bg-[#FBF3F0]">View</button> : null}
-              {item.status === 'error' && item.file && !item.duplicate ? <IconButton label="Try again" onClick={() => retryUpload(item.id)}><RotateCcw className="h-3.5 w-3.5" /></IconButton> : null}
+              {isRetryable(item) ? <IconButton label="Try again" onClick={() => retryUpload(item.id)}><RotateCcw className="h-3.5 w-3.5" /></IconButton> : null}
               {item.status !== 'uploading' ? <IconButton label="Dismiss" onClick={() => dismissUpload(item.id)}><X className="h-3.5 w-3.5" /></IconButton> : null}
             </li>
           ))}
@@ -184,9 +188,12 @@ export default function ImageLibrary({ disabled = false }) {
         </ul>
       ) : null}
 
-      {chosenIds.length ? (
-        <div className="mt-4 space-y-2">
-          <h5 className={`text-[11px] font-medium uppercase tracking-wider ${muted}`}>Photos for this page <span className="normal-case tracking-normal">{chosenIds.length}/{MAX_ATTACH}</span></h5>
+      <div className="mt-4 space-y-2">
+        <h5 className={`text-[11px] font-medium uppercase tracking-wider ${muted}`}>Photos for this page <span className="normal-case tracking-normal" aria-live="polite" aria-label={`${photoCount} of ${photoMax} photos`}>{photoCount}/{photoMax}</span></h5>
+        {!imagesLoaded && !images.length ? <p className={`text-[11px] ${muted}`}>Loading your photos…</p> : null}
+        {imagesError ? <p role="alert" className="text-[11px] text-[#7A3A2E]">{imagesError} <button type="button" onClick={loadImages} className="underline">Try again</button></p> : null}
+        {imagesLoaded && !chosenIds.length && !imagesError ? <p className={`text-[11px] ${muted}`}>No photos chosen for this page yet. Upload one above{libraryRest.length ? ' or add one from your library below' : ''}.</p> : null}
+        {photoMissing > 0 ? <p className={`text-[11px] ${muted}`}>{photoMissing} chosen photo{photoMissing === 1 ? ' is' : 's are'} no longer in the library and will not be sent.</p> : null}
           <ul className="space-y-2">
             {chosenIds.map((id) => {
               const image = images.find((item) => item.id === id);
@@ -199,7 +206,7 @@ export default function ImageLibrary({ disabled = false }) {
                       <p className={`truncate text-xs font-medium ${ink}`}>{image.name}</p>
                       <p className={`text-[11px] ${muted}`}>{dimensionsOf(image)}</p>
                     </div>
-                    <IconButton label={`Do not use ${image.name}`} onClick={() => toggleImage(id, false)}><X className="h-3.5 w-3.5" /></IconButton>
+                    <IconButton label={`Do not use ${image.name} on this page`} onClick={() => toggleImage(id, false)}><X className="h-3.5 w-3.5" /></IconButton>
                   </div>
                   <EnhancementBlock siteId={siteId} image={image} onCompare={() => setReviewing(image)} />
                   <div className="mt-1.5"><Dropdown compact icon={MapPin} label={`Where ${image.name} should go`} value={chosen[id].placement} onChange={(placement) => setImageChoice(id, { placement })} options={placementOptionsFor(chosen[id].placement)} /></div>
@@ -209,7 +216,35 @@ export default function ImageLibrary({ disabled = false }) {
             })}
           </ul>
         </div>
+
+      {libraryRest.length && chosenIds.length < photoMax ? (
+        <div className="mt-3">
+          <h5 className={`mb-1.5 text-[11px] font-medium uppercase tracking-wider ${muted}`}>Add from your library <span className="normal-case tracking-normal">{libraryRest.length}</span></h5>
+          <ul className="flex flex-wrap gap-1.5" aria-label="Photos in your library not used on this page">
+            {libraryRest.slice(0, 24).map((image) => (
+              <li key={image.id} className="group relative">
+                <button type="button" disabled={disabled} onClick={() => toggleImage(image.id, true)} aria-label={`Use ${image.name} on this page`} title={`Use ${image.name} on this page`} className={`h-11 w-11 overflow-hidden rounded border ${line} bg-[#EFEBE1] transition hover:border-[#5E7B5F] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5E7B5F] disabled:opacity-50`}><Thumb siteId={siteId} image={image} /></button>
+                <button type="button" onClick={() => setDeleting(image)} aria-label={`Delete ${image.name} from the library`} title="Delete from the library" className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-[#D9B8B0] bg-white text-[#A4493A] opacity-100 shadow-sm transition hover:bg-[#F7E9E5] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#A4493A] sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"><X className="h-3 w-3" strokeWidth={3} aria-hidden="true" /></button>
+              </li>
+            ))}
+          </ul>
+          {libraryRest.length > 24 ? <p className={`mt-1 text-[11px] ${muted}`}>Showing the newest 24 of {libraryRest.length}.</p> : null}
+        </div>
       ) : null}
+
+      {deleting ? (() => {
+        const usedOn = (pages || []).filter((page) => deleting.usedOn?.includes(page.id));
+        return (
+          <ConfirmModal
+            open danger busy={Boolean(busy?.[`image:${deleting.id}`])} title="Delete this photo?" confirmLabel="Delete photo"
+            message={usedOn.length || deleting.usedElsewhere
+              ? `"${deleting.name}" is shown on ${usedOn.length ? usedOn.map((page) => page.name).join(', ') : 'shared parts of the site'}. It will leave your library, but the file stays in your site so those pages and their earlier versions keep working.`
+              : `"${deleting.name}" will leave your library. Uploading the same photo again brings it back.`}
+            onClose={() => setDeleting(null)}
+            onConfirm={async () => { if (await removeImage(deleting.id)) setDeleting(null); }}
+          />
+        );
+      })() : null}
 
       {reviewing ? <EnhancementReview image={reviewing} onClose={() => setReviewing(null)} /> : null}
       {viewing ? <ImageViewer image={viewing} onClose={() => setViewing(null)} /> : null}

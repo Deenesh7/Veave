@@ -26,7 +26,7 @@ async function dimensions(buffer) {
     const meta = await require('sharp')(buffer).metadata();
     // Phone photos are often stored sideways with an EXIF rotation: report the size people actually see.
     const sideways = meta.orientation >= 5;
-    return { width: (sideways ? meta.height : meta.width) || 0, height: (sideways ? meta.width : meta.height) || 0 };
+    return { width: (sideways ? meta.height : meta.width) || 0, height: (sideways ? meta.width : meta.height) || 0, format: meta.format, compression: meta.compression || null };
   } catch { return null; }
 }
 
@@ -41,6 +41,9 @@ async function inspectImage(buffer) {
   if (!sniffed || !ALLOWED.has(sniffed.mime)) throw new ValidationError('Upload a PNG, JPEG, WebP, GIF or AVIF picture.');
   const size = await dimensions(buffer);
   if (!size || Math.min(size.width, size.height) < MIN_SIDE) throw new ValidationError('The picture could not be read, or it is too small.');
+  // The header and the decoder must agree: a HEIC photo, a video or a renamed file that only starts like an AVIF is refused here.
+  const decoded = { 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'heif' }[sniffed.mime];
+  if (size.format !== decoded || (sniffed.mime === 'image/avif' && size.compression && size.compression !== 'av1')) throw new ValidationError('The file is not a valid picture of the type it claims to be.');
   return { sniffed, size };
 }
 
@@ -84,7 +87,24 @@ function present(asset, usage = null, enhanced = null) {
  * Validates and stores one uploaded picture. The same bytes are stored once per site: uploading them again (a retry, or the same
  * file picked twice) returns the existing picture with reused: true instead of making a second copy. Returns the library entry.
  */
-async function addUpload({ user, siteId, buffer, originalName = 'photo', pageId = null }) {
+// Uploads to the same site run one after another inside this process: the same picture sent several times at once (a double click,
+// a retry) is then stored once, and different pictures do not fight over the site's files. Other servers rely on the unique
+// (site, hash) index and the revision check below.
+const siteQueues = new Map();
+function inSiteQueue(siteId, task) {
+  const key = String(siteId);
+  const run = (siteQueues.get(key) || Promise.resolve()).catch(() => {}).then(task);
+  const tail = run.catch(() => {});
+  siteQueues.set(key, tail);
+  tail.then(() => { if (siteQueues.get(key) === tail) siteQueues.delete(key); });
+  return run;
+}
+
+async function addUpload(args) {
+  return inSiteQueue(args.siteId, () => storeUpload(args));
+}
+
+async function storeUpload({ user, siteId, buffer, originalName = 'photo', pageId = null }) {
   const site = await getSite(user, siteId);
   const { sniffed, size } = await inspectImage(buffer);
   const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
@@ -94,7 +114,19 @@ async function addUpload({ user, siteId, buffer, originalName = 'photo', pageId 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const { files, projectRevision } = await store.readSite(site);
     const known = await TemplateAsset.findOne({ siteId: site._id, sha256 });
-    if (known && files.some((file) => file.path === known.projectPath)) {
+    // The library entry exists but its file is gone from the site: put the file back at the SAME path so the entry is valid again.
+    if (known && !files.some((file) => file.path === known.projectPath)) {
+      try {
+        await store.writeSite(site, [...files, { path: known.projectPath, content: buffer.toString('base64'), language: 'binary', encoding: 'base64' }], projectRevision);
+      } catch (error) {
+        if (!(error instanceof ConflictError) || attempt === 4) throw error;
+        continue;
+      }
+      const restored = await TemplateAsset.findOneAndUpdate({ _id: known._id }, { $set: { deletedAt: null, replacedBy: null }, ...(pageIds.length ? { $addToSet: { pageIds: { $each: pageIds } } } : {}) }, { new: true });
+      await bumpSite(site._id);
+      return { photo: present(restored), reused: true };
+    }
+    if (known) {
       // Already here (possibly removed from the library earlier): bring it back instead of storing a second copy.
       const set = { ...(known.deletedAt ? { deletedAt: null, replacedBy: null } : {}) };
       const update = { ...(Object.keys(set).length ? { $set: set } : {}), ...(pageIds.length ? { $addToSet: { pageIds: { $each: pageIds } } } : {}) };

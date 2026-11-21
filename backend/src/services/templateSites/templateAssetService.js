@@ -132,10 +132,15 @@ async function updateAsset(user, siteId, assetId, body = {}) {
 }
 
 /** Hides a picture from the library. The file stays, so pages and revisions that show it are not broken. */
-async function removeAsset(user, siteId, assetId) {
+async function removeAsset(user, siteId, assetId, { force = false } = {}) {
   const site = await getSite(user, siteId);
   const asset = await findAsset(site, assetId);
   const usage = await describeUsage(site, asset);
+  // A picture a page is showing is not removed by accident: the caller must confirm (force) after being told where it is used.
+  if (!force && (usage.pageIds?.length || usage.shared)) {
+    const pages = usage.pageIds?.length ? await TemplatePage.find({ siteId: site._id, _id: { $in: usage.pageIds } }).select('name').lean() : [];
+    throw new ConflictError('This picture is shown on the website. Removing it only hides it from the library; the pages keep showing it until you change them.', 'IMAGE_IN_USE', { pages: pages.map((item) => ({ id: String(item._id), name: item.name })), shared: Boolean(usage.shared) });
+  }
   await TemplateAsset.updateOne({ _id: asset._id }, { $set: { deletedAt: new Date() } });
   return { removed: true, stillShownOn: usage.pageIds, stillShownElsewhere: usage.shared };
 }

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Globe2, Loader2 } from 'lucide-react';
 import { Dialog } from '../ui/Dialog';
 import { useGenerationJobStore } from '../../store/generationJobStore';
+import { apiErrorMessage } from '../../utils/helpers';
 
 export default function CloneWebsiteModal({ isOpen, onClose }) {
   const [sourceUrl, setSourceUrl] = useState('');
@@ -31,7 +32,7 @@ export default function CloneWebsiteModal({ isOpen, onClose }) {
       });
       onClose();
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Unable to start website cloning.');
+      setError(apiErrorMessage(err, 'Unable to start website cloning.'));
     }
   };
 

@@ -171,7 +171,9 @@ class OpenRouterService {
           'X-Title': 'Veave AI',
           'Content-Type': 'application/json'
         },
-        timeout: options.timeout || 120000
+        timeout: options.timeout || 120000,
+        // A cancelled job must stop paying for a model call that is already in flight.
+        ...(options.signal ? { signal: options.signal } : {})
       });
 
       const choice = response.data.choices?.[0]?.message;

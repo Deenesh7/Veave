@@ -1729,10 +1729,10 @@ exports.startJob = async (req, res, next) => {
       image,
       sourceUrl,
       projectId,
-      conversationId,
       parentGenerationId,
       jobId
     } = req.body;
+    let { conversationId } = req.body;
 
     const userId = req.user ? req.user.id : null;
 
@@ -1772,7 +1772,14 @@ exports.startJob = async (req, res, next) => {
     if (targetProjectId) await projectAccess.requireProjectAccess(targetProjectId, req.user, 'editor');
     else if (conversationId) {
       const conversationProject = await projectIdForSession(conversationId);
-      if (conversationProject) await projectAccess.requireProjectAccess(conversationProject, req.user, 'editor');
+      if (conversationProject) {
+        try { await projectAccess.requireProjectAccess(conversationProject, req.user, 'editor'); }
+        catch (accessError) {
+          // A new website or clone started from a stale conversation (its project was deleted or is not reachable) just starts a fresh one.
+          if (accessError.statusCode === 404 && (type === 'clone' || type === 'generate')) conversationId = null;
+          else throw accessError;
+        }
+      }
     }
 
     // Refuse early (before any AI work) when the plan's project or storage limit is already reached.
@@ -1781,6 +1788,12 @@ exports.startJob = async (req, res, next) => {
         const usageService = require('../services/billing/usageService');
         await usageService.assertCanCreate(userId, { newProject: type !== 'modify' && !projectId });
         await usageService.assertCanUseAI(userId, { projectId });
+        // Tell the user BEFORE the AI runs when the estimated cost (plus a buffer) is more than the credits they have.
+        const { creditsForTokens } = require('../services/billing/plans');
+        const estimatedTokens = { generate: Number.parseInt(process.env.CREATION_ESTIMATED_TOKENS, 10) || 100000, modify: Number.parseInt(process.env.MODIFY_ESTIMATED_TOKENS, 10) || 40000, clone: Number.parseInt(process.env.CLONE_ESTIMATED_TOKENS_PER_STEP, 10) || 12000 }[type] || 40000;
+        // Deep generation writes the site section by section: several times the model calls of a one-shot site.
+        const deepFactor = type === 'generate' && req.body.deepGeneration !== false && req.body.deepGeneration !== 'false' && String(process.env.DEEP_GENERATION || 'true').toLowerCase() !== 'false' ? (Number.parseFloat(process.env.DEEP_ESTIMATE_MULTIPLIER) || 2.5) : 1;
+        await usageService.assertCanSpendCredits(userId, creditsForTokens(Math.round(estimatedTokens * deepFactor)), { projectId, estimate: true });
       } catch (limitError) {
         if (limitError.code === 'PLAN_LIMIT_REACHED') {
           return res.status(403).json({ success: false, code: limitError.code, error: limitError.message });
@@ -1847,6 +1860,7 @@ exports.getJobStatus = async (req, res, next) => {
         entityImages: job.analysis?.entityImages ? { missing: job.analysis.entityImages.missing || [], found: [...new Set((job.analysis.entityImages.assets || []).map((asset) => asset.entity))] } : null,
         validation: job.validation,
         visualValidation: job.analysis?.visualValidation || null,
+        deepGeneration: job.deepSummary || null,
         prototypeQueue: job.analysis?.prototype?.queue || null,
         usage: job.usage,
         approval: job.approval,
@@ -1924,11 +1938,11 @@ exports.decidePlan = async (req, res, next) => {
         const priced = require('../services/clone/cloneSelection').priceSelection(plan, selectedPaths === undefined ? plan.pages.map((page) => page.path) : selectedPaths);
         if (priced.error) return res.status(400).json({ success: false, error: priced.error });
         selection = priced.paths;
-        if (req.user?.id && priced.credits) await require('../services/billing/usageService').assertCanSpendCredits(req.user.id, priced.credits);
+        if (req.user?.id && priced.credits) await require('../services/billing/usageService').assertCanSpendCredits(req.user.id, priced.credits, { estimate: true });
       } else if (req.user?.id) {
         // Plans without per-page data (older jobs): fall back to the stored whole-plan estimate.
         const needed = Number(plan?.estimatedCredits) || 0;
-        if (needed) await require('../services/billing/usageService').assertCanSpendCredits(req.user.id, needed);
+        if (needed) await require('../services/billing/usageService').assertCanSpendCredits(req.user.id, needed, { estimate: true });
       }
     }
     const outcome = await jobManager.decidePlan(req.params.jobId, decision, req.user ? req.user.id : null, { selection });
@@ -1948,11 +1962,13 @@ exports.scrapeMorePlanPages = async (req, res, next) => {
     if (paths !== undefined && (!Array.isArray(paths) || paths.length > 50 || paths.some((path) => typeof path !== 'string' || path.length > 2000))) {
       return res.status(400).json({ success: false, error: 'paths must be a list of up to 50 page paths.' });
     }
+    if (!Array.isArray(paths) || !paths.length) return res.status(400).json({ success: false, error: 'Choose the page(s) to scrape.' });
     await assertJobAccess(req.params.jobId, req.user, 'editor');
     const outcome = await jobManager.requestPlanScrape(req.params.jobId, paths || [], req.user ? req.user.id : null);
     if (outcome === 'forbidden') return res.status(403).json({ success: false, error: 'Not allowed' });
     if (outcome === 'not_found') return res.status(404).json({ success: false, error: 'No clone plan is waiting for approval' });
     if (outcome === 'busy') return res.status(409).json({ success: false, error: 'More pages are already being scraped.' });
+    if (outcome === 'lost') return res.status(410).json({ success: false, error: 'The clone session was lost (the server restarted). Start the clone again.' });
     return res.status(202).json({ success: true });
   } catch (err) {
     next(err);

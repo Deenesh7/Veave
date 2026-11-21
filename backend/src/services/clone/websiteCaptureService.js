@@ -1181,13 +1181,14 @@ async function crawlUntilCaptured({ holders, queue, startIndex, limit, capturedC
  * `onlyRoutes` (absolute URLs of the same site) turns the crawl into a targeted scrape: just those routes are captured, no other
  * links are followed. It is how extra pages are added to a plan that is waiting for approval; the caller merges the result.
  */
-async function captureWebsite(sourceUrl, { signal, maxRoutes, onlyRoutes = null } = {}) {
+async function captureWebsite(sourceUrl, { signal, maxRoutes, onlyRoutes = null, session = null } = {}) {
   const entryUrl = await validatePublicUrl(sourceUrl);
   const targeted = Array.isArray(onlyRoutes) && onlyRoutes.length > 0;
   const crawlLimit = targeted ? Math.min(onlyRoutes.length, ROUTE_HARD_CAP) : resolveRouteLimit(maxRoutes);
   const crawlStartedAt = Date.now();
   signal?.throwIfAborted();
-  const browser = await launchChromium({ browserType: chromium });
+  // With a shared session the browser stays open for the next scrape; only this scrape's own context is closed at the end.
+  const browser = session ? await session.get() : await launchChromium({ browserType: chromium });
   const context = await browser.newContext({
     viewport: { width: 1440, height: 900 },
     serviceWorkers: 'block',
@@ -1267,7 +1268,7 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes, onlyRoutes = null 
   };
   let page = attachCaptureListeners(await context.newPage());
 
-  const abort = () => browser.close().catch(() => {});
+  const abort = () => (session ? context.close() : browser.close()).catch(() => {});
   signal?.addEventListener('abort', abort, { once: true });
   try {
     const initialNavigationTimeout = Math.max(30000, Number.parseInt(process.env.CLONE_INITIAL_NAVIGATION_TIMEOUT_MS, 10) || 45000);
@@ -1436,7 +1437,8 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes, onlyRoutes = null 
           cappedByHeight = Boolean(maximumScrollHeight && documentHeight > maximumScrollHeight);
           y = Math.min(y + step, Math.max(0, limit - window.innerHeight));
           window.scrollTo(0, y);
-          await new Promise((resolve) => setTimeout(resolve, 80));
+          // Long enough for lazy images and reveal-on-scroll sections of this stretch of the page to load before moving on.
+          await new Promise((resolve) => setTimeout(resolve, 150));
           iterations += 1;
           const updatedHeight = pageHeight();
           const atBottom = y + window.innerHeight >= Math.min(updatedHeight, maximumScrollHeight || updatedHeight) - 2;
@@ -1463,7 +1465,9 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes, onlyRoutes = null 
           finalHeight: pageHeight(),
           iterations
         };
-      }, { maximumScrollHeight: MAX_PAGE_SCROLL_HEIGHT, maximumDurationMs: Math.min(MAX_PAGE_SCROLL_DURATION_MS, 25000) }).catch(() => ({ reachedBottom: false, timedOut: true, cappedByHeight: false, finalHeight: null, iterations: 0 }));
+      }, { maximumScrollHeight: MAX_PAGE_SCROLL_HEIGHT, maximumDurationMs: MAX_PAGE_SCROLL_DURATION_MS }).catch(() => ({ reachedBottom: false, timedOut: true, cappedByHeight: false, finalHeight: null, iterations: 0 }));
+      // Let what the scroll triggered (images, API calls for the lower sections) finish before the page is read.
+      await workerPage.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
 
       // Reveal content hidden behind "load more" buttons and closed <details>; only re-scroll if anything expanded.
       const urlBeforeExpansion = workerPage.url();
@@ -1638,7 +1642,8 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes, onlyRoutes = null 
     }
     let nextRouteIndex = 1;
     const capturedCount = () => pagesByIndex.filter((item) => item?.captureStatus === 'captured').length;
-    const crawlConcurrency = Math.max(1, Number.parseInt(process.env.CLONE_CRAWL_CONCURRENCY, 10) || 1);
+    // A targeted "scrape more pages" request opens its pages side by side (up to CLONE_SCRAPE_MORE_CONCURRENCY, 3) to finish sooner.
+    const crawlConcurrency = targetedRoutes ? Math.max(1, Math.min(targetedRoutes.length, Number.parseInt(process.env.CLONE_SCRAPE_MORE_CONCURRENCY, 10) || 3)) : Math.max(1, Number.parseInt(process.env.CLONE_CRAWL_CONCURRENCY, 10) || 1);
     const crawlExpired = () => Date.now() - crawlStartedAt > MAX_CRAWL_DURATION_MS;
     // Adaptive expansion: when the queue runs dry before the page budget is used, routes that were deferred (page budget
     // or section cap during discovery) are queued and crawled, so large sections are not silently lost.
@@ -1907,7 +1912,7 @@ async function captureWebsite(sourceUrl, { signal, maxRoutes, onlyRoutes = null 
     return cleaned;
   } finally {
     signal?.removeEventListener('abort', abort);
-    await browser.close().catch(() => {});
+    if (session) { await context.close().catch(() => {}); session.touch(); } else await browser.close().catch(() => {});
   }
 }
 

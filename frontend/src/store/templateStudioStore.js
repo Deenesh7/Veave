@@ -1,6 +1,7 @@
 import { collaborationService } from '../services/collaborationService';
 import { create } from 'zustand';
 import { templateSiteService, apiMessage } from '../services/templateSiteService';
+import { validatePhotoFile, isNetworkFailure, normalizeSections } from '../features/template-studio/panelLogic';
 import { useBillingStore } from './billingStore';
 
 // Template work spends the same credits as every other AI task: the balance shown in the app is re-read whenever it may have changed.
@@ -46,6 +47,10 @@ export const PLACEMENT_OPTIONS = [
 // What a file is, so the same file picked twice (or retried) is recognised before it is sent.
 const fileKey = (file) => `${file.name}:${file.size}:${file.lastModified}`;
 let uploadRun = null;
+let uploadAbort = null; // aborts the upload that is running (when its row is dismissed or the site changes)
+const sectionRequests = new Map(); // `${siteId}:${pageId}` -> the request in flight
+const sectionTickets = new Map();  // the newest request number per page; older answers are ignored
+let sectionTicket = 0;
 let watching = false;
 
 const COLLAPSE_KEY = 'veave_template_studio_sites_collapsed';
@@ -54,6 +59,8 @@ const initialCollapsed = () => {
   // On smaller screens the website gets the room by default.
   return typeof window !== 'undefined' && window.innerWidth < 1500;
 };
+
+let textSaveTimer = null;
 
 export const useTemplateStudioStore = create((set, get) => ({
   // Set when a group's "New project" sent the user here: the site created next is shared with that group ({ groupId, groupName, permission, name }).
@@ -65,6 +72,40 @@ export const useTemplateStudioStore = create((set, get) => ({
   setPagesCollapsed: (value) => set({ pagesCollapsed: value }),
   contentCollapsed: false,
   setContentCollapsed: (value) => set({ contentCollapsed: value }),
+  // A text clicked in the preview: { id, text (as shown now), saved (as last saved in the code), tag, status: 'idle' | 'saving' | 'saved' | 'error', error }.
+  selectedText: null,
+  setSelectedText: (item) => {
+    // Picking another text (or none) never loses an edit that was not saved yet.
+    const pending = get().selectedText;
+    if (pending && pending.text.replace(/\s+/g, ' ').trim() !== pending.saved && (!item || item.id !== pending.id)) get().saveSelectedText();
+    clearTimeout(textSaveTimer);
+    set({ selectedText: item ? { ...item, saved: item.text, status: 'idle', error: null } : null });
+  },
+  // Typing in the Content column: the preview changes at once, and the code is saved shortly after typing stops.
+  editSelectedText: (text) => {
+    const current = get().selectedText;
+    if (!current) return;
+    set({ selectedText: { ...current, text, status: 'idle', error: null } });
+    window.dispatchEvent(new CustomEvent('studio-text-set', { detail: { id: current.id, text } }));
+    clearTimeout(textSaveTimer);
+    textSaveTimer = setTimeout(() => get().saveSelectedText(), 900);
+  },
+  saveSelectedText: async () => {
+    clearTimeout(textSaveTimer);
+    const { selectedText: current, activeSiteId, activePageId } = get();
+    if (!current || !activeSiteId || !activePageId) return;
+    const next = current.text.replace(/\s+/g, ' ').trim();
+    if (!next || next === current.saved) { if (!next) set({ selectedText: { ...current, status: 'error', error: 'The text cannot be empty.' } }); return; }
+    set({ selectedText: { ...current, status: 'saving', error: null } });
+    try {
+      await templateSiteService.editText(activeSiteId, activePageId, { oldText: current.saved, newText: next });
+      const now = get().selectedText;
+      if (now && now.id === current.id) set({ selectedText: { ...now, saved: next, status: now.text.replace(/\s+/g, ' ').trim() === next ? 'saved' : 'idle' } });
+    } catch (error) {
+      const now = get().selectedText;
+      if (now && now.id === current.id) set({ selectedText: { ...now, status: 'error', error: apiMessage(error, 'The text could not be saved.') } });
+    }
+  },
   appSidebarHidden: false,
   setAppSidebarHidden: (value) => set({ appSidebarHidden: value }),
   sites: [],
@@ -83,7 +124,8 @@ export const useTemplateStudioStore = create((set, get) => ({
   revisionPreview: null,   // { number, status: 'loading' | 'ready' | 'error', html, token, route, error } while an older revision is being looked at
   contentWidth: initialContentWidth(),
   setContentWidth: (value) => { const width = Math.min(CONTENT_MAX, Math.max(CONTENT_MIN, Math.round(value))); try { localStorage.setItem(WIDTH_KEY, String(width)); } catch { /* ignore */ } set({ contentWidth: width }); },
-  pageSections: {},        // { [pageId]: ['Hero title', ...] } what each page shows now
+  pageSections: {},        // { [pageId]: [{ id, name, order }] } what each page shows now (null = could not be read)
+  sectionsError: {},       // { [pageId]: message }
   sectionsLoading: false,
   lastRequest: null,       // the last regeneration that was sent, so a failed one can be retried
   versionsOpen: false,
@@ -133,7 +175,8 @@ export const useTemplateStudioStore = create((set, get) => ({
   selectSite: async (siteId, { restore = false } = {}) => {
     if (!siteId) return;
     get().stopPolling();
-    set({ versionsOpen: false, compareState: null, branches: [], versionHistory: { entries: [], versions: [], dirty: false, loaded: false, loading: false, error: null, filter: 'all' }, activeSiteId: siteId, siteLoading: true, siteError: null, job: null, jobPageId: null, revisions: [], revisionPreview: null, images: [], imagesLoaded: false, imagesError: null, uploads: [], editedPageIds: {}, ...loadWork(siteId) });
+    set({ versionsOpen: false, compareState: null, branches: [], versionHistory: { entries: [], versions: [], dirty: false, loaded: false, loading: false, error: null, filter: 'all' }, activeSiteId: siteId, siteLoading: true, siteError: null, job: null, jobPageId: null, revisions: [], revisionPreview: null, images: [], imagesLoaded: false, imagesError: null, uploads: [], pageSections: {}, sectionsError: {}, sectionsLoading: false, editedPageIds: {}, ...loadWork(siteId) });
+    uploadAbort?.abort();
     uploadRun = null;
     try {
       const res = await templateSiteService.getSite(siteId);
@@ -258,7 +301,8 @@ export const useTemplateStudioStore = create((set, get) => ({
 
   selectPage: (pageId) => {
     if (get().activePageId === pageId) return;
-    set({ activePageId: pageId, revisions: [], revisionPreview: null });
+    get().setSelectedText(null);
+    set({ activePageId: pageId, revisions: [], revisionPreview: null, selectedText: null });
     remember(get());
     const siteId = get().activeSiteId;
     if (siteId) get().loadSections(pageId); // also lets the server remember the last page
@@ -318,13 +362,13 @@ export const useTemplateStudioStore = create((set, get) => ({
 
   /* ------------------------------------------------ generation ------------------------------------------------ */
 
-  regenerate: async (instruction, attachments = []) => {
+  regenerate: async (instruction, attachments = [], focusSection = '') => {
     const { activeSiteId: siteId, activePageId: pageId } = get();
     if (!siteId || !pageId) return false;
     get().setBusy('regenerate', true);
     try {
-      const res = await templateSiteService.regeneratePage(siteId, pageId, { instruction, attachments, idempotencyKey: `regen-${pageId}-${Date.now()}` });
-      set((state) => ({ lastRequest: { pageId, instruction, attachments }, job: res.data.job, jobPageId: pageId, pages: state.pages.map((page) => (page.id === pageId ? { ...page, status: 'generating', lastError: null } : page)) }));
+      const res = await templateSiteService.regeneratePage(siteId, pageId, { instruction, attachments, ...(focusSection ? { focusSection } : {}), idempotencyKey: `regen-${pageId}-${Date.now()}` });
+      set((state) => ({ lastRequest: { pageId, instruction, attachments, focusSection }, job: res.data.job, jobPageId: pageId, pages: state.pages.map((page) => (page.id === pageId ? { ...page, status: 'generating', lastError: null } : page)) }));
       get().followJob(res.data.job.id);
       return true;
     } catch (error) { get().flash('error', apiMessage(error, 'The page could not be regenerated.')); return false; }
@@ -452,17 +496,32 @@ export const useTemplateStudioStore = create((set, get) => ({
     } catch { if (get().activePageId === pageId) set({ revisionsLoading: false }); }
   },
 
-  loadSections: async (pageId) => {
+  // Reads the sections of ONE page. Safe to call often: a second call for the same page while one is running shares it, a slow answer
+  // for a page the user already left cannot overwrite a newer one, and a failure is kept (with a retry) instead of being hidden.
+  loadSections: (pageId) => {
     const siteId = get().activeSiteId;
-    if (!siteId || !pageId) return;
-    set({ sectionsLoading: true });
-    try {
-      const res = await templateSiteService.getPage(siteId, pageId);
-      const sections = res.data.page?.sections || [];
-      set((state) => ({ pageSections: { ...state.pageSections, [pageId]: sections }, sectionsLoading: false }));
-    } catch {
-      set((state) => ({ pageSections: { ...state.pageSections, [pageId]: state.pageSections[pageId] || [] }, sectionsLoading: false }));
-    }
+    if (!siteId || !pageId) return Promise.resolve();
+    const key = `${siteId}:${pageId}`;
+    if (sectionRequests.has(key)) return sectionRequests.get(key);
+    const ticket = ++sectionTicket;
+    sectionTickets.set(key, ticket);
+    set((state) => ({ sectionsLoading: true, sectionsError: { ...state.sectionsError, [pageId]: null } }));
+    const request = (async () => {
+      try {
+        const res = await templateSiteService.getPage(siteId, pageId);
+        if (get().activeSiteId !== siteId || sectionTickets.get(key) !== ticket) return;
+        const sections = normalizeSections(res.data.page?.sectionList || res.data.page?.sections || []);
+        set((state) => ({ pageSections: { ...state.pageSections, [pageId]: sections } }));
+      } catch (error) {
+        if (get().activeSiteId !== siteId || sectionTickets.get(key) !== ticket) return;
+        set((state) => ({ sectionsError: { ...state.sectionsError, [pageId]: apiMessage(error, 'The sections could not be read.') }, pageSections: { ...state.pageSections, [pageId]: state.pageSections[pageId] ?? null } }));
+      } finally {
+        sectionRequests.delete(key);
+        if (get().activeSiteId === siteId) set({ sectionsLoading: sectionRequests.size > 0 });
+      }
+    })();
+    sectionRequests.set(key, request);
+    return request;
   },
 
   /** Shows an older revision in the preview (read-only; nothing is saved). */
@@ -671,8 +730,9 @@ export const useTemplateStudioStore = create((set, get) => ({
       const key = fileKey(file);
       if (known.has(key)) { skipped += 1; continue; }      // the same file picked twice
       known.add(key);
-      const problem = !PHOTO_TYPES.includes(file.type) ? 'Use a PNG, JPEG, WebP, GIF or AVIF picture.' : file.size > MAX_PHOTO_BYTES ? 'The picture is larger than 8 MB.' : file.size === 0 ? 'The file is empty.' : null;
-      added.push({ key, id: `${key}:${Date.now()}`, file, name: file.name, size: file.size, preview: problem ? '' : URL.createObjectURL(file), status: problem ? 'error' : 'queued', progress: 0, error: problem, imageId: null, reused: false });
+      const problem = validatePhotoFile(file);
+      // The page is fixed when the file is chosen: a photo uploaded while the user moves to another page still belongs to the first one.
+      added.push({ key, id: `${key}:${Date.now()}`, file, name: file.name, size: file.size, preview: problem ? '' : URL.createObjectURL(file), status: problem ? 'error' : 'queued', progress: 0, error: problem, invalid: Boolean(problem), pageId: get().activePageId, imageId: null, reused: false });
     }
     if (skipped) get().flash('info', skipped === 1 ? 'That picture is already being uploaded.' : `${skipped} pictures were already being uploaded.`);
     if (!added.length) return;
@@ -684,39 +744,47 @@ export const useTemplateStudioStore = create((set, get) => ({
     if (uploadRun) return;
     uploadRun = siteId;
     const patch = (id, change) => set((state) => ({ uploads: state.uploads.map((item) => (item.id === id ? { ...item, ...change } : item)) }));
+    const send = (next) => {
+      uploadAbort = new AbortController();
+      return templateSiteService.uploadPhoto(siteId, next.file, { pageId: next.pageId, signal: uploadAbort.signal, onProgress: (value) => patch(next.id, { progress: value }) });
+    };
     try {
       for (;;) {
-        if (get().activeSiteId !== siteId) return;
+        if (get().activeSiteId !== siteId) break;
         const next = get().uploads.find((item) => item.status === 'queued');
         if (!next) break;
-        patch(next.id, { status: 'uploading', progress: 0 });
+        patch(next.id, { status: 'uploading', progress: 0, error: null });
         try {
-          const res = await templateSiteService.uploadPhoto(siteId, next.file, { pageId: get().activePageId, onProgress: (value) => patch(next.id, { progress: value }) });
-          const photo = res.data.photo;
-          if (photo.reused) {
-            // The same picture is already in the library: nothing new was stored. It is shown under "Photos for this page" so the user can find it.
-            set((state) => ({ images: state.images.some((image) => image.id === photo.id) ? state.images : [photo, ...state.images] }));
-            patch(next.id, { status: 'error', progress: 1, error: 'This image is already uploaded. It is listed below under "Photos for this page" (tap View to open it).', duplicate: true, imageId: photo.id });
-            if (get().activePageId) get().toggleImage(photo.id, true);
-            continue;
+          let res;
+          try { res = await send(next); }
+          catch (error) {
+            if (!isNetworkFailure(error)) throw error;
+            // A dropped connection is retried once on its own before the user is asked to do anything.
+            patch(next.id, { progress: 0 });
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            res = await send(next);
           }
-          patch(next.id, { status: 'done', progress: 1, imageId: photo.id, reused: false });
-          set((state) => ({ images: state.images.some((image) => image.id === photo.id) ? state.images.map((image) => (image.id === photo.id ? photo : image)) : [photo, ...state.images] }));
-          // The new picture is ready to use on the page it was added from.
-          const pageId = get().activePageId;
-          if (pageId) get().toggleImage(photo.id, true);
+          if (get().activeSiteId !== siteId) break;
+          const photo = res.data.photo;
+          set((state) => ({ images: state.images.some((image) => image.id === photo.id) ? state.images.map((image) => (image.id === photo.id ? { ...image, ...photo } : image)) : [photo, ...state.images] }));
+          // A picture that is already in the library is not an error: nothing new was stored, and it is attached to the page it was added from.
+          patch(next.id, { status: 'done', progress: 1, imageId: photo.id, reused: Boolean(photo.reused || res.data.reused) });
+          if (next.pageId) get().toggleImage(photo.id, true, next.pageId);
         } catch (error) {
-          patch(next.id, { status: 'error', error: apiMessage(error, 'The upload failed. Check your connection and try again.') });
+          if (error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError') { patch(next.id, { status: 'error', error: 'The upload was cancelled.', progress: 0 }); continue; }
+          patch(next.id, { status: 'error', progress: 0, error: error?.response?.status === 429 ? 'Too many uploads at once. Wait a moment and try again.' : apiMessage(error, 'The upload failed. Check your connection and try again.'), invalid: error?.response?.status === 400 || error?.response?.status === 413 });
         }
       }
-    } finally { uploadRun = null; }
+    } finally { uploadRun = null; uploadAbort = null; }
+    // Anything still waiting (for example after the site changed) is started again instead of being left "queued" for ever.
+    if (get().activeSiteId === siteId && get().uploads.some((item) => item.status === 'queued')) { get().runUploads(siteId); return; }
     get().loadImages();
     // Descriptions are written a few seconds after the upload; pick them up.
     get().watchCaptions();
   },
 
   retryUpload: (id) => { set((state) => ({ uploads: state.uploads.map((item) => (item.id === id && item.file ? { ...item, status: 'queued', error: null, progress: 0 } : item)) })); const siteId = get().activeSiteId; if (siteId) get().runUploads(siteId); },
-  dismissUpload: (id) => set((state) => { const gone = state.uploads.find((item) => item.id === id); if (gone?.preview) URL.revokeObjectURL(gone.preview); return { uploads: state.uploads.filter((item) => item.id !== id) }; }),
+  dismissUpload: (id) => set((state) => { const gone = state.uploads.find((item) => item.id === id); if (gone?.status === 'uploading') uploadAbort?.abort(); if (gone?.preview) URL.revokeObjectURL(gone.preview); return { uploads: state.uploads.filter((item) => item.id !== id) }; }),
   clearFinishedUploads: () => set((state) => { state.uploads.filter((item) => item.status === 'done').forEach((item) => item.preview && URL.revokeObjectURL(item.preview)); return { uploads: state.uploads.filter((item) => item.status !== 'done') }; }),
 
   // Descriptions and AI enhancements finish a little after the upload; follow them without blocking anything else.
@@ -768,8 +836,8 @@ export const useTemplateStudioStore = create((set, get) => ({
     finally { get().setBusy(`choose:${imageId}`, false); }
   },
 
-  toggleImage: (imageId, on) => {
-    const pageId = get().activePageId;
+  toggleImage: (imageId, on, forPageId = null) => {
+    const pageId = forPageId || get().activePageId;
     if (!pageId) return;
     set((state) => {
       const chosen = { ...(state.selection[pageId] || {}) };
@@ -796,11 +864,12 @@ export const useTemplateStudioStore = create((set, get) => ({
     } catch (error) { get().flash('error', apiMessage(error, 'The picture could not be saved.')); return false; }
   },
 
-  removeImage: async (imageId) => {
+  // The caller has already asked the user (the viewer's confirmation names the pages that show the picture), so the server is told to go ahead.
+  removeImage: async (imageId, { force = true } = {}) => {
     const siteId = get().activeSiteId;
     get().setBusy(`image:${imageId}`, true);
     try {
-      const res = await templateSiteService.deleteImage(siteId, imageId);
+      const res = await templateSiteService.deleteImage(siteId, imageId, { force });
       set((state) => ({ images: state.images.filter((image) => image.id !== imageId), selection: Object.fromEntries(Object.entries(state.selection).map(([pageId, chosen]) => [pageId, Object.fromEntries(Object.entries(chosen).filter(([id]) => id !== imageId))])) }));
       get().flash('success', res.data.stillShownOn?.length || res.data.stillShownElsewhere ? 'Removed from the library. Pages that already show it keep it until you change them.' : 'The picture was removed from the library.');
       return true;
@@ -810,8 +879,8 @@ export const useTemplateStudioStore = create((set, get) => ({
 
   replaceImage: async (imageId, file, onProgress) => {
     const siteId = get().activeSiteId;
-    if (!PHOTO_TYPES.includes(file.type)) { get().flash('error', 'Use a PNG, JPEG, WebP, GIF or AVIF picture.'); return null; }
-    if (file.size > MAX_PHOTO_BYTES) { get().flash('error', 'The picture is larger than 8 MB.'); return null; }
+    const problem = validatePhotoFile(file);
+    if (problem) { get().flash('error', problem); return null; }
     get().setBusy(`image:${imageId}`, true);
     try {
       const res = await templateSiteService.replaceImage(siteId, imageId, file, { onProgress });

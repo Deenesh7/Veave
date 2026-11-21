@@ -79,7 +79,10 @@ function normalizeImageNeeds(rawNeeds, layoutId) {
   const [min, max] = spec.images;
   let needs = (Array.isArray(rawNeeds) ? rawNeeds : []).slice(0, Math.max(max, 0)).map((need) => ({
     role: ['portrait', 'photo', 'logo', 'document'].includes(need?.role) ? need.role : 'photo',
-    query: clean(need?.query, 90), alt: clean(need?.alt, 160), entity: clean(need?.entity, 80), fallbackQuery: clean(need?.fallbackQuery, 90)
+    query: clean(need?.query, 90), alt: clean(need?.alt, 160), entity: clean(need?.entity, 80), fallbackQuery: clean(need?.fallbackQuery, 90),
+    // What the picture must show, how it should look, what it must not show, and a second and third way to search for it.
+    subject: clean(need?.subject, 140), style: clean(need?.style, 100), avoid: (Array.isArray(need?.avoid) ? need.avoid : []).map((term) => clean(term, 30)).filter(Boolean).slice(0, 6),
+    alternates: (Array.isArray(need?.alternates) ? need.alternates : []).map((query) => clean(query, 90)).filter((query) => query.split(' ').length >= 2).slice(0, 2)
   })).filter((need) => need.query || need.entity);
   needs = needs.map((need) => ({ ...need, query: need.query || need.entity }));
   return { needs, short: Math.max(0, min - needs.length) };
@@ -91,7 +94,12 @@ function defaultLayout(index, total, pageKey) {
   return index % 2 ? 'editorial-image-right' : 'editorial-image-left';
 }
 
-function normalizeSection(raw, index, total, pageKey, used) {
+const STRUCTURAL_LAYOUT = /hero|page-intro|cta-band|statistics|gallery|contact-split|faq-list/;
+
+// Deep mode: an informational section is planned at least 'medium' (about 60-150 words); structural sections keep their own length.
+const deepWords = (words, layout, deep) => (deep && !STRUCTURAL_LAYOUT.test(layout) && ['brief', 'short'].includes(words) ? 'medium' : words);
+
+function normalizeSection(raw, index, total, pageKey, used, { deep = false } = {}) {
   const layout = LAYOUTS[raw?.layout] ? raw.layout : defaultLayout(index, total, pageKey);
   let id = slug(raw?.id || raw?.heading || `${layout}-${index + 1}`);
   while (used.has(id)) id = `${id}-${index + 1}`;
@@ -100,17 +108,17 @@ function normalizeSection(raw, index, total, pageKey, used) {
   return {
     id, purpose: clean(raw?.purpose, 200) || `${layout} section`, eyebrow: clean(raw?.eyebrow, 40), heading: clean(raw?.heading, 100),
     summary: clean(raw?.summary, 420), facts: (Array.isArray(raw?.facts) ? raw.facts : []).map((fact) => clean(fact, 220)).filter(Boolean).slice(0, 10), factIds: (Array.isArray(raw?.factIds) ? raw.factIds : []).map(Number).filter(Number.isInteger).slice(0, 12),
-    words: WORD_KEYS.includes(raw?.words) ? raw.words : (LAYOUTS[layout].images[1] ? 'medium' : 'short'),
+    words: deepWords(WORD_KEYS.includes(raw?.words) ? raw.words : (LAYOUTS[layout].images[1] ? 'medium' : 'short'), layout, deep),
     layout, spacing: SPACING_KEYS.includes(raw?.spacing) ? raw.spacing : LAYOUTS[layout].spacing,
     width: LAYOUTS[layout].width, images: needs, imageShortfall: short, order: index + 1
   };
 }
 
-function normalizePlan(raw, { entities = [] } = {}) {
+function normalizePlan(raw, { entities = [], deep = false } = {}) {
   if (!raw || !Array.isArray(raw.pages) || !raw.pages.length) return null;
   const pages = [];
   const pageIds = new Set();
-  for (const item of raw.pages.slice(0, 8)) {
+  for (const item of raw.pages.slice(0, deep ? 14 : 8)) {
     const name = clean(item?.name, 40);
     if (!name) continue;
     const key = slug(name);
@@ -118,13 +126,13 @@ function normalizePlan(raw, { entities = [] } = {}) {
     let id = slug(item.id || name);
     while (pageIds.has(id)) id = `${id}-2`;
     pageIds.add(id);
-    const list = (Array.isArray(item.sections) ? item.sections : []).slice(0, 8);
+    const list = (Array.isArray(item.sections) ? item.sections : []).slice(0, deep ? 14 : 8);
     if (list.length < 1) continue;
     const used = new Set();
-    pages.push(rebalance({ id, name, route: route.startsWith('/') ? route : `/${route}`, purpose: clean(item.purpose, 200), sections: list.map((section, index) => normalizeSection(section, index, list.length, key, used)) }));
+    pages.push(rebalance({ id, name, route: route.startsWith('/') ? route : `/${route}`, purpose: clean(item.purpose, 200), sections: list.map((section, index) => normalizeSection(section, index, list.length, key, used, { deep })) }));
   }
   if (!pages.length) return null;
-  const plan = { industry: clean(raw.industry, 40) || 'general', audience: clean(raw.audience, 100), tone: clean(raw.tone, 80), pages };
+  const plan = { industry: clean(raw.industry, 40) || 'general', audience: clean(raw.audience, 100), tone: clean(raw.tone, 80), visualDirection: clean(raw.visualDirection, 220), pages };
   return ensureEntityCoverage(plan, entities);
 }
 
@@ -173,10 +181,13 @@ function requestedPageNames(prompt = '') {
   return [...new Set(names.map((name) => name.replace(/^and\s+/i, '').replace(/\s+/g, ' ').trim()).filter((name) => name && name.length <= 28))].slice(0, 8);
 }
 
+/** "a small one-page website", "single page", "landing page": the request wants exactly one page. */
+const wantsSinglePage = (prompt = '') => /\b(?:one|single|1)[- ]page\b|\blanding page\b|\bsingle[- ]screen\b/i.test(String(prompt));
+
 function heuristicPlan({ prompt, spec = null, entities = [], cfg = imageConfig() }) {
   const industry = requirementsModule.detectIndustry(prompt, spec);
   const listed = requestedPageNames(prompt);
-  const pages = listed.length >= 2
+  const pages = wantsSinglePage(prompt) ? [{ name: 'Home', route: '/', purpose: '' }] : listed.length >= 2
     ? listed.map((name) => { const title = name.split(' ').map((word, i) => (i > 0 && /^(and|of|the|&)$/i.test(word) ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1))).join(' '); return { name: title, route: /^home$/i.test(name) ? '/' : `/${slug(name)}`, purpose: '' }; })
     : requirementsModule.pagesFor(prompt, spec, industry);
   const subject = entities.find((entity) => entity.type === 'person')?.name || entities[0]?.name || requirementsModule.promptSubject(prompt) || industry.subject;
@@ -252,22 +263,31 @@ function heuristicPlan({ prompt, spec = null, entities = [], cfg = imageConfig()
 
 const LAYOUT_IDS = Object.keys(LAYOUTS).join(' | ');
 const PLAN_SYSTEM = `You are a senior UI/UX designer and information architect. Plan a website BEFORE it is built. Reply with ONLY JSON, no prose:
-{"industry": string, "audience": string, "tone": string, "pages": [{"id": string, "name": string, "route": string, "purpose": string, "sections": [{"id": string, "purpose": string, "eyebrow": string, "heading": string, "summary": string, "factIds": [number], "words": "brief"|"short"|"medium"|"long", "layout": ${LAYOUT_IDS}, "images": [{"role": "portrait"|"photo"|"logo"|"document", "query": string, "alt": string, "entity": string, "fallbackQuery": string}]}]}]}
-RULES: 3 to 7 pages, each with 2 to 7 sections in the order a visitor reads them. Every section has ONE purpose; never two sections that say the same thing. Choose the layout from what the content IS (a person -> profile; dated milestones -> timeline; awards -> achievement-grid; parallel offerings -> three-column-cards; a story with a supporting photograph -> editorial-image-left/right; headline numbers -> statistics) and vary layouts so the page has rhythm; the first section of Home is a hero, the first section of other pages is page-intro or a hero. "summary" says what the section tells the reader, using ONLY facts present in the request: never invent awards, dates, numbers, names or quotations; when the request gives little, plan fewer, shorter sections (words "brief"/"short") instead of padding. "factIds" lists the numbers of the researched facts (when the request includes a numbered list) that belong in that section; use a fact in ONE section only. "words" is how much text the section carries. "images": 0 to the layout's limit; "query" is a concrete 3-7 word stock-photography search for a REAL photograph (setting, subject, style); when a picture must show a NAMED person, institution, product or place from the request, put its exact name in "entity" and give a "fallbackQuery" for a relevant generic photograph that does NOT claim to be that named subject (for example a campus, a historical scene). "alt" is a meaningful sentence. Never use a logo or illustration as a content picture.`;
+{"industry": string, "audience": string, "tone": string, "visualDirection": string, "pages": [{"id": string, "name": string, "route": string, "purpose": string, "sections": [{"id": string, "purpose": string, "eyebrow": string, "heading": string, "summary": string, "factIds": [number], "words": "brief"|"short"|"medium"|"long", "layout": ${LAYOUT_IDS}, "images": [{"role": "portrait"|"photo"|"logo"|"document", "subject": string, "style": string, "avoid": [string], "query": string, "alternates": [string], "alt": string, "entity": string, "fallbackQuery": string}]}]}]}
+RULES: "visualDirection" is one sentence on the photographic direction of the whole site (subject matter, light, palette, mood) so every picture is consistent. 3 to 7 pages, each with 2 to 7 sections in the order a visitor reads them (EXCEPT when the request asks for a one-page or single-page site: then exactly ONE page, route "/", with 4 to 8 sections, one per thing the request lists). Every section has ONE purpose; never two sections that say the same thing. Choose the layout from what the content IS (a person -> profile; dated milestones -> timeline; awards -> achievement-grid; parallel offerings -> three-column-cards; a story with a supporting photograph -> editorial-image-left/right; headline numbers -> statistics) and vary layouts so the page has rhythm; the first section of Home is a hero, the first section of other pages is page-intro or a hero. "summary" says what the section tells the reader, using ONLY facts present in the request: never invent awards, dates, numbers, names or quotations; when the request gives little, plan fewer, shorter sections (words "brief"/"short") instead of padding. "factIds" lists the numbers of the researched facts (when the request includes a numbered list) that belong in that section; use a fact in ONE section only. "words" is how much text the section carries. "images": 0 to the layout's limit; "query" is a concrete 3-7 word stock-photography search for a REAL photograph (setting, subject, style); when a picture must show a NAMED person, institution, product or place from the request, put its exact name in "entity" and give a "fallbackQuery" for a relevant generic photograph that does NOT claim to be that named subject (for example a campus, a historical scene). "subject" says exactly what the photograph must show for THIS section (not the industry in general); "style" is the photographic style (for example "natural daylight architectural photography, wide, calm negative space for text" for a hero); "avoid" lists subjects that would be wrong here (for an architecture studio: "office workers", "handshake"); "query" is built from subject and style, specific to this section and never generic (never just business, professional, modern, creative, team or office); "alternates" are two different ways to search for the same subject. "alt" is a meaningful sentence. Never use a logo or illustration as a content picture.`;
+
+
+// Deep generation: a larger sitemap built from what the request asks for. It replaces the page and section limits and the "fewer sections"
+// advice of the standard plan, and nothing else (layouts, pictures, facts and spacing work exactly as before).
+const PLAN_SYSTEM_DEEP = `${PLAN_SYSTEM
+  .replace(/3 to 7 pages, each with 2 to 7 sections/, '4 to 12 pages, each with 4 to 12 sections')
+  .replace(/when the request gives little, plan fewer, shorter sections \(words "brief"\/"short"\) instead of padding/, 'when the request gives little on a topic, still plan the section but describe it in general, factual terms without inventing specifics')}
+DEEP SITE MODE (overrides the section counts above): build a complete, detailed website, not a landing page. First decide the website category (institution, e-commerce store, SaaS product, portfolio, local business, publication...) and derive the sitemap FROM that category and from every topic the request names: each named topic, person, department, course, product, feature, achievement or service must be visible in a page or section of its own. Never reuse one generic sitemap. Typical depth, adapted to the request: Home 8 to 12 sections, main content pages 6 to 10, supporting pages (contact, legal, FAQ, policies) 4 to 8. Pages that a visitor would expect in this category and that the request implies (for a store: categories, product listing, product detail, cart, company, support; for a SaaS: features, integrations, pricing, security, use cases, documentation, contact; for an institution: about, leadership, academics, research, facilities, achievements, admissions, news, contact) get their own page. Every section has ONE distinct purpose and a "summary" that says what to write, so no two sections or pages repeat each other; use sections such as timelines, leadership profiles, programme lists, facilities, statistics (only from the request), FAQs and related-links bands where they carry real information. Informational sections are "medium" or "long". Do not pad and do not repeat.`;
 
 const factList = (dossier) => (dossier?.subjects || []).flatMap((subject) => subject.facts.map((fact) => ({ ...fact, subject: subject.name }))).map((fact, index) => ({ ...fact, n: index + 1 }));
 
-async function buildCompositionPlan({ prompt, spec = null, ask = null, entities = [], dossier = null, cfg = imageConfig() } = {}) {
+async function buildCompositionPlan({ prompt, spec = null, ask = null, entities = [], dossier = null, cfg = imageConfig(), deep = false, context = '' } = {}) {
   const facts = factList(dossier);
   if (ask) {
     try {
       const entityLine = entities.length ? `\nNamed subjects in the request: ${entities.map((e) => `${e.name} (${e.type}${e.role ? `, ${e.role}` : ''})`).join('; ')}.` : '';
       const pagesLine = spec?.pages?.length ? `\nPlanned pages: ${spec.pages.map((p) => `${p.name} (${p.route}) ${p.purpose || ''}`).join('; ')}.` : '';
       const factLine = facts.length ? `\nResearched facts (numbered; use their numbers in "factIds"):\n${facts.slice(0, 48).map((fact) => `${fact.n}. [${fact.category}${fact.date ? `, ${fact.date}` : ''}] ${fact.text}`).join('\n')}` : '';
-      const raw = await ask(PLAN_SYSTEM, `Website request:\n${String(prompt || '').slice(0, 4000)}${entityLine}${pagesLine}${factLine}`);
+      const raw = await ask(deep ? PLAN_SYSTEM_DEEP : PLAN_SYSTEM, `Website request:\n${String(prompt || '').slice(0, 4000)}${entityLine}${pagesLine}${factLine}${context ? `\n\n${context}` : ''}`);
       const json = (/\{[\s\S]*\}/.exec(String(raw || '')) || [])[0];
-      const plan = normalizePlan(json ? JSON.parse(json) : null, { entities });
-      if (plan && plan.pages.length >= 2) return finishPlan({ ...plan, source: 'model' }, { facts, entities });
+      const plan = normalizePlan(json ? JSON.parse(json) : null, { entities, deep });
+      // A one-page request is a valid one-page plan (it used to be discarded for having fewer than 2 pages, which replaced a good model plan with the generic one).
+      if (plan && (plan.pages.length >= 2 || (wantsSinglePage(prompt) && plan.pages[0].sections.length >= 3))) return finishPlan({ ...plan, source: 'model' }, { facts, entities });
     } catch { /* the deterministic plan is always available */ }
   }
   return finishPlan({ ...heuristicPlan({ prompt, spec, entities, cfg }), source: 'heuristic' }, { facts, entities });
@@ -389,6 +409,8 @@ function assignEntityAssets(plan, assets) {
 const CATEGORY_FOR_LAYOUT = { 'split-hero': 'hero', 'full-width-hero': 'hero', 'page-intro': 'about', 'editorial-image-right': 'about', 'editorial-image-left': 'about', 'alternating-editorial': 'about', 'three-column-cards': 'feature', 'achievement-grid': 'feature', timeline: 'feature', gallery: 'gallery', profile: 'team', testimonial: 'team', 'contact-split': 'about' };
 const ASPECT_FOR_LAYOUT = { 'split-hero': '4/3', 'full-width-hero': '21/9', 'page-intro': '16/9', 'editorial-image-right': '4/3', 'editorial-image-left': '4/3', 'alternating-editorial': '4/3', 'three-column-cards': '4/3', 'achievement-grid': '4/3', timeline: '4/3', gallery: '1/1', profile: '4/5', testimonial: '1/1' };
 
+const COMPONENT_FOR_LAYOUT = { 'split-hero': 'hero image beside the headline', 'full-width-hero': 'full-width hero background behind the headline', 'page-intro': 'page header image', 'editorial-image-right': 'inline editorial image', 'editorial-image-left': 'inline editorial image', 'alternating-editorial': 'inline editorial image', 'three-column-cards': 'card image', 'achievement-grid': 'card image', timeline: 'timeline image', gallery: 'gallery tile', profile: 'portrait in a profile card', testimonial: 'avatar' };
+
 const nameTokens = (name) => String(name || '').toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 2);
 const withoutName = (text, name) => {
   let out = String(text || '');
@@ -414,8 +436,12 @@ function requirementsFromComposition(plan, { entityAssets = [], cfg = imageConfi
         const category = need.role === 'portrait' ? 'team' : (index === 0 ? (CATEGORY_FOR_LAYOUT[section.layout] || 'feature') : (CATEGORY_FOR_LAYOUT[section.layout] === 'hero' ? 'feature' : (CATEGORY_FOR_LAYOUT[section.layout] || 'feature')));
         let alt = generic ? withoutName(need.alt || query, need.entity) : (need.alt || query);
         if (generic && alt.length < 14) alt = `${query[0].toUpperCase()}${query.slice(1)}`;
-        const req = requirementsModule.baseSlot({ name: page.name, route: page.route }, `${section.id}-0${index + 1}`, category, query, { section: section.heading || section.id, altHint: alt, alternates: [] });
-        requirements.push({ ...req, aspect: (ASPECT_FOR_LAYOUT[section.layout] || req.aspect), orientation: need.role === 'portrait' || section.layout === 'profile' ? 'portrait' : (section.layout === 'gallery' ? 'any' : 'landscape'), hero: section.layout === 'split-hero' && index === 0, sectionId: section.id, layout: section.layout, generic, entity: need.entity || '' });
+        const isHero = /^(?:split|full-width)-hero$/.test(section.layout) && index === 0;
+        const req = requirementsModule.baseSlot({ name: page.name, route: page.route }, `${section.id}-0${index + 1}`, category, query, { section: section.heading || section.id, altHint: alt, alternates: generic ? [] : (need.alternates || []) });
+        requirements.push({ ...req, aspect: (ASPECT_FOR_LAYOUT[section.layout] || req.aspect), orientation: need.role === 'portrait' || section.layout === 'profile' ? 'portrait' : (section.layout === 'gallery' ? 'any' : 'landscape'), hero: isHero, sectionId: section.id, layout: section.layout, generic, entity: need.entity || '',
+          // What the evaluation stage judges the picture against.
+          subject: generic ? (need.fallbackQuery || query) : (need.subject || query), style: need.style || (isHero ? 'wide, high resolution, calm area for headline text' : ''), avoid: need.avoid || [], sectionHeading: section.heading || '', sectionSummary: section.summary || section.purpose || '',
+          component: COMPONENT_FOR_LAYOUT[section.layout] || 'section image' });
         need.slot = req.slot;
       });
     });
@@ -424,17 +450,37 @@ function requirementsFromComposition(plan, { entityAssets = [], cfg = imageConfi
   return requirements.slice(0, cfg.maxAssets);
 }
 
-/** Keeps the picture floor: when the plan alone would leave fewer pictures than the site needs, relevant extras are added for the pages that have none. */
+/** Layouts that never carry a photograph, so a missing picture is never "made up" for them. */
+const TEXT_ONLY_LAYOUTS = /cta-band|contact-split|faq-list|statistics|page-intro/;
+
+/**
+ * Keeps the picture floor without padding: when the plan asks for fewer pictures than the site needs, the extra pictures are
+ * grounded in real sections that have none (the section's own heading and summary decide what is searched), never in a generic
+ * list of industry photographs. A section that cannot hold a picture gets none, and the site simply has fewer pictures.
+ */
 function topUpRequirements(requirements, { prompt, spec = null, plan = null, cfg = imageConfig() } = {}) {
   const need = cfg.minSite + 2 - requirements.length;
-  if (need <= 0) return requirements;
+  if (need <= 0 || !plan?.pages?.length) return requirements;
   const have = new Set(requirements.map((item) => item.query));
-  const pool = requirementsModule.heuristicRequirements({ prompt, spec, cfg }).requirements.filter((item) => !have.has(item.query));
-  const pages = plan?.pages?.length ? plan.pages : [];
-  const extras = pool.slice(0, need).map((item, index) => {
-    const page = pages.length ? pages[(index + 1) % pages.length] : null;
-    return { ...item, slot: `${page ? slug(page.name) : slug(item.page)}-extra-0${index + 1}`, page: page ? page.name : item.page, route: page ? page.route : item.route, sectionId: null, section: 'Gallery', category: 'gallery', orientation: 'landscape' };
-  });
+  const industry = plan.industry && plan.industry !== 'general' ? plan.industry : (requirementsModule.promptSubject(prompt) || '');
+  const taken = new Set(requirements.map((item) => item.slot));
+  const extras = [];
+  for (const page of plan.pages) {
+    for (const section of page.sections) {
+      if (extras.length >= need) break;
+      if (section.images.length || TEXT_ONLY_LAYOUTS.test(section.layout) || !LAYOUTS[section.layout]?.images?.[1]) continue;
+      const topic = clean(`${section.heading} ${section.summary}`.replace(/[^\p{L}\p{N} ]+/gu, ' '), 70).split(' ').filter((word) => word.length > 3).slice(0, 5).join(' ');
+      const query = clean(`${industry} ${topic}`, 90);
+      if (query.split(' ').length < 3 || have.has(query)) continue;
+      const slotId = `${section.id}-01`;
+      const req = requirementsModule.baseSlot({ name: page.name, route: page.route }, slotId, CATEGORY_FOR_LAYOUT[section.layout] || 'feature', query, { section: section.heading || section.id, altHint: query, alternates: [] });
+      if (taken.has(req.slot)) continue;
+      taken.add(req.slot);
+      have.add(query);
+      extras.push({ ...req, aspect: ASPECT_FOR_LAYOUT[section.layout] || req.aspect, orientation: section.layout === 'gallery' ? 'any' : 'landscape', hero: false, sectionId: section.id, layout: section.layout, generic: false, entity: '',
+        subject: `${industry} ${section.heading}`.trim(), style: '', avoid: [], sectionHeading: section.heading || '', sectionSummary: section.summary || section.purpose || '', component: COMPONENT_FOR_LAYOUT[section.layout] || 'section image', derived: true });
+    }
+  }
   return [...requirements, ...extras].slice(0, cfg.maxAssets + 2);
 }
 
@@ -447,6 +493,7 @@ function buildPromptBlock(plan, { assets = [], entityAssets = [] } = {}) {
   const named = (entity) => [...entityAssets, ...assets.filter((asset) => asset.entity)].filter((asset) => String(asset.entity).toLowerCase() === String(entity).toLowerCase());
   const lines = ['PAGE COMPOSITION PLAN (decided before coding; build exactly this, and never print or mention the plan in the site). This plan OVERRIDES every section-count or word-count target elsewhere in this prompt: build these sections, write only what the facts of the request support, and never add filler, invented facts or repeated text to reach a length. The "brief" of a section is an instruction to YOU: never copy its wording into the page; write real, specific copy.'];
   if (plan.design) lines.push(`\nDESIGN DIRECTION (${plan.design.name}): headings: ${plan.design.headings}. Shapes: ${plan.design.shape}. Colour: ${plan.design.palette}. Rhythm: ${plan.design.rhythm}. Pictures: ${plan.design.imagery}. Do NOT use gradients, glassmorphism, blurred glass cards, neon glows, heavy drop shadows, pill-shaped everything or decorative blobs unless this direction asks for them; design decisions follow the subject, not a template.`);
+  if (plan.pages.length === 1) lines.push(`\nONE-PAGE SITE: the request asked for a single page. Build exactly ONE page at "${plan.pages[0].route}" with the sections below, in order, as sections of that page (the navigation links scroll to them with anchors). Do NOT create other pages, routes or page files (no separate About, Menu, Hours, Services or Contact pages), and do not split a section into its own route. This OVERRIDES every earlier instruction to create a multi-page site, a page per topic, separate page files or a page count.`);
   const used = new Set();
   for (const page of plan.pages) {
     lines.push(`\n${page.name} (${page.route})${page.purpose ? ` - ${page.purpose}` : ''}`);
@@ -487,4 +534,4 @@ RULES:
   return lines.join('\n');
 }
 
-module.exports = { assignEntityAssets, distributeFacts, designDirectionFor, factList, topUpRequirements, requestedPageNames, buildCompositionPlan, heuristicPlan, normalizePlan, estimateDensity, rebalance, requirementsFromComposition, buildPromptBlock, pageKind, ensureEntityCoverage, PLAN_SYSTEM };
+module.exports = { wantsSinglePage, assignEntityAssets, distributeFacts, designDirectionFor, factList, topUpRequirements, requestedPageNames, buildCompositionPlan, PLAN_SYSTEM_DEEP, heuristicPlan, normalizePlan, estimateDensity, rebalance, requirementsFromComposition, buildPromptBlock, pageKind, ensureEntityCoverage, PLAN_SYSTEM };

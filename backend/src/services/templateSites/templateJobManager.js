@@ -131,7 +131,7 @@ class TemplateJobManager {
 
   /* ------------------------------------------------ starting ------------------------------------------------ */
 
-  async startRegenerate({ user, siteId, pageId, instruction, attachments = [], idempotencyKey = null, rewrite = false }) {
+  async startRegenerate({ user, siteId, pageId, instruction, attachments = [], focusSection = '', idempotencyKey = null, rewrite = false }) {
     const text = String(instruction ?? '').trim();
     if (!text) throw new ValidationError('Describe the change you want for this page.');
     if (text.length > 4000) throw new ValidationError('The instruction must be 4000 characters or fewer.');
@@ -143,7 +143,7 @@ class TemplateJobManager {
       if (existing) return existing;
     }
     const photos = await require('./templateUploadService').resolveAttachments(site, attachments);
-    await this.assertCanUseAI(userId, site.projectId);
+    await this.assertCanUseAI(userId, site.projectId, { pages: 1 });
     // A page and a whole-website run must never write at the same time.
     if (await TemplateGenerationJob.exists({ siteId: site._id, type: 'site-customize', status: { $in: ACTIVE } })) throw new ConflictError('The whole website is being generated. Wait for it to finish or cancel it first.');
     // The state the job starts from is saved first (nothing new is made when it already is a saved version).
@@ -152,7 +152,7 @@ class TemplateJobManager {
     try {
       job = await TemplateGenerationJob.create({
         jobId: `tjob_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`, siteId: site._id, pageId: page._id, userId,
-        type: 'page-regenerate', operation: 'regenerate-page', baseVersionId: base._id, snapshotVersionId: base._id, rewrite: Boolean(rewrite), instruction: text, attachments: photos.map((photo) => photo.path), attachmentPlacements: photos.map(({ path, placement, note }) => ({ path, placement, note })), status: 'queued', progress: PROGRESS.queued, stepName: 'Queued', idempotencyKey: key, activeKey: `page:${page._id}`
+        type: 'page-regenerate', operation: 'regenerate-page', baseVersionId: base._id, snapshotVersionId: base._id, rewrite: Boolean(rewrite), instruction: text, focusSection: String(focusSection || '').replace(/\s+/g, ' ').trim().slice(0, 120), attachments: photos.map((photo) => photo.path), attachmentPlacements: photos.map(({ path, placement, note }) => ({ path, placement, note })), status: 'queued', progress: PROGRESS.queued, stepName: 'Queued', idempotencyKey: key, activeKey: `page:${page._id}`
       });
     } catch (error) {
       if (error?.code === 11000) {
@@ -185,9 +185,9 @@ class TemplateJobManager {
       if (existing) return existing;
     }
     if (await TemplateGenerationJob.exists({ siteId: site._id, status: { $in: ACTIVE } })) throw new ConflictError('A generation is already running for this site.');
-    await this.assertCanUseAI(userId, site.projectId);
     const pages = await TemplatePage.find({ siteId: site._id }).sort({ order: 1 });
     if (!pages.length) throw new ValidationError('This website has no pages to generate.');
+    await this.assertCanUseAI(userId, site.projectId, { pages: pages.length });
     // Photos added while creating the site must really belong to it (the same check the page instructions use).
     const sitePhotos = (await require('./templateUploadService').resolveAttachments(site, photos)).map((photo) => ({ path: photo.path, placement: photo.placement, note: photo.note }));
     if (text !== site.brief) await TemplateSite.updateOne({ _id: site._id }, { $set: { brief: text } });
@@ -216,9 +216,16 @@ class TemplateJobManager {
     return this.startRegenerate({ user, siteId, pageId, instruction, attachments: await this.pageAttachmentInputs(site, page), idempotencyKey, rewrite: true });
   }
 
-  async assertCanUseAI(userId, projectId = null) {
+  async assertCanUseAI(userId, projectId = null, { pages = 0 } = {}) {
     if (this.deps.skipCreditCheck) return;
-    await require('../billing/usageService').assertCanUseAI(userId, { projectId });
+    const usage = require('../billing/usageService');
+    await usage.assertCanUseAI(userId, { projectId });
+    // Tell the user BEFORE the prompt runs when its estimated cost is more than the credits they have.
+    // TEMPLATE_PREFLIGHT_ESTIMATE=off turns the up-front estimate off (the run then simply stops when the credits run out).
+    if (pages > 0 && String(process.env.TEMPLATE_PREFLIGHT_ESTIMATE || '').toLowerCase() !== 'off') {
+      const perPage = require('../billing/plans').creditsForTokens(Number.parseInt(process.env.TEMPLATE_ESTIMATED_TOKENS_PER_PAGE, 10) || 20000);
+      await usage.assertCanSpendCredits(userId, pages * perPage, { projectId, estimate: true });
+    }
   }
 
   schedule(jobId) {
@@ -427,7 +434,7 @@ class TemplateJobManager {
     }
     await this.progress(job.jobId, 'processing', 'Writing the page');
     const photos = await require('./templateUploadService').resolveAttachments(site, job.attachmentPlacements?.length ? job.attachmentPlacements : job.attachments);
-    const result = await generator.regeneratePage({ template, page, pages, files, instruction: job.instruction, attachments: photos, deps: this.deps, signal, onState: this.onState(job), siteContext: siteContextFor(site, pages, [], { mode: (job.rewrite || adapted) ? 'website' : 'edit' }) });
+    const result = await generator.regeneratePage({ template, page, pages, files, instruction: job.focusSection ? `${job.instruction}\n\n(The owner ticked only the section(s) "${job.focusSection}" of this page. Change ONLY those sections. Every other section must stay exactly as it is, character for character; do not touch, restyle, reword, reorder or remove them.)` : job.instruction, attachments: photos, deps: this.deps, signal, onState: this.onState(job), siteContext: siteContextFor(site, pages, [], { mode: (job.rewrite || adapted) ? 'website' : 'edit' }) });
     signal.throwIfAborted();
     await this.progress(job.jobId, 'validating', 'Checks passed');
     // From here the result is stored on the job before anything else is written: whatever happens next, saving can be finished.

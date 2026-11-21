@@ -51,13 +51,19 @@ const escapeAttr = (text) => String(text || '').replace(/&/g, '&amp;').replace(/
 
 /* ---------------------------------------------------------------- JSX builders ---------------------------------------------------------------- */
 
+/** The frame the picture was chosen for (its planned aspect), with the focal point the evaluation found so the crop keeps the subject. */
+const frameOf = (asset) => {
+  const ratio = /^\d+(?:\.\d+)?\/\d+(?:\.\d+)?$/.test(String(asset.aspect || '')) ? asset.aspect : '4/3';
+  return { aspect: `aspect-[${ratio}]`, style: asset.objectPosition && /^\d{1,3}% \d{1,3}%$/.test(asset.objectPosition) ? ` style={{ objectPosition: '${asset.objectPosition}' }}` : '' };
+};
+
 const figure = (asset, pad, eager = false) => [
   `${pad}<figure className="overflow-hidden rounded-2xl border border-line bg-surface">`,
   `${pad}  <img`,
   `${pad}    src="${asset.publicPath}"`,
   `${pad}    alt="${escapeAttr(asset.alt || asset.section || 'Photograph')}"`,
   asset.width && asset.height ? `${pad}    width={${asset.width}}\n${pad}    height={${asset.height}}` : null,
-  `${pad}    className="w-full aspect-[4/3] object-cover"`,
+  `${pad}    className="w-full ${frameOf(asset).aspect} object-cover"${frameOf(asset).style}`,
   eager ? `${pad}    fetchPriority="high"` : `${pad}    loading="lazy"\n${pad}    decoding="async"`,
   `${pad}  />`,
   `${pad}</figure>`
@@ -198,23 +204,33 @@ function placeInSource(file, assets) {
 
 /** Strategy 3: the pictures live in their own component, imported into the page. */
 function placeAsComponent(files, page, assets) {
-  const name = 'PageGallery';
   const dir = path.posix.dirname(page.path);
-  const componentPath = 'src/components/PageGallery.jsx';
+  // A component name and file that are not taken yet (an earlier recovery attempt may already have created PageGallery).
+  let name = 'PageGallery';
+  for (let n = 2; files.some((file) => file.path === `src/components/${name}.jsx`) && n < 50; n += 1) name = `PageGallery${n}`;
+  const componentPath = `src/components/${name}.jsx`;
   if (files.some((file) => file.path === componentPath)) return null;
-  let relative = path.posix.relative(dir, 'src/components/PageGallery');
+  let relative = path.posix.relative(dir, `src/components/${name}`);
   if (!relative.startsWith('.')) relative = `./${relative}`;
   const src = page.content;
-  const closing = ['</main>', '</>', '</div>'].map((tag) => ({ tag, at: src.lastIndexOf(tag) })).find((item) => item.at > 0);
-  if (!closing) return null;
+  // Where the tag goes: the usual closing tags first, then any closing tag from the end of the file backwards; each is verified by parsing.
+  const spots = [];
+  for (const tag of ['</main>', '</>', '</Fragment>', '</React.Fragment>', '</div>']) { const at = src.lastIndexOf(tag); if (at > 0) spots.push(at); }
+  const anyClose = [...src.matchAll(/<\/[A-Za-z][\w.]*>/g)].map((m) => m.index).reverse().slice(0, 12);
+  spots.push(...anyClose.filter((at) => !spots.includes(at)));
   const imports = [...src.matchAll(/^import[\s\S]*?from\s+['"][^'"]+['"];?[ \t]*$/gm)];
   const lastImport = imports[imports.length - 1];
-  let content = `${src.slice(0, closing.at)}<${name} />\n${src.slice(closing.at)}`;
   const importLine = `import ${name} from '${relative}';`;
-  content = lastImport ? `${content.slice(0, lastImport.index + lastImport[0].length)}\n${importLine}${content.slice(lastImport.index + lastImport[0].length)}` : `${importLine}\n${content}`;
   const component = `export default function ${name}() {\n  return (\n${gallerySection(assets, '    ')}\n  );\n}\n`;
-  const next = [{ ...page, content }, { path: componentPath, content: component, language: 'javascript', encoding: 'utf8' }];
-  return assets.every((asset) => component.includes(asset.publicPath)) && next.every(parses) ? next : null;
+  const componentFile = { path: componentPath, content: component, language: 'javascript', encoding: 'utf8' };
+  if (!assets.every((asset) => component.includes(asset.publicPath)) || !parses(componentFile)) return null;
+  for (const at of spots) {
+    let content = `${src.slice(0, at)}<${name} />\n${src.slice(at)}`;
+    content = lastImport ? `${content.slice(0, lastImport.index + lastImport[0].length)}\n${importLine}${content.slice(lastImport.index + lastImport[0].length)}` : `${importLine}\n${content}`;
+    const next = [{ ...page, content }, componentFile];
+    if (parses(next[0])) return next;
+  }
+  return null;
 }
 
 /**
@@ -223,12 +239,20 @@ function placeAsComponent(files, page, assets) {
  * @param pageFor async-free (route) => source file path | null
  * @returns {{ files, placements: [{ id, route, file, strategy }], failed: [{ id, route, reason }] }}
  */
-function placeAssets(files, assets, { pageFor, homeRoute = '/' } = {}) {
+/**
+ * A picture planned for a particular section (a hero, a card, a profile) is only meaningful there. Dropping it into whichever gallery
+ * grid the page happens to have would put a photograph next to text it does not belong with, so such pictures are not placed generically:
+ * the generator (or the repair step that is shown where each one belongs) places them in their own section.
+ */
+const isSectionBound = (asset) => Boolean(asset.hero || (asset.sectionId && asset.category !== 'gallery'));
+
+function placeAssets(files, assets, { pageFor, homeRoute = '/', force = false } = {}) {
   let next = files;
   const placements = [];
   const failed = [];
   const byRoute = new Map();
   for (const asset of assets) {
+    if (!force && isSectionBound(asset) && !(asset.entity && (asset.pictureKind === 'portrait' || asset.category === 'team'))) { failed.push({ id: asset.id, route: asset.route, reason: `planned for the "${asset.section}" section, so it is not placed in an unrelated gallery` }); continue; }
     const route = pageFor(asset.route) ? asset.route : homeRoute; // a picture whose page no longer exists goes to the home page
     byRoute.set(route, [...(byRoute.get(route) || []), asset]);
   }
@@ -253,4 +277,4 @@ function placeAssets(files, assets, { pageFor, homeRoute = '/' } = {}) {
   return { files: next, placements, failed };
 }
 
-module.exports = { placeAssets, placeInSource, placeAsComponent, findGallery, findSectionInsertion, matchingClose, scanTag, gallerySection, figure };
+module.exports = { isSectionBound, placeAssets, placeInSource, placeAsComponent, findGallery, findSectionInsertion, matchingClose, scanTag, gallerySection, figure };

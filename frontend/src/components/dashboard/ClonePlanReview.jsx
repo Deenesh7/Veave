@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { Globe, Layers, HardDrive, Coins, Check, ChevronDown, PlusCircle, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
+import { Globe, Layers, HardDrive, Coins, Check, ChevronDown, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 import { useGenerationJobStore } from '../../store/generationJobStore';
 import { toast } from '../../store/toastStore';
 
@@ -39,7 +39,7 @@ function Check32({ checked, disabled, onChange, label, className = '' }) {
   );
 }
 
-function PageRow({ title, path, meta, pill, checked, disabled, onToggle, checkLabel, dimmed = false }) {
+function PageRow({ title, path, meta, pill, checked, disabled, onToggle, checkLabel, dimmed = false, action = null }) {
   return (
     <li className={`flex min-h-[96px] items-center gap-4 rounded-[18px] border border-[#E4E4E7] bg-white p-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.04)] sm:min-h-[76px] sm:gap-4 sm:p-4 ${dimmed ? 'opacity-90' : ''}`}>
       <Check32 checked={checked} disabled={disabled} onChange={onToggle} label={checkLabel} />
@@ -51,6 +51,7 @@ function PageRow({ title, path, meta, pill, checked, disabled, onToggle, checkLa
         <p className="mt-1 text-[11px] leading-snug text-[#71717A] sm:mt-0.5 sm:text-xs">{meta}</p>
       </div>
       {pill ? <span className="shrink-0 whitespace-nowrap rounded-full border border-[#E4E4E7] bg-white px-3 py-1 text-[11px] font-medium text-[#171717] sm:px-3 sm:py-0.5 sm:text-xs">{pill}</span> : null}
+      {action}
     </li>
   );
 }
@@ -64,11 +65,11 @@ export default function ClonePlanReview({ approval }) {
   const scraping = Boolean(approval.request);
 
   const [deselected, setDeselected] = useState(() => new Set());
-  const [toScrape, setToScrape] = useState(() => new Set());
   const [showExcluded, setShowExcluded] = useState(false);
   const [excludedLimit, setExcludedLimit] = useState(EXCLUDED_PAGE_SIZE);
   const [deciding, setDeciding] = useState(null);
   const [requesting, setRequesting] = useState(false);
+  const [scrapingPath, setScrapingPath] = useState(null);
   const [minimized, setMinimized] = useState(false);
   const lastResult = useRef(approval.lastRequest?.id || null);
 
@@ -78,9 +79,9 @@ export default function ClonePlanReview({ approval }) {
   // server's `request` flag alone would leave the button stuck whenever a request finishes between two polls.
   const requestedFrom = useRef(null);
   useEffect(() => {
-    if (requesting && (approval.lastRequest?.id || null) !== requestedFrom.current) setRequesting(false);
+    if (requesting && (approval.lastRequest?.id || null) !== requestedFrom.current) { setRequesting(false); setScrapingPath(null); }
   }, [approval.lastRequest, requesting]);
-  useEffect(() => { if (planError) setRequesting(false); }, [planError]);
+  useEffect(() => { if (planError) { setRequesting(false); setScrapingPath(null); } }, [planError]);
 
   // Report the outcome of a "scrape more pages" request once, and refresh which excluded pages are still queued.
   useEffect(() => {
@@ -89,7 +90,6 @@ export default function ClonePlanReview({ approval }) {
     lastResult.current = result.id;
     if (result.status === 'done') toast.success(result.message || 'More pages were added.');
     else toast.error(result.message || 'The pages could not be scraped.');
-    setToScrape(new Set());
   }, [approval.lastRequest]);
 
   const pages = plan.pages || [];
@@ -111,7 +111,6 @@ export default function ClonePlanReview({ approval }) {
 
   const busy = Boolean(deciding) || scraping || requesting;
   const togglePage = (path) => setDeselected((current) => { const next = new Set(current); if (next.has(path)) next.delete(path); else next.add(path); return next; });
-  const toggleScrape = (path) => setToScrape((current) => { const next = new Set(current); if (next.has(path)) next.delete(path); else next.add(path); return next; });
 
   const start = () => {
     if (busy || !selectedPages.length) return;
@@ -123,12 +122,14 @@ export default function ClonePlanReview({ approval }) {
     setDeciding('cancel');
     decidePlan('cancel');
   };
-  const scrapeMore = () => {
-    if (busy || !plan.canScrapeMore) return;
+  // Scrapes ONLY the given pages. The new pages join the plan above (selected), so Start Cloning builds them.
+  const scrapePages = (paths) => {
+    if (busy || !plan.canScrapeMore || !paths.length) return;
     requestedFrom.current = approval.lastRequest?.id || null;
     setRequesting(true);
-    scrapeMorePages([...toScrape]);
+    scrapeMorePages(paths);
   };
+  const scrapeOne = (path) => { setScrapingPath(path); scrapePages([path]); };
 
   if (minimized) {
     return createPortal(
@@ -227,10 +228,10 @@ export default function ClonePlanReview({ approval }) {
                         title={item.title}
                         path={item.path}
                         meta={reasonLabel(item.reason)}
-                        pill={item.scrapeable ? (toScrape.has(item.path) ? 'Queued' : 'Not scraped') : 'Blocked'}
-                        checked={toScrape.has(item.path)}
+                        pill={item.scrapeable ? (scrapingPath === item.path ? 'Scraping...' : 'Not scraped') : 'Blocked'}
+                        checked={scrapingPath === item.path}
                         disabled={busy || !item.scrapeable || !plan.canScrapeMore}
-                        onToggle={() => toggleScrape(item.path)}
+                        onToggle={() => scrapeOne(item.path)}
                         checkLabel={`Scrape ${item.title}`}
                         dimmed
                       />
@@ -253,9 +254,9 @@ export default function ClonePlanReview({ approval }) {
             <button type="button" onClick={cancel} disabled={Boolean(deciding)} className="h-10 justify-self-start rounded-[20px] px-6 text-sm font-medium text-[#71717A] transition-colors hover:bg-[#FAFAFA] hover:text-[#171717] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#171717] disabled:opacity-50 sm:h-[44px] sm:text-[13px]">
               {deciding === 'cancel' ? 'Cancelling...' : 'Cancel'}
             </button>
-            <button type="button" onClick={scrapeMore} disabled={busy || !plan.canScrapeMore} title={plan.canScrapeMore ? '' : 'There are no more pages to scrape'} className="inline-flex h-10 items-center justify-center gap-2 rounded-[20px] border border-[#E4E4E7] bg-white px-6 text-sm font-semibold text-[#171717] transition-colors hover:bg-[#FAFAFA] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#171717] disabled:cursor-not-allowed disabled:opacity-50 sm:h-[44px] sm:text-[13px]">
-              {scraping || requesting ? <><Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />Scraping pages...</> : <><PlusCircle className="h-3.5 w-3.5" aria-hidden="true" />Scrape more pages{toScrape.size ? ` (${toScrape.size})` : ''}</>}
-            </button>
+            <p className="justify-self-center text-center text-xs text-[#71717A]" role="status" aria-live="polite">
+              {scraping || requesting ? <span className="inline-flex items-center gap-2"><Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />Scraping the page...</span> : 'Tick an excluded page to scrape it'}
+            </p>
             <button type="button" onClick={start} disabled={busy || !selectedPages.length} aria-busy={deciding === 'approve'} className="inline-flex h-11 items-center justify-center gap-2.5 justify-self-end rounded-[20px] bg-[#171717] px-7 text-sm font-semibold text-white transition-colors hover:bg-[#2b2b2b] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#171717] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 sm:h-[44px] sm:text-[13px]">
               {deciding === 'approve' ? <><Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />Starting...</> : <>Start Cloning ({plural(credits, 'Credit')})<ArrowRight className="h-3.5 w-3.5" aria-hidden="true" /></>}
             </button>

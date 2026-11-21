@@ -1,11 +1,10 @@
-const mongoose = require('mongoose');
 const GenerationJob = require('../../models/GenerationJob');
 const Project = require('../../models/Project');
-const ProjectFile = require('../../models/ProjectFile');
-const ProjectVersion = require('../../models/ProjectVersion');
+require('../../models/ProjectFile'); // registers the model
+require('../../models/ProjectVersion'); // registers the model
 const Conversation = require('../../models/Conversation');
-const User = require('../../models/User');
-const AIUsage = require('../../models/AIUsage');
+require('../../models/User'); // registers the model
+require('../../models/AIUsage'); // registers the model
 const openrouterService = require('./openrouterService');
 const dynamicGenerator = require('./dynamicGeneratorService');
 const promptEngineService = require('./promptEngineService');
@@ -17,7 +16,6 @@ const incrementalValidation = require('./incrementalValidation');
 const routingValidation = require('./routingValidation');
 const incrementalEditor = require('./incrementalEditor');
 const structuralContext = require('./structuralContext');
-const layoutEngine = require('./layoutEngine');
 const repairPrompt = require('./repairPrompt');
 const lspManager = require('../lsp/lspManager');
 const lspTargeting = require('../lsp/lspTargeting');
@@ -27,95 +25,77 @@ const sourceIdentity = require('../clone/sourceIdentity');
 const capturedHtmlView = require('../clone/capturedHtmlView');
 const cloneVisualRepair = require('../clone/cloneVisualRepair');
 const codeSearch = require('../search/projectIndex');
-const embedder = require('../search/embedder');
 const aiProtocol = require('./aiProtocol');
 const generationPipeline = require('./generationPipeline');
-const { validateAndRepair, sourceHash } = require('./validationGate');
+const { sourceHash } = require('./validationGate');
 const fallbackSite = require('./fallbackSite');
 const templateService = require('../templates/templateService');
-const { checkCompleteness, imagesExempt } = require('./siteCompleteness');
+const { imagesExempt } = require('./siteCompleteness');
 const duplicateGuard = require('../clone/duplicateGuard');
 const cloneRouteGuarantee = require('./cloneRouteGuarantee');
 const { mergeText } = require('./threeWayMerge');
 const { measureCloneFidelity, inspectRenderedPage } = require('../clone/cloneFidelity');
-const clonePromptBudget = require('../clone/clonePromptBudget');
-const { executeProject, isDockerAvailable, decodeVisualReference } = require('./executionRunner');
+const { decodeVisualReference } = require('./executionRunner');
 const { autoFix } = require('./autoFix');
-const { repairStrayIdentifiers } = require('./strayIdentifiers');
 const prototypeService = require('../clone/prototypeService');
 const prototypeEngine = require('../prototype');
 const prototypeJobAdapter = require('../prototype/jobAdapter');
-const { findHiddenContent, verifyPreviewRuntime, verifyPreviewVisual, verifyRenderedTarget, verifyPageIsolation, detectBlankSpaceBatch, inspectRenderedPreview } = require('./targetRenderVerifier');
+const { findHiddenContent, verifyPreviewRuntime, verifyPreviewVisual, detectBlankSpaceBatch, inspectRenderedPreview } = require('./targetRenderVerifier');
 const fidelityAudit = require('../clone/fidelityAudit');
 const assetManifestLib = require('../clone/assetManifest');
 const remoteImageLocalizer = require('./remoteImageLocalizer');
 const imageSearch = require('./imageSearch');
-const entityImages = require('./entityImages');
 const imageDiscovery = require('./images/imageDiscoveryService');
-const imageValidation = require('./images/imageValidation');
-const imageRecovery = require('./images/imageRecovery');
-const webResearch = require('./research/webResearch');
 const { imageConfig } = require('./images/imageConfig');
-const compositionPlanner = require('./composition/compositionPlanner');
-const visualReview = require('./composition/visualReview');
-const { REVIEW } = require('./composition/layoutCatalog');
-const REVIEW_BLOCKING_KINDS = new Set(REVIEW.blocking);
-const pageDistinctness = require('./pageDistinctness');
 const { repairBlankSpace } = require('./blankSpaceRepair');
-const { runBlankSpaceEngine, makeLlmChooser } = require('../layout/blankSpaceEngine');
-const { runElementStyleEngine } = require('../layout/elementStyleEngine');
-const { interpretStyleRequest } = require('../layout/styleIntent');
 const { resolveEditRoute } = require('../layout/editRoute');
-const { runDuplicateRegionEngine, parseDuplicateRequest } = require('../layout/duplicateRegionEngine');
 const { isBlankRoute, applyFallbackPage, capturedTextLength } = require('./blankPageFallback');
-const { publishPreview } = require('../project/validatedPreview');
 const { scaffoldReactProject, createTemplateCandidate } = require('../project/reactScaffolder');
 const { captureWebsite, snapshotLivePage, resolveRouteLimit, validatePublicUrl, normalizeRoute, dedupePlacements, buildSiteMap } = require('../clone/websiteCaptureService');
 const cloneSelection = require('../clone/cloneSelection');
 const { materializeLocalizedAssets, replaceAssetReferences, localizeGeneratedRemoteImages, removeRemoteStylesheetImports, repairMissingLocalImageReferences, unresolvedAssetTokens, validateLocalizedAssetReferences, localizeInternalRouteLinks } = require('../clone/assetLocalizationService');
-const { SCREENSHOT_TO_UI_FEATURE_PROMPT, UI_GENERATION_SYSTEM_PROMPT } = require('./prompts/systemPrompt');
 const { GSAP_ANIMATION_RULES } = require('./prompts/gsapRules');
 const logger = require('../../utils/logger');
 const { dehydrateFiles, hydrateFiles } = require('../storage/s3BlobStorage');
 const {
   AppError,
-  AIError,
   OpenRouterAuthError,
   OpenRouterRateLimitError,
-  OpenRouterTimeoutError,
-  OpenRouterModelError,
-  isPermanentProviderError,
   AIResponseValidationError,
   AIResponseMalformedError,
   FileApplicationError,
   RepairExhaustedError
 } = require('../../utils/errors');
-const axios = require('axios');
-
-const CLONE_STYLING_RULES = `STYLING RULES (MANDATORY - TAILWIND CSS ONLY):
-- Style every element with Tailwind CSS utility classes in className. Do NOT create or modify per-page, per-component or global .css files (no AboutPage.css, no styles.css, no CSS modules, no styled-components, no <style> blocks). The only stylesheet is src/index.css, which already contains the @tailwind directives.
-- Reproduce exact measured values with Tailwind arbitrary values, for example w-[1354px], h-[647.656px], text-[47.104px], leading-[61.1975px], tracking-[0.02em], bg-[#d9d9d9], text-[#000], gap-[24px], p-[12px_18px], rounded-[4px], shadow-[0_2px_8px_rgba(0,0,0,0.2)], aspect-[320.05/213.36], object-[50%_50%].
-- Express captured media queries with responsive variants (sm: md: lg: xl: or arbitrary min-[768px]: and max-[767px]:), and interactions with hover:, focus:, group-hover: and transition utilities.
-- Put captured fonts and brand colors in tailwind.config.js (theme.extend.fontFamily, colors, spacing) or use font-['Family',Arial,sans-serif]. Declare @font-face and @keyframes only inside src/index.css (@layer base or utilities) when Tailwind has no equivalent.
-- Share repeated class strings through small components or constants, never through new CSS class names.`;
-
-const CLONE_VISUAL_FIDELITY_RULES = `SOURCE-FIRST RECONSTRUCTION RULES:
-- Navigation: when the route changes, the new page must open at its top. If the app uses react-router, render a small ScrollToTop component inside the router that calls window.scrollTo(0, 0) in an effect on location.pathname (skip it when the URL has a #hash).
-- Treat the extracted HTML, DOM hierarchy, CSS rules, computed-style manifest, content, routes, and asset associations as the source of truth. They override screenshots and generic design-system preferences.
-- Reproduce the exact font families and fallback stacks where available, with captured weights, sizes, line-heights, letter-spacing, casing, alignment, and text colors for each element role.
-- Reuse captured CSS colors, gradients, backgrounds, borders, radii, and shadows. Do not choose merely similar values when an actual value is present.
-- Treat each page's captured computed palette as mandatory. Do not substitute generic theme colors, the Tailwind default palette, or approximate brand shades: use the exact captured values as Tailwind arbitrary values (for example bg-[#d9d9d9]).
-- Preserve the page hierarchy and component count. Do not add, remove, merge, split, modernize, or reorder sections, cards, containers, headings, paragraphs, rows, or columns.
-- Preserve measured header, hero, section, card, image, button, and container dimensions plus alignment, padding, margins, and gaps. Never use browser zoom to hide structural mismatch.
-- Preserve text wrapping by matching container width and font metrics before adjusting any typography.
-- Preserve image rendered rectangles, aspect ratios, object-fit, object-position, and crop.
-- Preserve click behavior. When a captured image or element has link, wrap it in a real anchor using link.resolvedHref (an asset token for a downloaded document such as a PDF, a cloned route path, or the original URL), with target="_blank" rel="noopener noreferrer" for documents and external links. Never replace such a link with href="#", preventDefault, or a dead handler. Documents in the asset catalog (isDocument) are local files under /assets/documents/ and must be linked, never rendered as images.
-- Apply available assets in placement-queue order. Never reference an entry marked unavailable; remove unsupported decorative references rather than fabricating files or substituting unrelated assets.
-- Reconstruct responsive behavior from extracted media queries and mobile computed styles. Never invent a generic mobile stack.
-- Screenshots, when available, are optional verification evidence only and must never replace or contradict extracted source information.
-- Before finishing, compare typography, colors, hierarchy, section count, dimensions, spacing, wrapping, navigation, and footer against the extracted source package.
-
-${CLONE_STYLING_RULES}`;
+const { mergeOpenRouterUsage, addBilledUsage, sumUsageRecords } = require('./jobSupport/usage');
+const { isTransientError, withTransientRetry, isProviderStop } = require('./jobSupport/retry');
+const { failureCode } = require('./jobSupport/failureCode');
+const { runWorker } = require('./workers/workerContract');
+const { makeAsk, makeVision } = require('./workers/modelClients');
+const planningWorker = require('./workers/planningWorker');
+const deepGenerationWorker = require('./workers/deepGenerationWorker');
+const knowledgeWorker = require('./workers/knowledgeWorker');
+const requirementMapper = require('./knowledge/requirementMapper');
+const contextualImageSelector = require('./knowledge/contextualImageSelector');
+const { ImageAssetRegistry } = require('./images/imageAssetRegistry');
+const officialImageSource = require('./images/officialImageSource');
+const adaptiveLayout = require('./composition/adaptiveLayout');
+const deepState = require('./deep/deepState');
+const imageWorker = require('./workers/imageWorker');
+const researchWorker = require('./workers/researchWorker');
+const codeGenerationWorker = require('./workers/codeGenerationWorker');
+const commitWorker = require('./workers/commitWorker');
+const editEngineResult = require('./workers/editEngineResult');
+const jobState = require('./workers/jobState');
+const cleanupWorker = require('./workers/cleanupWorker');
+const patchWorker = require('./workers/patchWorker');
+const sourceRefreshWorker = require('./workers/sourceRefreshWorker');
+const realPageFillWorker = require('./workers/realPageFillWorker');
+const { createEditEngines } = require('./workers/editEnginesWorker');
+const stageTimer = require('./jobSupport/stageTimer');
+const { CLONE_VISUAL_FIDELITY_RULES, resolveCloneRouteLimit, resolveCloneVisualThresholds, isAcceptableCloneVisualFallback, getExpectedPageHeading, getExpectedPageColors, isFinalClonePhase, buildCloneImplementationStages, classifyCloneAssetSection, selectCloneSectionAssets, resolveClonePageDuration, resolveGenerationModel, compactClonePageSource, compactClonePageAnalysis, compactCloneInitialAnalysis, parseInitialProjectResponse, measureCloneTextCoverage, simplifyCloneHtml, buildCloneCoverageDiagnostics, buildQuarantineStub, quarantineCloneFiles, findCloneCssViolations, isFatalCloneError, salvageCloneCandidate, parseModuleCrash, repairCrashingModules, generateSequentialClonePage, recloneRoute, fillMissingFromRealPage } = require('../clone/clonePageBuilder');
+const { completeOpenRouterResponse } = require('./jobSupport/completion');
+const { hasRouteDefinition, pageExistsInFiles } = realPageFillWorker;
+const { ValidationWorker, requiresDockerForVisualReference, isAdvisoryRenderFailure } = require('./workers/validationWorker');
 
 // Added to every site-creation request (not clones, which must stay faithful, and not edits).
 const CREATION_DEPTH_AND_SEO_RULES = `LONG-FORM, SEARCH-FRIENDLY PAGES (MANDATORY):
@@ -172,17 +152,8 @@ async function advancePrototypeQueue(job, activeStage) {
   }
 }
 
-function repairAndSanitizeReactCode(code) {
-  // Do not rewrite JavaScript with regexes; validation supplies evidence for repairs.
-  return String(code || '');
-}
-
 function startsNewProject(type, targetProjectId) {
   return !targetProjectId && ['generate', 'screenshot', 'clone'].includes(type);
-}
-
-function requiresDockerForVisualReference(visualReference, allowLocalVisualFallback = false) {
-  return Boolean(visualReference && !allowLocalVisualFallback);
 }
 
 function isRepairableSequentialPreviewFailure(preview) {
@@ -194,1297 +165,6 @@ function isRepairableSequentialPreviewFailure(preview) {
     preview.diagnostics.length &&
     preview.diagnostics.every((diagnostic) => repairableCategories.has(diagnostic?.category))
   );
-}
-
-function resolveCloneRouteLimit(requestedMaxRoutes) {
-  const requested = Number.parseInt(requestedMaxRoutes, 10);
-  return resolveRouteLimit(requested);
-}
-
-function resolveCloneVisualThresholds() {
-  const configuredTarget = Number.parseFloat(process.env.CLONE_VISUAL_THRESHOLD);
-  const target = Number.isFinite(configuredTarget) && configuredTarget >= 0 && configuredTarget <= 1 ? configuredTarget : 0.8;
-  const configuredMinimum = Number.parseFloat(process.env.CLONE_VISUAL_MINIMUM_ACCEPTANCE);
-  const minimum = Number.isFinite(configuredMinimum) && configuredMinimum >= 0 && configuredMinimum <= 1
-    ? Math.min(configuredMinimum, target)
-    : Math.min(0.5, target);
-  return { target, minimum };
-}
-
-function isAcceptableCloneVisualFallback(comparison, thresholds = resolveCloneVisualThresholds()) {
-  return Number.isFinite(comparison?.score) && comparison.score >= thresholds.minimum;
-}
-
-function mergeOpenRouterUsage(current, usage, model) {
-  if (!usage) return current;
-  const promptTokens = Number(usage.prompt_tokens) || 0;
-  const completionTokens = Number(usage.completion_tokens) || 0;
-  const totalTokens = Number(usage.total_tokens) || promptTokens + completionTokens;
-  const usageCost = Number(usage.cost);
-  const currentCost = Number(current?.cost);
-  return {
-    promptTokens: (current?.promptTokens || 0) + promptTokens,
-    completionTokens: (current?.completionTokens || 0) + completionTokens,
-    totalTokens: (current?.totalTokens || 0) + totalTokens,
-    modelUsed: model || current?.modelUsed || 'Veave AI',
-    provider: 'Veave AI',
-    cost: (Number.isFinite(currentCost) ? currentCost : 0) + (Number.isFinite(usageCost) ? usageCost : 0),
-    costReported: Boolean(current?.costReported || Number.isFinite(usageCost))
-  };
-}
-
-// Usage of every billable model call in one edit (patch attempts, corrections, repairs). A provider that reports no usage
-// is ESTIMATED from text length and flagged, never silently counted as zero.
-function addBilledUsage(current, completion, messages, model) {
-  if (completion?.usage && (Number(completion.usage.total_tokens) || Number(completion.usage.prompt_tokens) || Number(completion.usage.completion_tokens))) {
-    const merged = mergeOpenRouterUsage(current, completion.usage, model);
-    return { ...merged, usageSource: current?.usageSource === 'estimated' ? 'estimated' : 'reported' };
-  }
-  const prompt = Math.ceil((messages || []).reduce((n, m) => n + String(m?.content || '').length, 0) / 4);
-  const output = Math.ceil(String(completion?.content || '').length / 4);
-  const merged = mergeOpenRouterUsage(current, { prompt_tokens: prompt, completion_tokens: output, total_tokens: prompt + output }, model);
-  return { ...merged, usageSource: 'estimated' };
-}
-
-function sumUsageRecords(a, b) {
-  if (!a) return b || null;
-  if (!b) return a;
-  const cost = (Number(a.cost) || 0) + (Number(b.cost) || 0);
-  return {
-    ...a,
-    promptTokens: (a.promptTokens || 0) + (b.promptTokens || 0),
-    completionTokens: (a.completionTokens || 0) + (b.completionTokens || 0),
-    totalTokens: (a.totalTokens || 0) + (b.totalTokens || 0),
-    cost,
-    costReported: Boolean(a.costReported || b.costReported),
-    usageSource: a.usageSource === 'estimated' || b.usageSource === 'estimated' ? 'estimated' : (a.usageSource || b.usageSource || 'reported')
-  };
-}
-
-function mergeRawOpenRouterUsage(current, usage) {
-  if (!usage) return current || null;
-  const promptTokens = (Number(current?.prompt_tokens) || 0) + (Number(usage.prompt_tokens) || 0);
-  const completionTokens = (Number(current?.completion_tokens) || 0) + (Number(usage.completion_tokens) || 0);
-  const currentCost = Number(current?.cost);
-  const usageCost = Number(usage.cost);
-  const costReported = Number.isFinite(currentCost) || Number.isFinite(usageCost);
-  return {
-    ...current,
-    ...usage,
-    prompt_tokens: promptTokens,
-    completion_tokens: completionTokens,
-    total_tokens: (Number(current?.total_tokens) || 0) + (Number(usage.total_tokens) || (Number(usage.prompt_tokens) || 0) + (Number(usage.completion_tokens) || 0)),
-    ...(costReported ? { cost: (Number.isFinite(currentCost) ? currentCost : 0) + (Number.isFinite(usageCost) ? usageCost : 0) } : {})
-  };
-}
-
-function getExpectedPageHeading(page) {
-  const headings = Array.isArray(page?.headings) ? page.headings : [];
-  return headings.find((heading) => String(heading?.level || '').toUpperCase() === 'H1' && heading.text)?.text ||
-    headings.find((heading) => heading?.text)?.text || String(page?.title || '').split(/\s+-\s+/)[0].trim();
-}
-
-function getExpectedPageColors(page) {
-  const design = page?.design || {};
-  return [...new Set([
-    design.color,
-    design.background,
-    ...(Array.isArray(design.palette) ? design.palette : [])
-  ].filter((value) => value && value !== 'transparent' && value !== 'rgba(0, 0, 0, 0)'))].slice(0, 8);
-}
-
-function cloneContentHtml(page = {}) {
-  return (page.extraction?.htmlSections || [])
-    .filter((section) => classifyCloneAssetSection(section, page) === 'content')
-    .map((section) => section.html)
-    .filter(Boolean)
-    .join('\n');
-}
-
-// 'page' = whole route in one call, 'top' = header + hero together, 'footer'/'page' are the final (validated) stages.
-const FINAL_CLONE_PHASES = new Set(['footer', 'page']);
-function isFinalClonePhase(phase) { return FINAL_CLONE_PHASES.has(phase); }
-
-// Render findings that describe HOW a page looks, not that it is broken. After the repair attempts are used up, a page
-// that renders with these is kept (with a warning) instead of being dropped by the guard rails.
-function isAdvisoryRenderFailure(diagnostics = []) {
-  return Array.isArray(diagnostics) && diagnostics.length > 0 && diagnostics.every((item) =>
-    item?.category === 'route-color'
-    || item?.category === 'missing-asset'
-    || (item?.category === 'route-content' && /^Expected heading was not rendered/i.test(String(item.message || ''))));
-}
-
-function cloneItemInPhase(item, page, phase) {
-  if (phase === 'page') return true;
-  const section = classifyCloneAssetSection(item, page);
-  if (phase === 'top') return section === 'header' || section === 'hero';
-  return section === phase;
-}
-
-function buildCloneImplementationStages(pages = [], { forceSections = false } = {}) {
-  const chunkSize = Number.parseInt(process.env.CLONE_CONTENT_CHUNK_CHARS, 10) || 60000;
-  const singlePassLimit = Number.parseInt(process.env.CLONE_SINGLE_PASS_CHARS, 10) || 90000;
-  return pages.flatMap((page) => {
-    const pageLength = simplifyCloneHtml(page.extraction?.html || '', { keepClass: true }).length;
-    // A small route is built in ONE call instead of four.
-    if (!forceSections && pageLength && pageLength <= singlePassLimit) return [{ page, phase: 'page' }];
-    // A very large content area is built in several parts so none of it is truncated or dropped.
-    const contentLength = simplifyCloneHtml(cloneContentHtml(page), { keepClass: true }).length;
-    const parts = Math.min(10, Math.max(1, Math.ceil(contentLength / chunkSize)));
-    return [
-      { page, phase: 'top' },
-      ...Array.from({ length: parts }, (_, index) => ({ page, phase: 'content', contentChunk: { index, total: parts } })),
-      { page, phase: 'footer' }
-    ];
-  });
-}
-
-function classifyCloneAssetSection(item = {}, page = {}) {
-  const context = JSON.stringify([item.section, item.element, item.selector, item.tag, item.heading, item.className]).toLowerCase();
-  if (/footer|site-footer/.test(context)) return 'footer';
-  if (/header|navbar|navigation|site-logo|brand-logo/.test(context)) return 'header';
-  if (/hero|banner|masthead|carousel|slider|jumbotron/.test(context)) return 'hero';
-  const documentY = Number(item.rect?.documentY);
-  const viewportHeight = Number(page.viewport?.height) || 900;
-  const itemHeight = Number(item.rect?.height);
-  const isTallSection = Number.isFinite(itemHeight) && itemHeight > viewportHeight * 1.5;
-  if (Number.isFinite(documentY) && documentY < viewportHeight * 1.25 && !isTallSection) return 'hero';
-  return 'content';
-}
-
-function selectCloneSectionAssets(page = {}, assets = [], phase = 'content') {
-  const paths = new Set((page.assetQueue || [])
-    .filter((item) => item.publicPath && cloneItemInPhase(item, page, phase))
-    .map((item) => item.publicPath));
-  return assets.filter((asset) => paths.has(asset.publicPath));
-}
-
-function resolveClonePageDuration() {
-  const configured = Number.parseInt(process.env.CLONE_PAGE_MAX_DURATION_MS, 10);
-  return Number.isFinite(configured) && configured > 0 ? Math.max(60000, configured) : 8 * 60 * 1000;
-}
-
-// Veave runs one model, GPT-6 Luna, through OpenRouter for creation, cloning and edits. The requested name is ignored.
-function resolveGenerationModel() {
-  return 'Veave AI';
-}
-
-function compactClonePageSource(files = [], pagePath = '/', maxChars = 2 * 1024 * 1024, { focusPaths = [], phase = 'content' } = {}) {
-  const slug = String(pagePath).split('?')[0].split('/').filter(Boolean).at(-1) || 'home';
-  const slugPattern = new RegExp(slug.replace(/[^a-z0-9]/gi, '.*'), 'i');
-  const focus = new Set(focusPaths);
-  // Only what this stage can actually change is sent in full; everything else is listed by name.
-  const priority = (file) => {
-    const filePath = file.path;
-    if (/^src\/App\.(?:jsx?|tsx?)$/i.test(filePath)) return 0;
-    if (/(?:^|\/)(?:router|routes|navigation|siteData)\.(?:jsx?|tsx?|json)$/i.test(filePath)) return 1;
-    if (/(?:^|\/)(?:Header|Navbar|Footer|.*Layout|.*Shell)\.(?:jsx?|tsx?)$/i.test(filePath)) return phase === 'content' ? 9 : 2;
-    if (focus.has(filePath) || slugPattern.test(filePath)) return 3;
-    if (/^src\/(?:styles|index)\.css$/i.test(filePath)) return 3;
-    if (/^src\/pages\//i.test(filePath) && String(file.content || '').length < 4000) return 3;
-    return 9;
-  };
-  const candidates = files
-    .filter((file) => file.encoding !== 'base64' && file.path !== 'src/assets/asset-map.json' && priority(file) < 9)
-    .sort((a, b) => priority(a) - priority(b) || a.path.localeCompare(b.path));
-  const compacted = [];
-  let used = 0;
-  for (const file of candidates) {
-    let content = String(file.content || '');
-    if (content.length > 400000) content = `${content.slice(0, 200000)}\n/* VEAVE CONTEXT COMPACTED */\n${content.slice(-200000)}`;
-    const cost = file.path.length + content.length + 50;
-    if (used + cost > maxChars) continue;
-    compacted.push({ path: file.path, content });
-    used += cost;
-  }
-  return compacted;
-}
-
-function trimCloneStyles(styles = {}) {
-  let budget = Number.parseInt(process.env.CLONE_STYLE_BUDGET_CHARS, 10) || 120000;
-  const take = (item) => {
-    const size = JSON.stringify(item).length;
-    if (size > budget) return false;
-    budget -= size;
-    return true;
-  };
-  return {
-    styleSheets: (styles.styleSheets || []).map((sheet) => ({ ...sheet, rules: (sheet.rules || []).slice(0, 1000).filter(take) })),
-    responsiveRules: (styles.responsiveRules || []).slice(0, 200).filter((rule) => take({ ...rule, cssText: String(rule.cssText || '').slice(0, 1500) }))
-      .map((rule) => ({ ...rule, cssText: String(rule.cssText || '').slice(0, 1500) }))
-  };
-}
-
-function compactClonePageAnalysis(page = {}) {
-  return {
-    path: page.path,
-    title: page.title,
-    description: page.description,
-    pageType: page.pageType,
-    discoveredFrom: page.discoveredFrom,
-    headings: (page.headings || []).slice(0, 40),
-    sections: (page.sections || []).slice(0, 60),
-    controls: (page.controls || []).slice(0, 60),
-    viewport: page.viewport,
-    document: page.document,
-    design: page.design,
-    visualElements: (page.visualElements || []).slice(0, 220),
-    extraction: page.extraction ? {
-      mode: page.extraction.mode,
-      html: String(page.extraction.html || '').slice(0, 600000),
-      domHierarchy: (page.extraction.domHierarchy || []).slice(0, 250),
-      htmlSections: (page.extraction.htmlSections || []).slice(0, 300)
-    } : null,
-    styles: page.styles ? trimCloneStyles(page.styles) : null,
-    responsive: page.responsive,
-    images: (page.images || []).filter((image) => image.localPath || String(image.src || '').startsWith('__VEAVE_CLONE_ASSET_')).slice(0, 150),
-    assetQueue: (page.assetQueue || []).slice(0, 300),
-    repairDiagnostics: page.repairDiagnostics
-  };
-}
-
-function compactCloneInitialAnalysis(page = {}) {
-  const analysis = compactClonePageAnalysis(page);
-  const isEntryPage = page.path === '/';
-  if (analysis.extraction) {
-    analysis.extraction.html = analysis.extraction.html.slice(0, isEntryPage ? 40000 : 5000);
-    analysis.extraction.domHierarchy = analysis.extraction.domHierarchy.slice(0, isEntryPage ? 80 : 30);
-    analysis.extraction.htmlSections = analysis.extraction.htmlSections.slice(0, isEntryPage ? 30 : 12).map((section) => ({
-      ...section,
-      html: String(section.html || '').slice(0, isEntryPage ? 8000 : 1500)
-    }));
-  }
-  if (analysis.styles) {
-    analysis.styles.styleSheets = analysis.styles.styleSheets.map((sheet) => ({
-      ...sheet,
-      rules: (sheet.rules || []).slice(0, isEntryPage ? 80 : 20).map((rule) => ({ ...rule, cssText: String(rule.cssText || '').slice(0, 1500) }))
-    }));
-    analysis.styles.responsiveRules = analysis.styles.responsiveRules.slice(0, isEntryPage ? 40 : 10).map((rule) => ({
-      ...rule,
-      cssText: String(rule.cssText || '').slice(0, 2000)
-    }));
-  }
-  return analysis;
-}
-
-function parseInitialProjectResponse(response, existingFiles = []) {
-  const parsed = aiProtocol.parseAIResponse(response, 'src/App.jsx');
-  const validated = aiProtocol.validateFileOperations(parsed, existingFiles);
-  const applied = aiProtocol.applyOperationsSafely(existingFiles, validated.files);
-  // Self-correct before judging: supply the standard files the scaffolder adds later (hooks, utils), fix case/extension
-  // import slips and missing exports. Missing pages are NOT stubbed here, so the retry can still ask the model for them.
-  let files = applied.files;
-  try { files = autoFix(applied.files, { stubMissing: false }).files; } catch { files = applied.files; }
-  const appFile = files.find((file) => file.path === 'src/App.jsx');
-  const modularFiles = files.filter((file) => /^src\/(?:pages|components)\//.test(file.path));
-  const moduleDiagnostics = appFile
-    ? generationPipeline.validateGeneratedFiles(files).filter((item) => ['import', 'export', 'architecture'].includes(item.category))
-    : [];
-  let validationError = null;
-  if (!appFile) validationError = new AIResponseValidationError('Initial generation did not create src/App.jsx.');
-  else if (appFile.content.split('\n').length > 500) validationError = new AIResponseValidationError('Initial generation returned an oversized App.jsx instead of a modular project.');
-  else if (!modularFiles.length) validationError = new AIResponseValidationError('Initial generation did not create separate page or component files.');
-  else if (moduleDiagnostics.length) validationError = new AIResponseValidationError(`Initial generation has incomplete local modules:\n${generationPipeline.formatDiagnostics(moduleDiagnostics)}`);
-  if (validationError) {
-    validationError.partialFiles = files;
-    throw validationError;
-  }
-  return files;
-}
-
-function isTransientError(error, { retryTimeouts = true } = {}) {
-  // A bad key, exhausted credits or an unknown model do not fix themselves: never retry them.
-  if (isPermanentProviderError(error)) return false;
-  if (!retryTimeouts && (error instanceof OpenRouterTimeoutError || /timed? ?out|ECONNABORTED/i.test(`${error?.code || ''} ${error?.message || ''}`))) return false;
-  const status = Number(error?.status || error?.response?.status || error?.statusCode);
-  if ([408, 425, 429, 500, 502, 503, 504].includes(status)) return true;
-  const text = `${error?.code || ''} ${error?.name || ''} ${error?.message || ''}`;
-  return /ETIMEDOUT|ECONNRESET|EPIPE|ECONNABORTED|EAI_AGAIN|ENOTFOUND|socket hang up|timeout|timed out|rate limit|overloaded|busy/i.test(text);
-}
-
-async function withTransientRetry(operation, { signal, deadlineAt, attempts = 3, retryTimeouts = true } = {}) {
-  let lastError;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    signal?.throwIfAborted();
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error;
-      if (signal?.aborted || !isTransientError(error, { retryTimeouts }) || attempt === attempts) throw error;
-      logger.warn(`Transient AI error (${error?.code || error?.name}: ${String(error?.message).slice(0, 120)}); retry ${attempt}/${attempts - 1} in ${Math.min(15000, 1500 * 2 ** (attempt - 1))}ms`);
-      const delay = Math.min(15000, 1500 * 2 ** (attempt - 1));
-      if (deadlineAt && Date.now() + delay >= deadlineAt) throw error;
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-  throw lastError;
-}
-
-
-// The model call used by new-site generation: a 429, 5xx or dropped connection is retried with backoff; a timeout is not (a
-// 5-minute call is not repeated blindly) and permanent errors (key, credits, model) are never retried.
-// Provider failures that must end the job (not be answered with a template site): a bad key, no credits, an unknown model, or a
-// rate limit that survived the retries.
-const isProviderStop = (error) => isPermanentProviderError(error) || error instanceof OpenRouterRateLimitError;
-
-function generateWithRetry(messages, options, { signal } = {}) {
-  return withTransientRetry(() => openrouterService.generateCompletion(messages, options), { signal, attempts: Number.parseInt(process.env.OPENROUTER_RETRY_ATTEMPTS, 10) || 3, retryTimeouts: false });
-}
-
-function decodeCloneEntities(text) {
-  return String(text || '')
-    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"').replace(/&apos;|&#0?39;/gi, "'")
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16) || 32))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number.parseInt(dec, 10) || 32));
-}
-
-function normalizeCoverageText(text) {
-  return decodeCloneEntities(text).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-}
-
-function extractCloneTextBlocks(html) {
-  const stripped = String(html || '')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<(script|style|noscript|svg)\b[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<[^>]+>/g, '\n');
-  const seen = new Set();
-  const blocks = [];
-  for (const line of decodeCloneEntities(stripped).split('\n')) {
-    const text = line.replace(/\s+/g, ' ').trim();
-    if (text.length < 20 || text.split(' ').length < 3) continue;
-    const key = normalizeCoverageText(text);
-    if (key.length < 15 || seen.has(key)) continue;
-    seen.add(key);
-    blocks.push({ text, key });
-  }
-  return blocks;
-}
-
-function cloneTextCorpus(files) {
-  return normalizeCoverageText(files
-    .filter((file) => file.encoding !== 'base64' && file.path !== 'src/assets/asset-map.json' && /\.(?:jsx?|tsx?|json|html|md)$/i.test(file.path || ''))
-    .map((file) => String(file.content || ''))
-    .join('\n'));
-}
-
-// Which text blocks of this piece of real markup are absent from the project source.
-function measureHtmlCoverage(html, files, corpus = cloneTextCorpus(files)) {
-  const blocks = extractCloneTextBlocks(html);
-  const missing = blocks.filter((block) => !corpus.includes(block.key));
-  return { total: blocks.length, missing, ratio: blocks.length ? (blocks.length - missing.length) / blocks.length : 1 };
-}
-
-function measureCloneTextCoverage(page, files) {
-  const blocks = extractCloneTextBlocks(page?.extraction?.html);
-  const corpus = normalizeCoverageText(files
-    .filter((file) => file.encoding !== 'base64' && file.path !== 'src/assets/asset-map.json' && /\.(?:jsx?|tsx?|json|html|md)$/i.test(file.path || ''))
-    .map((file) => String(file.content || ''))
-    .join('\n'));
-  const missing = blocks.filter((block) => !corpus.includes(block.key));
-  return { total: blocks.length, missing, ratio: blocks.length ? (blocks.length - missing.length) / blocks.length : 1 };
-}
-
-function simplifyCloneHtml(html, { keepClass = false } = {}) {
-  return String(html || '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<(script|style|noscript|svg)\b[\s\S]*?<\/\1>/gi, '')
-    .replace(/<([a-z][a-z0-9-]*)\b([^>]*)>/gi, (_, tag, attrs) => {
-      const kept = [...attrs.matchAll(keepClass ? /\s(href|src|alt|class)=("[^"]*"|'[^']*')/gi : /\s(href|src|alt)=("[^"]*"|'[^']*')/gi)]
-        .filter((match) => !/^["']data:/i.test(match[2]))
-        .map((match) => ` ${match[1].toLowerCase()}=${match[1].toLowerCase() === 'class' ? match[2].slice(0, 80) + match[2][0] : match[2]}`)
-        .join('');
-      return `<${tag}${kept}>`;
-    })
-    .replace(/\s+/g, ' ');
-}
-
-function buildCloneCoverageDiagnostics(coverage, page, previousFailure = '') {
-  const pct = Math.round(coverage.ratio * 100);
-  const sample = coverage.missing.slice(0, 40).map((block) => `- ${block.text.slice(0, 200)}`).join('\n');
-  return `Content coverage ${pct}%: the page ${page.path} contains only ${coverage.total - coverage.missing.length} of ${coverage.total} captured text blocks (${coverage.missing.length} missing). Add EVERY missing section to this page in source order, using MISSING CONTENT HTML as the authoritative source: keep the exact text, links, headings, lists and local images. Keep all existing sections. Put repeated items (cards, news, lists, tables) into a data array in a separate module under src/data and map over it so files stay compact. Do not summarize, shorten or invent content. The first missing text blocks are:\n${sample}${previousFailure ? `\nThe previous completion attempt was rejected: ${previousFailure}` : ''}`;
-}
-
-// ---------------------------------------------------------------------------
-// Guard rails: when a generated section keeps failing after every repair attempt we never ship it and
-// never fail the whole clone for it. The broken module is replaced by an inert stub (or the whole
-// stage is rolled back) and cloning continues with the remaining sections.
-// ---------------------------------------------------------------------------
-const CLONE_PROTECTED_PATHS = /^(?:src\/(?:App|main)\.(?:jsx?|tsx?)|index\.html|package\.json|src\/index\.css|vite\.config\.[jt]s)$/i;
-
-function isStubbableCloneFile(file) {
-  return Boolean(file) && file.encoding !== 'base64' && !CLONE_PROTECTED_PATHS.test(file.path || '') && /\.(?:jsx|tsx|css)$/i.test(file.path || '');
-}
-
-function buildQuarantineStub(file, reason) {
-  const note = String(reason || 'failed validation').replace(/\*\//g, '').replace(/\s+/g, ' ').slice(0, 200);
-  if (/\.css$/i.test(file.path)) return `/* VEAVE GUARD RAIL: removed because it failed validation: ${note} */\n`;
-  const content = String(file.content || '');
-  const names = new Set();
-  let hasDefault = /\bexport\s+default\b/.test(content);
-  for (const match of content.matchAll(/\bexport\s+(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/g)) names.add(match[1]);
-  for (const match of content.matchAll(/\bexport\s*\{([^}]*)\}/g)) {
-    for (const part of match[1].split(',')) {
-      const bits = part.trim().split(/\s+as\s+/i);
-      const exported = (bits[1] || bits[0] || '').trim();
-      if (!exported) continue;
-      if (exported === 'default') hasDefault = true;
-      else names.add(exported);
-    }
-  }
-  if (!hasDefault && !names.size) hasDefault = true;
-  const lines = [`// VEAVE GUARD RAIL: this section failed validation after repeated attempts and was removed. ${note}`, 'const VeaveRemovedSection = () => null;'];
-  if (hasDefault) lines.push('export default VeaveRemovedSection;');
-  for (const name of names) lines.push(`export const ${name} = VeaveRemovedSection;`);
-  return `${lines.join('\n')}\n`;
-}
-
-function quarantineCloneFiles(files, paths, reason) {
-  const targets = new Set(paths);
-  const quarantined = [];
-  const next = files.map((file) => {
-    if (!targets.has(file.path) || !isStubbableCloneFile(file)) return file;
-    quarantined.push(file.path);
-    return { ...file, content: buildQuarantineStub(file, reason) };
-  });
-  return { files: next, quarantined };
-}
-
-function findCloneCssViolations(changedPaths = []) {
-  return [...changedPaths].filter((filePath) => /\.(?:css|scss|sass|less)$/i.test(filePath) && !/^src\/index\.css$/i.test(filePath));
-}
-
-function isFatalCloneError(error) {
-  const status = Number(error?.status || error?.response?.status || error?.statusCode);
-  if ([401, 402, 403].includes(status)) return true;
-  return /insufficient (?:credits|funds)|quota exceeded|invalid api key|unauthori[sz]ed|payment required/i.test(String(error?.message || ''));
-}
-
-/**
- * Try to keep a candidate whose validation still fails by removing only the broken module(s).
- * Returns { files, quarantined } or null when nothing safe can be removed (caller rolls the stage back).
- */
-async function salvageCloneCandidate({ files, diagnostics = [], isFinal = false, candidatePaths = [], verify, signal, maxProbes = 6 }) {
-  let working = files;
-  const quarantined = [];
-  if (diagnostics.length) {
-    const failing = [...new Set(diagnostics.map((item) => item.path).filter(Boolean))];
-    const unfixable = diagnostics.some((item) => !item.path || !files.some((file) => file.path === item.path && isStubbableCloneFile(file)));
-    if (!failing.length || unfixable) return null;
-    const result = quarantineCloneFiles(working, failing, diagnostics.map((item) => item.message).join('; '));
-    working = result.files;
-    quarantined.push(...result.quarantined);
-    if (generationPipeline.validateGeneratedFiles(working).length) return null;
-  }
-  if (!isFinal || typeof verify !== 'function') return quarantined.length ? { files: working, quarantined } : null;
-
-  let rendered = await verify(working);
-  if (rendered.ok) return quarantined.length ? { files: working, quarantined } : null;
-
-  // The page does not render: find the one component that breaks it by stubbing candidates one at a time.
-  const hinted = (rendered.diagnostics || []).map((item) => item.path).filter(Boolean);
-  const probes = [...new Set([...hinted, ...[...candidatePaths].reverse()])]
-    .filter((filePath) => !quarantined.includes(filePath))
-    .map((filePath) => working.find((file) => file.path === filePath))
-    .filter((file) => isStubbableCloneFile(file) && /\.(?:jsx|tsx)$/i.test(file.path))
-    .slice(0, maxProbes);
-  // Probes are independent: run them in small parallel waves and keep the first success in priority order.
-  const probeConcurrency = Math.max(1, Number.parseInt(process.env.CLONE_PROBE_CONCURRENCY, 10) || 3);
-  for (let index = 0; index < probes.length; index += probeConcurrency) {
-    signal?.throwIfAborted();
-    const wave = await Promise.all(probes.slice(index, index + probeConcurrency).map(async (file) => {
-      const attempt = quarantineCloneFiles(working, [file.path], (rendered.diagnostics || []).map((item) => item.message).join('; '));
-      const probeResult = await verify(attempt.files);
-      return probeResult.ok ? attempt : null;
-    }));
-    const hit = wave.find(Boolean);
-    if (hit) return { files: hit.files, quarantined: [...quarantined, ...hit.quarantined] };
-  }
-  return null;
-}
-
-// "Error in src/x.jsx: <message>" is posted by the preview when evaluating a module throws. Every module is evaluated
-// for every route, so such a module crashes the WHOLE site, and no route-level repair can help.
-function parseModuleCrash(message) {
-  const match = /Error in ((?:src\/)?[^\s:'"]+\.(?:jsx?|tsx?|mjs|cjs)):\s*([^\n|]*)/i.exec(String(message || ''));
-  return match ? { path: match[1], reason: match[2].trim() } : null;
-}
-
-/**
- * Makes the project evaluate again when a module crashes at load time: first the deterministic stray-text repair,
- * then (if the module still crashes) the module is replaced by an inert stub with the same exports. Pages keep
- * rendering; content of a stubbed section is restored by the captured-page route layer when the page ends up weak.
- * `render(files)` must throw the preview error (inspectRenderedPreview does). Returns { files, actions }.
- */
-async function repairCrashingModules(files, { render, signal, maxRounds = 6, initialError = null } = {}) {
-  let working = files;
-  const actions = [];
-  const stray = repairStrayIdentifiers(working);
-  if (stray.repaired.length) {
-    working = stray.files;
-    for (const item of stray.repaired) actions.push({ repair: 'stray-text', path: item.path, detail: `removed stray text in code: ${item.names.join(', ')}` });
-  }
-  let pendingError = stray.repaired.length ? null : initialError;
-  const quarantined = new Set();
-  for (let round = 0; round < maxRounds; round += 1) {
-    signal?.throwIfAborted();
-    let message = pendingError;
-    pendingError = null;
-    if (!message) {
-      try {
-        await render(working);
-        return { files: working, actions };
-      } catch (error) {
-        if (signal?.aborted || error?.name === 'AbortError') throw error;
-        message = error?.message;
-      }
-    }
-    const crash = parseModuleCrash(message);
-    if (!crash) break;
-    const file = working.find((item) => item.path === crash.path);
-    if (!file) break;
-    const name = /^(\S+) is not defined/.exec(crash.reason)?.[1];
-    if (name && /[^\x00-\x7f]/.test(name) && !quarantined.has(file.path)) {
-      // A stray word: remove just that word (keeps the section's content).
-      const fixed = repairStrayIdentifiers(working, { paths: [file.path] });
-      if (fixed.repaired.length) {
-        working = fixed.files;
-        actions.push({ repair: 'stray-text', path: file.path, detail: `removed stray text in code: ${fixed.repaired[0].names.join(', ')}` });
-        continue;
-      }
-    }
-    if (quarantined.has(file.path) || !isStubbableCloneFile(file)) break;
-    const stubbed = quarantineCloneFiles(working, [file.path], `crashed when loaded: ${crash.reason}`);
-    if (!stubbed.quarantined.length) break;
-    working = stubbed.files;
-    quarantined.add(file.path);
-    actions.push({ repair: 'quarantine-crashing-module', path: file.path, detail: `replaced by an inert stub: ${crash.reason.slice(0, 160)}` });
-  }
-  return { files: working, actions };
-}
-
-// Keeps only the parts of a page analysis that concern one piece of real markup.
-function leanAnalysisForFocus(pageAnalysis, focusHtml) {
-  const normalize = (value) => String(value || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-  const focusText = normalize(String(focusHtml).replace(/<[^>]+>/g, ' '));
-  const classes = new Set([...String(focusHtml).matchAll(/class="([^"]*)"/g)].flatMap((match) => match[1].split(/\s+/)).filter(Boolean));
-  const textIn = (text) => { const key = normalize(text).slice(0, 30); return key.length >= 6 && focusText.includes(key); };
-  const classIn = (value) => String(value || '').split(/\s+/).some((name) => name && classes.has(name));
-  const urlIn = (url) => { const bare = String(url || '').split(/[?#]/)[0]; return bare.length > 8 && String(focusHtml).includes(bare); };
-  const before = JSON.stringify(pageAnalysis).length;
-  pageAnalysis.visualElements = (pageAnalysis.visualElements || []).filter((item) => textIn(item.text) || classIn(item.classes)).slice(0, 100);
-  pageAnalysis.sections = (pageAnalysis.sections || []).filter((item) => textIn(item.text) || classIn(item.classes)).slice(0, 40).map(({ text, ...rest }) => ({ ...rest, text: String(text || '').slice(0, 160) }));
-  pageAnalysis.controls = (pageAnalysis.controls || []).filter((item) => textIn(item.text) || classIn(item.classes)).slice(0, 40);
-  pageAnalysis.headings = (pageAnalysis.headings || []).filter((item) => textIn(item.text || item)).slice(0, 40);
-  pageAnalysis.images = (pageAnalysis.images || []).filter((image) => urlIn(image.src) || urlIn(image.originalUrl)).slice(0, 100)
-    .map(({ src, originalUrl, alt, width, height, rect, localPath, link }) => ({ src, originalUrl, alt, width, height, documentY: rect?.documentY, localPath, link }));
-  pageAnalysis.assetQueue = (pageAnalysis.assetQueue || []).filter((item) => (item.sourceUrls || []).some(urlIn)).slice(0, 120)
-    .map(({ publicPath, alt, width, height, section, selector, rect, status }) => ({ publicPath, alt, width, height, section, selector, documentY: rect?.documentY, status }));
-  delete pageAnalysis.responsive;
-  if (pageAnalysis.design?.cssVariables) pageAnalysis.design = { ...pageAnalysis.design, cssVariables: Object.fromEntries(Object.entries(pageAnalysis.design.cssVariables).slice(0, 40)) };
-  if (pageAnalysis.styles) {
-    const used = (cssText) => [...String(cssText).matchAll(/\.([\w-]+)/g)].some((match) => classes.has(match[1]));
-    pageAnalysis.styles = {
-      styleSheets: (pageAnalysis.styles.styleSheets || []).map((sheet) => ({ ...sheet, rules: (sheet.rules || []).filter((rule) => used(rule.selectorText || rule.cssText)).slice(0, 300).map((rule) => ({ ...rule, cssText: String(rule.cssText || '').slice(0, 800) })) })).filter((sheet) => sheet.rules.length),
-      responsiveRules: (pageAnalysis.styles.responsiveRules || []).filter((rule) => used(rule.cssText)).slice(0, 80).map((rule) => ({ ...rule, cssText: String(rule.cssText || '').slice(0, 1200) }))
-    };
-  }
-  return { trimmed: JSON.stringify(pageAnalysis).length < before };
-}
-
-async function generateSequentialClonePage({ files, page, phase = 'content', routeManifest, siteMap, assets, routeScreenshot, mobileScreenshot, model, signal, deadlineAt }) {
-  signal?.throwIfAborted();
-  if (deadlineAt && Date.now() >= deadlineAt) {
-    throw new AIResponseValidationError(`Page ${page.path} exceeded its generation time limit.`);
-  }
-  const repairDiagnostics = String(page.repairDiagnostics || '');
-  const useDelimiterRepair = /invalid model file operations/i.test(repairDiagnostics);
-  const ambiguousPatchRepair = /Patch failed: search block matched \d+ locations/i.test(repairDiagnostics);
-  const ambiguousPatchPath = repairDiagnostics.match(/locations in "([^"]+)"/i)?.[1] || null;
-  const syntaxRepairPath = repairDiagnostics.match(/Syntax error in "([^"]+)"/i)?.[1] || null;
-  const syntaxRepairOperation = syntaxRepairPath && files.some((file) => file.path === syntaxRepairPath) ? 'modify' : 'create';
-  const syntaxRepair = Boolean(syntaxRepairPath);
-  const fullFileRepair = ambiguousPatchRepair || syntaxRepair;
-  const maximumContextBytes = Number.parseInt(process.env.CLONE_SECTION_MAX_CONTEXT_BYTES, 10) || 150 * 1024;
-  const sourceFiles = compactClonePageSource(files, page.path, maximumContextBytes, { focusPaths: page.focusPaths || [], phase: page.repairDiagnostics ? 'repair' : phase });
-  const shownPaths = new Set(sourceFiles.map((file) => file.path));
-  const otherFiles = files
-    .filter((file) => file.encoding !== 'base64' && file.path !== 'src/assets/asset-map.json' && !shownPaths.has(file.path))
-    .map((file) => `${file.path} (${String(file.content || '').length} chars)`);
-  const pageAnalysis = compactClonePageAnalysis(page);
-  const coverageRepair = /^Content coverage/i.test(repairDiagnostics);
-  const inScope = (item) => coverageRepair || cloneItemInPhase(item, page, phase);
-  const sectionQueue = (page.assetQueue || []).filter(inScope);
-  const assetOrder = new Map(sectionQueue.map((item) => [item.publicPath, item.order]));
-  const pageAssets = (coverageRepair ? assets.filter((asset) => sectionQueue.some((item) => item.publicPath === asset.publicPath)) : selectCloneSectionAssets(page, assets, phase))
-    .map((asset) => ({ id: assetManifestLib.assetIdFor(asset), role: assetManifestLib.classifyAssetRole(asset), publicPath: asset.publicPath, mimeType: asset.mimeType, width: asset.width, height: asset.height, alt: String(asset.alt || '').slice(0, 80) }))
-    .sort((a, b) => (assetOrder.get(a.publicPath) ?? Number.MAX_SAFE_INTEGER) - (assetOrder.get(b.publicPath) ?? Number.MAX_SAFE_INTEGER))
-    .slice(0, 200);
-  // Only placements the model can act on (a local file exists), compacted; images that could not be shipped are a count.
-  const placementSummary = clonePromptBudget.compactPlacements(sectionQueue);
-  pageAnalysis.assetQueue = placementSummary.placements;
-  pageAnalysis.imagesNotAvailable = placementSummary.unavailable;
-  pageAnalysis.images = clonePromptBudget.compactImages((pageAnalysis.images || []).filter(inScope));
-  pageAnalysis.sections = (pageAnalysis.sections || []).filter(inScope);
-  pageAnalysis.headings = (pageAnalysis.headings || []).filter(inScope);
-  pageAnalysis.controls = (pageAnalysis.controls || []).filter(inScope);
-  pageAnalysis.visualElements = (pageAnalysis.visualElements || []).filter(inScope);
-  if (pageAnalysis.extraction) {
-    pageAnalysis.extraction.domHierarchy = (pageAnalysis.extraction.domHierarchy || [])
-      .filter(inScope);
-    pageAnalysis.extraction.htmlSections = (pageAnalysis.extraction.htmlSections || [])
-      .filter(inScope);
-    pageAnalysis.extraction.html = pageAnalysis.extraction.htmlSections
-      .map((section) => section.html)
-      .filter(Boolean)
-      .join('\n')
-      .slice(0, 120000);
-    if (coverageRepair) {
-      // Send simplified markup (no classes/styles) of the whole page, starting near the first missing text.
-      const simplified = simplifyCloneHtml(page.extraction?.html);
-      const firstMissing = (page.coverageMissing || [])[0]?.text?.slice(0, 40);
-      const hit = firstMissing ? simplified.indexOf(firstMissing) : -1;
-      const start = Math.max(0, (hit > 0 ? hit : 0) - 3000);
-      pageAnalysis.extraction.html = '';
-      pageAnalysis.extraction.htmlSections = [];
-      pageAnalysis.extraction.domHierarchy = [];
-      pageAnalysis.missingContentHtml = simplified.slice(start, start + 260000);
-    } else if (phase === 'content' && page.contentChunk?.total > 1) {
-      const source = simplifyCloneHtml(page.fillMode ? (page.extraction?.html || cloneContentHtml(page)) : cloneContentHtml(page), { keepClass: true });
-      const { index, total } = page.contentChunk;
-      const boundary = (target) => {
-        const at = source.indexOf('<', target);
-        return at < 0 ? source.length : at;
-      };
-      const size = Math.ceil(source.length / total);
-      pageAnalysis.extraction.html = source.slice(index === 0 ? 0 : boundary(size * index), index === total - 1 ? source.length : boundary(size * (index + 1)));
-      pageAnalysis.extraction.htmlSections = [];
-      pageAnalysis.contentPart = { part: index + 1, of: total };
-    } else if (phase === 'page') {
-      pageAnalysis.extraction.html = simplifyCloneHtml(page.extraction?.html, { keepClass: true }).slice(0, 200000);
-      pageAnalysis.extraction.htmlSections = [];
-    } else {
-      pageAnalysis.extraction.html = simplifyCloneHtml(pageAnalysis.extraction.html, { keepClass: true }).slice(0, 200000);
-      // The section markup is already in extraction.html; do not send it twice.
-      pageAnalysis.extraction.htmlSections = pageAnalysis.extraction.htmlSections.map(({ html, ...meta }) => meta);
-    }
-  }
-  // Keep the request inside the prompt budget (least useful detail goes first).
-  const fitted = clonePromptBudget.fitAnalysis(pageAnalysis);
-  if (fitted.trimmed.length) logger.info(`Clone prompt for ${page.path} (${phase}) trimmed to ${Math.round(fitted.bytes / 1024)} KB; reduced: ${fitted.trimmed.join(', ')}.`);
-  Object.keys(pageAnalysis).forEach((key) => delete pageAnalysis[key]);
-  Object.assign(pageAnalysis, fitted.analysis);
-  const compactRoutes = routeManifest.map(({ path, title, pageType }) => ({ path, title, pageType }));
-  const phaseRequirement = {
-    page: 'Implement this ENTIRE route in this single response: the shared header and navigation (reuse existing shared components if present), every section of the page in source order, and the shared footer. Register the route in src/App.jsx.',
-    top: 'Implement or connect the shared header and navigation, and this route with its responsive hero / above-the-fold area. Do not build lower sections or the footer yet.',
-    header: 'Implement or connect only the shared header and navigation. Preserve page body and footer code.',
-    hero: 'Implement only this route and its responsive hero. Preserve the shared header and do not build lower sections yet.',
-    content: 'Implement the main content and secondary sections only. Preserve the header, hero, and footer.',
-    footer: 'Implement or connect the shared footer, finish route interactions, and make the assembled page production-ready.'
-  }[phase] || 'Complete only the requested page section.';
-  if (page.fillMode) {
-    // Completing an existing page: send only what concerns THIS part of the real markup (its styles, measured elements,
-    // images and placements), not the analysis of the whole 25,000 px page.
-    const focusHtml = pageAnalysis.extraction?.html || pageAnalysis.missingContentHtml || '';
-    const lean = leanAnalysisForFocus(pageAnalysis, focusHtml);
-    const inFocusAssets = pageAssets.filter((asset) => (asset.sourcePaths || []).some((reference) => reference && focusHtml.includes(reference)));
-    const chosenAssets = (inFocusAssets.length ? inFocusAssets : pageAssets.slice(0, 30))
-      .slice(0, 150).map(({ publicPath, mimeType, width, height, alt, associations }) => ({ publicPath, mimeType, width, height, alt, section: associations?.[0]?.section || null }));
-    pageAssets.length = 0;
-    pageAssets.push(...chosenAssets);
-    if (lean.trimmed) logger.info(`Source fill prompt trimmed to ${JSON.stringify(pageAnalysis).length} chars of analysis for ${page.path}.`);
-  }
-  const fillRequirement = page.fillNote ? `\nEXISTING PAGE COMPLETION (this page already exists in the project; part of this markup is already built):\n${page.fillNote}\n` : '';
-  const chunkRequirement = pageAnalysis.contentPart
-    ? ` This is content part ${pageAnalysis.contentPart.part} of ${pageAnalysis.contentPart.of}: implement EVERY element of the markup in CURRENT PAGE.extraction.html (exact text, links, lists, images) as new component file(s), e.g. src/components/<PageName>Part${pageAnalysis.contentPart.part}.jsx, and render them in order in the page after the earlier parts. Keep all earlier parts. Do not summarize or skip items; put repeated items into a data array module.`
-    : '';
-  const repairRequirement = page.repairDiagnostics
-    ? `\nREPAIR OVERRIDE (complete this before page work):\n- The current project failed validation: ${page.repairDiagnostics}\n- Fix the reported failure in this response; returning unrelated visual changes is invalid.\n- You may modify src/App.jsx, routing, barrel files, or shared components when they cause the failure. Never delete or rename src/App.jsx, and keep its default App export.\n- For an invalid React element type, inspect every component rendered by App and make each local import exactly match the target file's default or named export. Remove or replace unavailable package components.\n- Preserve valid generated files and make the smallest complete repair.${ambiguousPatchRepair ? `\n- The prior PATCH was ambiguous. NEVER return a PATCH operation in this retry. Return ${ambiguousPatchPath ? `exactly one complete <FILE path="${ambiguousPatchPath}" operation="modify"> block` : 'complete FILE operation="modify" blocks'} containing the entire corrected source.` : ''}${syntaxRepair ? `\n- The previous response was rejected atomically because ${syntaxRepairPath} had invalid syntax. NEVER patch that file. Regenerate it as a complete <FILE path="${syntaxRepairPath}" operation="${syntaxRepairOperation}"> block with balanced quotes and valid TypeScript. Repeat any other complete file operations needed for this page because none of the rejected response was applied.` : ''}`
-    : '';
-  const operationRequirement = ambiguousPatchRepair
-    ? `Return only a complete FILE operation="modify" for ${ambiguousPatchPath || 'each affected file'}. PATCH operations are forbidden for this retry.`
-    : syntaxRepair
-    ? `Return a complete FILE operation="${syntaxRepairOperation}" for ${syntaxRepairPath}. PATCH operations are forbidden for that file; include any other complete operations required to finish the page.`
-    : 'Every create or modify operation must include the complete file source in a string content field. Use a patch operation with string search and replace fields for partial edits.';
-  const delimiterInstructions = useDelimiterRepair
-    ? `\n\nThe previous tool call was invalid. Do not call a tool again. Return only deterministic FILE delimiters.${fullFileRepair ? ' Do not use a PATCH delimiter for the failed file.' : `\n${aiProtocol.DELIMITER_INSTRUCTIONS}`}`
-    : '';
-  const strictCloneRules = `STRICT ROUTING AND ASSET RULES:
-- Complete Home first, then process only captured navbar routes in queue order.
-- src/App.jsx must explicitly import and register every authoritative route. A page file or data entry without an App route is invalid.
-- Reconstruct the current section from its scraped HTML, DOM hierarchy, computed styles, geometry, text, controls, and responsive evidence. These source elements are authoritative.
-- LOCAL ASSETS contains only assets captured for the current ${phase} section. Use only those exact publicPath values in this stage.
-- Never reuse an asset from another section, invent an /assets path, or modify another section to add images. Omit an image when no current-section asset matches.`;
-  const sharedShellPaths = files.filter((file) => file.encoding !== 'base64' && /(?:^|\/)(?:Header|Navbar|NavBar|Navigation|Footer|SiteHeader|SiteFooter|.*Layout|.*Shell)\.(?:jsx?|tsx?)$/i.test(file.path || '')).map((file) => file.path);
-  const sharedShellRequirement = page.path === '/'
-    ? '\n- SHARED SHELL: build the header/navigation and the footer as standalone shared components (for example src/components/layout/Header.jsx and Footer.jsx) wrapped by a shared layout in src/App.jsx, so every other page renders the identical header and footer. Match the real header exactly (logo, link order and labels, sizes, colours, sticky or transparent behaviour, mobile menu).'
-    : `\n- SHARED SHELL: the header and footer are identical on every page of the real site. ${sharedShellPaths.length ? `Reuse the existing shared components (${sharedShellPaths.join(', ')}) exactly as the home page built them` : 'Reuse the header and footer already used by the home page in src/App.jsx'}; never create a second or page-specific header/footer and do not change them, only the page body.`;
-  const prompt = `SEQUENTIAL CLONE PAGE STAGE\n\nComplete exactly one page phase before stopping.\nPHASE: ${phase}\nCURRENT PAGE:\n${JSON.stringify(pageAnalysis)}${repairRequirement}\n\nLOCAL ASSETS FOR THIS PAGE (reuse these paths; never invent placeholders):\n${JSON.stringify(pageAssets)}\n\nAUTHORITATIVE ROUTES:\n${JSON.stringify(compactRoutes)}\n\nSITE MAP ROUTE PATHS:\n${JSON.stringify(compactRoutes.map((route) => route.path))}\n\nCURRENT PROJECT SOURCE:\n${JSON.stringify(sourceFiles)}\n\nOTHER PROJECT FILES (contents omitted; do not rewrite them):\n${JSON.stringify(otherFiles)}\n\n${CLONE_VISUAL_FIDELITY_RULES}\n\nREQUIREMENTS:\n- ${phaseRequirement}${chunkRequirement}${fillRequirement}${sharedShellRequirement}\n- Work only on ${page.path}; preserve every already completed page, except files explicitly required by the repair override.\n- Use existing shared components when structurally appropriate and page-specific sections when unique.\n- Register ${page.path} as a local route and keep internal navigation local.\n- Reuse the listed local assets and preserve their measured rendering. If page assets are listed, the rendered page must reference at least one.\n- Asset identity: every listed asset has a stable id and a role (logo, hero, banner, product, profile, icon, decorative, content). Use an asset ONLY in the element where the real page placed it (see the placement queue: same alt text, section and nearby text). A logo is never a hero image, and an image of another section or page is never a stand-in. If an image is listed as not available, do not substitute any other asset: keep an empty box with the same width/height and aspect ratio instead.\n- Never add remote image URLs, stock photos, Unsplash links, or invented placeholders. Image src and CSS image values must use the listed local public paths.\n- Match the captured hierarchy, exact section count, headings, content, typography, colors, dimensions, spacing, controls, and responsive structure.\n- Keep source files compact: do not inline large raw HTML dumps, SVG blobs or base64 data; extract repeated UI into small components.\n- Return only minimal create/modify file operations. Do not rewrite unrelated files.\n- ${operationRequirement}${delimiterInstructions}`;
-  const promptBytes = Buffer.byteLength(prompt, 'utf8');
-  const maximumPromptBytes = Number.parseInt(process.env.CLONE_PAGE_MAX_INPUT_BYTES, 10) || 5 * 1024 * 1024;
-  if (promptBytes > maximumPromptBytes) {
-    throw new AIResponseValidationError(`Sequential page context for ${page.path} is ${promptBytes} bytes, above the ${maximumPromptBytes}-byte safety limit.`);
-  }
-  // Reference screenshots are only worth their tokens on stages that lay out the page.
-  const needsReferenceImage = !(phase === 'footer' || (phase === 'content' && page.contentChunk?.index > 0));
-  const referenceImages = needsReferenceImage ? [routeScreenshot, mobileScreenshot].filter(Boolean) : [];
-  const messages = [{
-    role: 'system',
-    content: `You are a source-driven website reconstruction engineer. Analyze the extracted HTML, DOM, CSS, content, routes, and asset associations before coding. Complete one route at a time without damaging completed routes. Use modular React and deterministic file operations.\n\n${strictCloneRules}\n\n${CLONE_VISUAL_FIDELITY_RULES}`
-  }, {
-    role: 'user',
-    content: referenceImages.length
-      ? [{ type: 'text', text: prompt }, ...referenceImages.map((url) => ({ type: 'image_url', image_url: { url } }))]
-      : prompt
-  }];
-  const completionOptions = {
-    model,
-    temperature: 0.1,
-    max_tokens: Number.parseInt(process.env.CLONE_PAGE_MAX_TOKENS, 10) || 16000,
-    plugins: [{ id: 'context-compression' }],
-    reasoning: { effort: phase === 'footer' ? 'low' : 'medium', exclude: true },
-    timeout: Math.max(1000, Math.min(
-      Number.parseInt(process.env.CLONE_PAGE_MODEL_TIMEOUT_MS, 10) || 180000,
-      deadlineAt ? deadlineAt - Date.now() : Number.MAX_SAFE_INTEGER
-    ))
-  };
-  if (useDelimiterRepair) {
-    completionOptions.response_format = false;
-  } else {
-    completionOptions.tools = [aiProtocol.FILE_OPERATIONS_TOOL];
-    completionOptions.tool_choice = { type: 'function', function: { name: aiProtocol.FILE_OPERATIONS_TOOL.function.name } };
-  }
-  let completion = await withTransientRetry(() => openrouterService.generateCompletion(messages, completionOptions), { signal, deadlineAt });
-  completion = await completeOpenRouterResponse(messages, completion, {
-    model,
-    structured: true,
-    maxContinuations: 3,
-    timeout: completionOptions.timeout,
-    continuationInstruction: `Continue the interrupted file operations for ${page.path}. Finish only this page and close the structured response.`
-  });
-  try {
-    const parsed = aiProtocol.parseAIResponse(completion, 'src/App.jsx');
-    const operations = aiProtocol.validateFileOperations(parsed, files);
-    const applied = aiProtocol.applyOperationsSafely(files, operations.files);
-    if (!applied.changedFiles.length) throw new AIResponseValidationError(`Sequential page stage ${page.path} returned no file changes.`);
-    return { files: applied.files, changedFiles: applied.changedFiles, usage: completion.usage || null };
-  } catch (error) {
-    error.usage = completion?.usage || null;
-    throw error;
-  }
-}
-
-// The project file whose source contains this text (used to tell the model WHERE a visible mismatch lives).
-function findOwningFile(files, text, cache = new Map()) {
-  const key = String(text || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '').slice(0, 60);
-  if (key.length < 6) return null;
-  for (const file of files) {
-    if (file.encoding === 'base64' || !/\.(?:jsx?|tsx?|html)$/i.test(file.path || '')) continue;
-    if (!cache.has(file.path)) cache.set(file.path, String(file.content || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ''));
-    if (cache.get(file.path).includes(key)) return file.path;
-  }
-  return null;
-}
-
-/**
- * One focused editing call: the model receives an instruction, the files it may change and measured facts, and answers with
- * patch operations that are validated and applied safely. Returns the new files and the token usage.
- */
-async function runPatchStage({ files, instruction, facts, targetPaths, model, signal }) {
-  signal?.throwIfAborted();
-  const budget = Number.parseInt(process.env.SOURCE_FILL_PATCH_CONTEXT_CHARS, 10) || 220000;
-  let used = 0;
-  const shown = [];
-  for (const filePath of targetPaths) {
-    const file = files.find((candidate) => candidate.path === filePath && candidate.encoding !== 'base64');
-    if (!file || used + String(file.content || '').length > budget) continue;
-    used += String(file.content || '').length;
-    shown.push(file);
-  }
-  const others = files.filter((file) => file.encoding !== 'base64' && !shown.includes(file)).map((file) => file.path);
-  const messages = [{
-    role: 'system',
-    content: `You are a precise front-end engineer correcting an existing React project so it matches a real website. Change ONLY what the instruction asks, with the smallest set of PATCH operations; keep all text, structure, routes, behaviour and unrelated styles exactly as they are. Never use remote URLs; images must use the exact local paths you are given. Copy every SEARCH block verbatim from the supplied files.\n${aiProtocol.DELIMITER_INSTRUCTIONS}`
-  }, {
-    role: 'user',
-    content: `${instruction}\n\nMEASURED FACTS (from the real website and from the rendered project; authoritative):\n${facts}\n\nFILES YOU MAY CHANGE:\n${shown.map((file) => `--- FILE: ${file.path} ---\n${file.content}`).join('\n\n')}\n\nOTHER PROJECT FILES (not shown; do not rewrite): ${others.join(', ')}`
-  }];
-  let completion = await withTransientRetry(() => openrouterService.generateCompletion(messages, { model, temperature: 0.1, max_tokens: Number.parseInt(process.env.CLONE_PAGE_MAX_TOKENS, 10) || 16000, response_format: false, reasoning: { effort: 'medium', exclude: true } }), { signal });
-  completion = await completeOpenRouterResponse(messages, completion, { model, structured: false, maxContinuations: 2, continuationInstruction: 'Continue exactly where the interrupted PATCH operations stopped and close every open tag.' });
-  const parsed = aiProtocol.parseAIResponse(completion, null);
-  const operations = aiProtocol.validateFileOperations(parsed, files);
-  const applied = aiProtocol.applyOperationsSafely(files, operations.files);
-  if (!applied.changedFiles.length) throw new AIResponseValidationError('The response contained no changes.');
-  return { files: applied.files, changedFiles: applied.changedFiles, usage: completion.usage || null };
-}
-
-/**
- * Brings EVERYTHING missing on one real page into an existing project, the way the website cloner builds a page: the real
- * markup (with its classes, measured styles, screenshot and per-section images) is processed in ordered parts, and a part is
- * only sent to the model when text of that part is missing from the project. A page the project has no route for is built
- * whole. After the parts, a coverage loop repeats until the real page's text is covered or no progress is possible.
- * Returns the new files plus a per-stage report. Never touches the project when nothing improves.
- */
-/**
- * "Clone this page again": rebuilds ONE page of an existing clone from a fresh read of the real page.
- * The page is rebuilt deterministically from the captured source (real markup, the site's own CSS, localized images) and
- * kept only if it matches the real page at least as well as the page it replaces, measured on a real render. If that is not
- * possible, the cloner's AI page builder is tried. The caller then runs the same real-site comparison and repair loop as a new clone.
- */
-async function recloneRoute({ files, source, provenance, model, signal, onStep = async () => {} }) {
-  const routePath = source.routePath;
-  const page = { ...source.page, path: routePath, captureStatus: 'captured' };
-  const capture = { ...source.capture, pages: [page, ...(source.capture.pages || []).filter((item) => item !== source.page && item.path !== routePath)] };
-  const target = Math.min(1, Math.max(0, Number.parseFloat(process.env.CLONE_MIN_FIDELITY) || 0.9));
-  const score = (entry) => (!entry || entry.error ? null : Math.min(entry.expectedWords ? entry.text : 1, entry.expectedImages >= 3 ? entry.images : 1, entry.expectedColors >= 3 ? entry.colors : 1));
-  const measure = async (candidate) => score((await measureCloneFidelity(candidate, capture, { signal, routes: [routePath] })).perPage[0]);
-  const report = { route: routePath, steps: [] };
-  let usage = null;
-  await onStep(`Measuring ${routePath} against the real page...`);
-  const before = await measure(files);
-  report.before = before;
-  let best = { files, score: before ?? -1, via: null };
-
-  // 1) Rebuild from the captured source: exact content and images, the site's own styling.
-  await onStep(`Re-cloning ${routePath} from the real website...`);
-  try {
-    // Pictures only: documents (PDFs...) stay links to the real site, so re-cloning one page does not bloat the project past the build size limit.
-    const imageAssets = (capture.assets || []).filter((asset) => !asset.isDocument && /^image\//i.test(asset.mimeType || ''));
-    const siteCss = cloneRouteGuarantee.buildSiteCss(capture.stylesheets || [], { assets: imageAssets, localizeCss: (css) => replaceAssetReferences(css, imageAssets) });
-    const localize = (html) => localizeInternalRouteLinks([{ path: 'x.html', content: replaceAssetReferences(html, imageAssets) }], capture)[0].content;
-    const assetFiles = imageAssets.filter((asset) => asset.localPath && asset.content).map((asset) => ({ path: asset.localPath, content: asset.content, language: 'binary', encoding: 'base64' }));
-    const present = new Set(files.map((file) => file.path));
-    const withAssets = [...files, ...assetFiles.filter((file) => !present.has(file.path))];
-    const built = cloneRouteGuarantee.rebuildRoutes(withAssets, [page], [routePath], { localize, assets: imageAssets, siteCss });
-    // Keep only the new pictures the rebuilt page (or the site CSS) really uses.
-    const textNow = built.files.filter((file) => file.encoding !== 'base64' && typeof file.content === 'string' && (!present.has(file.path) || file.content !== files.find((old) => old.path === file.path)?.content)).map((file) => file.content).join('\n');
-    const rebuilt = { ...built, files: built.files.filter((file) => file.encoding !== 'base64' || present.has(file.path) || textNow.includes(file.path.replace(/^public/, ''))) };
-    const applied = rebuilt.report.some((item) => item.applied);
-    if (!applied) report.steps.push({ step: 'rebuild-from-capture', applied: false, reason: rebuilt.report[0]?.failure || 'not possible' });
-    else {
-      const after = await measure(rebuilt.files);
-      report.steps.push({ step: 'rebuild-from-capture', applied: true, score: after });
-      if (after !== null && after >= best.score) best = { files: rebuilt.files, score: after, via: 'rebuild-from-capture' };
-    }
-  } catch (error) {
-    if (signal?.aborted || error?.name === 'AbortError') throw error;
-    report.steps.push({ step: 'rebuild-from-capture', applied: false, reason: String(error.message).slice(0, 200) });
-  }
-
-  // 2) Still below the target (or no rebuild possible): the cloner's own AI page builder recreates the page.
-  if (best.score < target) {
-    try {
-      const filled = await fillMissingFromRealPage({ files: best.files, source: { page, capture }, provenance, model, signal, treatAsNew: true, onStep });
-      if (filled.usage) usage = filled.usage;
-      const after = await measure(filled.files);
-      report.steps.push({ step: 'ai-recreate', applied: filled.changed.length > 0, score: after });
-      if (after !== null && filled.changed.length && after > best.score) best = { files: filled.files, score: after, via: 'ai-recreate' };
-    } catch (error) {
-      if (signal?.aborted || error?.name === 'AbortError' || /^Cancelled$/.test(error?.message)) throw error;
-      report.steps.push({ step: 'ai-recreate', applied: false, reason: String(error.message).slice(0, 200) });
-    }
-  }
-  report.after = best.score < 0 ? null : best.score;
-  report.via = best.via;
-  const original = new Map(files.map((file) => [file.path, file.content]));
-  const changed = best.files.filter((file) => original.get(file.path) !== file.content);
-  return { files: best.files, changed, report, usage };
-}
-
-async function fillMissingFromRealPage({ files, source, provenance, model, signal, onStep = async () => {}, passes, render = null, treatAsNew = false }) {
-  const { page, capture } = source;
-  const chunkChars = Number.parseInt(process.env.SOURCE_FILL_CHUNK_CHARS, 10) || 60000;
-  const maxStages = Number.parseInt(process.env.SOURCE_FILL_MAX_STAGES, 10) || 20;
-  const maxRepairPasses = passes || Number.parseInt(process.env.SOURCE_FILL_PASSES, 10) || 6;
-  const targetRatio = Number.parseFloat(process.env.SOURCE_FILL_TARGET_COVERAGE) || 0.97;
-  const stageMs = Number.parseInt(process.env.SOURCE_FILL_PASS_MS, 10) || 240000;
-  const assets = capture.assets || [];
-  const routeManifest = [
-    ...(provenance.routes || []).map(({ path: routePath, title }) => ({ path: routePath, title, description: '', pageType: 'page' })),
-    ...((provenance.routes || []).some((route) => route.path === page.path) ? [] : [{ path: page.path, title: page.title, description: page.description, pageType: page.pageType }])
-  ];
-  // The generator references assets by their local public path, so their files must exist while it works.
-  const assetFiles = assets
-    .filter((asset) => asset.localPath && asset.content)
-    .map((asset) => ({ path: asset.localPath, content: asset.content, language: 'binary', encoding: 'base64' }));
-  const present = new Set(files.map((file) => file.path));
-  let working = [...files, ...assetFiles.filter((file) => !present.has(file.path))];
-  const routeShot = capture.screenshots?.routes?.find((reference) => reference.path === page.path)?.dataUrl || capture.screenshots?.desktop || null;
-  const mobileShot = page.path === '/' ? (capture.screenshots?.mobile || null) : null;
-
-  const exists = treatAsNew ? false : pageExistsInFiles(working, page.path, provenance);
-  const before = measureCloneTextCoverage(page, working);
-  let coverage = before;
-  let usage = null;
-  const report = { pagePath: page.path, createdPage: !exists, before: { total: before.total, missing: before.missing.length }, stages: [], passes: [] };
-
-  const sectionsOf = (kinds) => (page.extraction?.htmlSections || []).filter((section) => kinds.includes(classifyCloneAssetSection(section, page)));
-  // The captured section list is truncated and nested; the full page markup is the complete, ordered source.
-  const contentSource = simplifyCloneHtml(page.extraction?.html || cloneContentHtml(page), { keepClass: true });
-  const parts = Math.min(24, Math.max(1, Math.ceil(contentSource.length / chunkChars)));
-  const boundary = (target) => { const at = contentSource.indexOf('<', target); return at < 0 ? contentSource.length : at; };
-  const partHtml = (index) => {
-    const size = Math.ceil(contentSource.length / parts);
-    return contentSource.slice(index === 0 ? 0 : boundary(size * index), index === parts - 1 ? contentSource.length : boundary(size * (index + 1)));
-  };
-
-  // Plan the stages. New page: top, every content part, footer. Existing page: only the parts with missing text.
-  let plan;
-  if (!exists) {
-    plan = buildCloneImplementationStages([page]).map((stage) => ({ phase: stage.phase, contentChunk: stage.contentChunk, html: stage.contentChunk ? partHtml(stage.contentChunk.index) : null }));
-  } else {
-    const corpus = cloneTextCorpus(working);
-    const topMissing = measureHtmlCoverage(sectionsOf(['header', 'hero']).map((section) => section.html).join('\n'), working, corpus).missing;
-    const footerMissing = measureHtmlCoverage(sectionsOf(['footer']).map((section) => section.html).join('\n'), working, corpus).missing;
-    plan = [];
-    if (parts === 1) {
-      // A short page is handled whole, from its complete markup, in a single stage.
-      if (before.missing.length) plan.push({ phase: 'page', missing: before.missing });
-    } else {
-    if (topMissing.length) plan.push({ phase: 'top', missing: topMissing });
-    for (let index = 0; index < parts; index += 1) {
-      const html = partHtml(index);
-      const missing = measureHtmlCoverage(html, working, corpus).missing;
-      if (missing.length) plan.push({ phase: 'content', contentChunk: { index, total: parts }, html, missing });
-    }
-    if (footerMissing.length) plan.push({ phase: 'footer', missing: footerMissing });
-    }
-  }
-  if (plan.length > maxStages) {
-    report.skippedStages = plan.length - maxStages;
-    plan = plan.slice(0, maxStages);
-  }
-
-  // Runs one model stage and keeps its result only when it is valid and does not make the page's coverage worse.
-  const attempt = async (stage, label, extra = {}) => {
-    signal?.throwIfAborted();
-    await onStep(label);
-    const note = stage.missing?.length
-      ? `Implement ONLY the elements below that are missing from the project (and the images that belong to them), in the same order as the real markup, using the real classes and measured styles. Do not duplicate content that already exists. Missing text blocks of this part:\n${stage.missing.slice(0, 60).map((block) => `- ${block.text.slice(0, 220)}`).join('\n')}${extra.failure ? `\nThe previous attempt was rejected: ${extra.failure}` : ''}`
-      : (extra.failure ? `The previous attempt was rejected: ${extra.failure}` : '');
-    const generated = await generateSequentialClonePage({
-      files: working,
-      page: { ...page, fillMode: true, fillNote: note, ...(stage.contentChunk && parts > 1 ? { contentChunk: stage.contentChunk } : {}), ...extra.pageOverrides },
-      phase: stage.phase,
-      routeManifest,
-      siteMap: capture.siteMap || provenance.siteMap || [],
-      assets,
-      routeScreenshot: stage.phase === 'top' || stage.phase === 'page' || (stage.contentChunk?.index === 0) ? routeShot : null,
-      mobileScreenshot: stage.phase === 'top' ? mobileShot : null,
-      model,
-      signal,
-      deadlineAt: Date.now() + stageMs
-    });
-    usage = mergeOpenRouterUsage(usage, generated.usage, model);
-    const candidate = localizeInternalRouteLinks(generated.files, { pages: capture.pages || [] });
-    const staticDiagnostics = generationPipeline.validateGeneratedFiles(candidate);
-    if (staticDiagnostics.length) return { ok: false, reason: generationPipeline.formatDiagnostics(staticDiagnostics).slice(0, 1500) };
-    const assetCheck = validateLocalizedAssetReferences(candidate);
-    if (assetCheck.remote.length) return { ok: false, reason: `Remote visual assets are not allowed: ${JSON.stringify(assetCheck.remote.slice(0, 10))}` };
-    const improved = measureCloneTextCoverage(page, candidate);
-    return { ok: true, files: candidate, coverage: improved };
-  };
-
-  const label = (stage, number, total) => {
-    const where = stage.phase === 'content' ? `part ${stage.contentChunk.index + 1} of ${stage.contentChunk.total}` : stage.phase;
-    return `${exists ? 'Adding missing content to' : 'Creating'} ${page.path} from the real website (${where}, step ${number} of ${total}): ${coverage.missing.length} of ${coverage.total} text blocks still missing`;
-  };
-
-  for (let index = 0; index < plan.length; index += 1) {
-    const stage = plan[index];
-    let failure = '';
-    let accepted = false;
-    for (let tryNumber = 1; tryNumber <= 2 && !accepted; tryNumber += 1) {
-      try {
-        const outcome = await attempt(stage, label(stage, index + 1, plan.length), { failure });
-        if (!outcome.ok) { failure = outcome.reason; continue; }
-        // A part of an existing page must reduce what is missing; the parts of a brand-new page build it up from nothing.
-        if (exists && outcome.coverage.missing.length >= coverage.missing.length) { failure = 'The response did not add the missing content of this part.'; continue; }
-        working = outcome.files;
-        coverage = outcome.coverage;
-        accepted = true;
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        failure = String(error?.message || error).slice(0, 500);
-        logger.warn(`Source fill stage ${stage.phase}${stage.contentChunk ? ` ${stage.contentChunk.index + 1}/${stage.contentChunk.total}` : ''} for ${page.path} failed: ${failure}`);
-      }
-    }
-    report.stages.push({ phase: stage.phase, part: stage.contentChunk ? stage.contentChunk.index + 1 : null, of: stage.contentChunk ? stage.contentChunk.total : null, accepted, ...(accepted ? { missingAfter: coverage.missing.length } : { reason: failure }) });
-  }
-
-  // Completeness loop over whatever is still missing, anywhere on the page.
-  let stalled = 0;
-  let failure = '';
-  for (let pass = 1; pass <= maxRepairPasses && coverage.missing.length > 0 && coverage.ratio < targetRatio && stalled < 2; pass += 1) {
-    signal?.throwIfAborted();
-    try {
-      const outcome = await attempt(
-        { phase: 'content', missing: coverage.missing },
-        `Completing ${page.path}: ${coverage.missing.length} of ${coverage.total} text blocks still missing (check ${pass} of ${maxRepairPasses})`,
-        { failure, pageOverrides: { coverageMissing: coverage.missing, repairDiagnostics: buildCloneCoverageDiagnostics(coverage, page, failure), contentChunk: undefined } }
-      );
-      if (!outcome.ok) { failure = outcome.reason; stalled += 1; report.passes.push({ pass, accepted: false, reason: failure }); continue; }
-      if (outcome.coverage.missing.length >= coverage.missing.length) { failure = 'The response did not add the missing content.'; stalled += 1; report.passes.push({ pass, accepted: false, reason: failure }); continue; }
-      working = outcome.files;
-      coverage = outcome.coverage;
-      failure = '';
-      stalled = 0;
-      report.passes.push({ pass, accepted: true, missing: coverage.missing.length });
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      failure = String(error?.message || error).slice(0, 500);
-      stalled += 1;
-      report.passes.push({ pass, accepted: false, reason: failure });
-    }
-  }
-
-  // ---- Measured fidelity audit: colours, backgrounds, fonts and image placement versus the real page ----
-  const realFidelity = page.fidelity;
-  const renderProject = render || ((list) => inspectRenderedPreview(list, { signal, routePath: page.path, inspect: fidelityAudit.pageSnapshot, argument: { maxTexts: 2500, maxImages: 1500 } }));
-  const identityManifest = assetManifestLib.buildAssetManifest({ assets });
-  const measure = async (list) => {
-    const snapshot = await renderProject(list);
-    return {
-      identity: fidelityAudit.assetIdentityState({ manifest: identityManifest, route: page.path, realImages: realFidelity.images || [], projectImages: snapshot.images || [] }),
-      style: fidelityAudit.compareStyles(realFidelity, snapshot),
-      assetState: fidelityAudit.assetPlacementState({
-        assets, realImages: realFidelity.images || [], projectImages: snapshot.images || [],
-        sourceText: list.filter((file) => file.encoding !== 'base64' && file.path !== 'src/assets/asset-map.json').map((file) => String(file.content || '')).join('\n')
-      }),
-      docHeight: snapshot.docHeight,
-      root: snapshot.root
-    };
-  };
-  const summarize = (audit) => ({
-    textsMatched: audit.style.matched, textsNotFound: audit.style.notFound, styleMismatches: audit.style.mismatches.length, unreadableOrHiddenText: audit.style.problems.length,
-    assetsNeeded: audit.assetState.needed, assetsPlaced: audit.assetState.placed, pageHeight: audit.docHeight, realPageHeight: realFidelity.docHeight
-  });
-  let audit = null;
-  if (realFidelity?.texts?.length) {
-    try {
-      await onStep(`Comparing the rendered project with the real ${page.path} (colours, backgrounds, fonts, images)...`);
-      audit = await measure(working);
-      report.audit = { before: summarize(audit), styleStages: [], assetStages: [] };
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      report.audit = { unavailable: String(error?.message || error).slice(0, 300) };
-      logger.warn(`Fidelity audit for ${page.path} unavailable: ${report.audit.unavailable}`);
-    }
-  }
-  const staticOk = (list) => !generationPipeline.validateGeneratedFiles(list).length;
-  // Page-wide styling lives in global CSS, the HTML shell (e.g. classes on <body>), the entry module and the Tailwind config.
-  const cssPaths = () => working.filter((file) => file.encoding !== 'base64' && String(file.content || '').length < 60000 && (/\.css$/i.test(file.path) || /^(?:public\/)?index\.html$/i.test(file.path) || /^(?:src\/)?(?:main|index)\.(?:jsx?|tsx?)$/i.test(file.path) || /tailwind\.config\.[cm]?[jt]s$/i.test(file.path))).map((file) => file.path);
-  const fontAssets = assets.filter((asset) => /^font\//i.test(asset.mimeType || '') || /font/i.test(asset.mimeType || '')).map(({ publicPath, mimeType }) => ({ publicPath, mimeType }));
-
-  // Colours, backgrounds and fonts: fix the root cause (page/global styles, wrappers) rather than element by element.
-  const stylePasses = Number.parseInt(process.env.SOURCE_FILL_STYLE_PASSES, 10) || 2;
-  const styleScore = (state) => state.style.mismatches.length + state.style.problems.length * 3;
-  for (let pass = 1; audit && pass <= stylePasses && styleScore(audit) > 0; pass += 1) {
-    signal?.throwIfAborted();
-    await onStep(`Aligning colours, backgrounds and fonts with the real page: ${audit.style.mismatches.length} elements differ, ${audit.style.problems.length} unreadable or hidden (pass ${pass} of ${stylePasses})`);
-    const groups = new Map();
-    const ownerCache = new Map();
-    for (const item of audit.style.mismatches) {
-      for (const diff of item.diffs) {
-        const key = `${diff.property}|${diff.real}|${diff.project}`;
-        const group = groups.get(key) || { property: diff.property, real: diff.real, project: diff.project, count: 0, examples: [] };
-        group.count += 1;
-        if (group.examples.length < 3) group.examples.push({ text: item.text.slice(0, 60), tag: item.tag, file: findOwningFile(working, item.text, ownerCache), projectAncestors: item.projectChain, layerPaintingTheRealBackground: item.realLayer, layerPaintingTheProjectBackground: item.projectLayer });
-        groups.set(key, group);
-      }
-    }
-    const ranked = [...groups.values()].sort((a, b) => b.count - a.count).slice(0, 24);
-    const owners = [...new Set(ranked.flatMap((group) => group.examples.map((example) => example.file)).filter(Boolean))];
-    const design = page.design || {};
-    const facts = JSON.stringify({
-      realPageDefaults: { background: design.background, textColor: design.color, fontFamily: design.fontFamily, palette: design.palette, cssVariables: Object.fromEntries(Object.entries(design.cssVariables || {}).slice(0, 40)) },
-      projectPageDefaults: audit.root || null,
-      fontFilesAvailable: fontAssets.slice(0, 20),
-      differences: ranked,
-      unreadableOrHiddenText: (() => { const seen = new Set(); return audit.style.problems.filter((problem) => { const key = `${problem.kind}|${problem.color}|${problem.background}|${problem.documentY}`; if (seen.has(key)) return false; seen.add(key); return true; }).slice(0, 25).map((problem) => ({ ...problem, sourceFile: findOwningFile(working, problem.text, ownerCache) })); })()
-    }, null, 1);
-    let failureNote = '';
-    let accepted = false;
-    for (let attempt = 1; attempt <= 2 && !accepted; attempt += 1) {
-      try {
-        const patched = await runPatchStage({
-          files: working, model, signal, facts: failureNote ? `${facts}\n\nTHE PREVIOUS ATTEMPT WAS REJECTED: ${failureNote}` : facts, targetPaths: [...new Set([...owners, ...cssPaths()])],
-          instruction: `Make the rendered project use the same colours, backgrounds and fonts as the real website. "differences" lists, for the elements (paired by their text) where the project differs: the property, the value on the REAL page, the value in the PROJECT, how many elements are affected and example elements with the source file that contains them. Fix the root cause first: compare realPageDefaults with projectPageDefaults (page/body background and text colour, which may come from classes on <body> in index.html, global CSS, CSS variables or the Tailwind theme, and may be overridden by a wrapper component) and correct the place that really wins; then individual sections and components only if needed (each section of the real page has its own background layer, described per example by layerPaintingTheRealBackground (its element, position and size on the real page) next to projectAncestors (the elements that hold the text in the project): give the project element that corresponds to that layer, or the wrapper of that section, the real background, so a dark section gets a dark background with light text and a light section a light one). If a needed font file is listed under fontFilesAvailable, declare it with @font-face using that exact local path; otherwise use the closest generic fallback. Also fix every entry of unreadableOrHiddenText: kind "unreadable" means the text colour has too little contrast with the background behind it (give the section the real background or the text the real colour); kind "covered" means another layer sits on top of the text (typically a fixed header or an absolutely positioned element that must not overlap: add the missing top padding/offset or correct the positioning). Never trade one problem for another: the change must not make any text unreadable. Do not change text, structure or images.`
-        });
-        usage = mergeOpenRouterUsage(usage, patched.usage, model);
-        if (!staticOk(patched.files)) { failureNote = generationPipeline.formatDiagnostics(generationPipeline.validateGeneratedFiles(patched.files)).slice(0, 800); continue; }
-        const next = await measure(patched.files);
-        // Fewer differences overall, and never more unreadable/hidden text than before.
-        if (styleScore(next) < styleScore(audit) && next.style.problems.length <= audit.style.problems.length && next.style.notFound <= audit.style.notFound + 2) {
-          working = patched.files;
-          report.audit.styleStages.push({ pass, attempt, accepted: true, mismatchesBefore: audit.style.mismatches.length, mismatchesAfter: next.style.mismatches.length, problemsBefore: audit.style.problems.length, problemsAfter: next.style.problems.length });
-          audit = next;
-          accepted = true;
-        } else {
-          failureNote = `the result had ${next.style.mismatches.length} differing elements and ${next.style.problems.length} unreadable/hidden texts (before: ${audit.style.mismatches.length} and ${audit.style.problems.length}); ${next.style.problems.length > audit.style.problems.length ? 'it made text unreadable: ' + JSON.stringify(next.style.problems.slice(0, 5)) : 'it did not reduce the differences enough'}.`;
-        }
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        failureNote = String(error?.message || error).slice(0, 400);
-      }
-    }
-    if (!accepted) report.audit.styleStages.push({ pass, accepted: false, reason: failureNote.slice(0, 300) });
-  }
-
-  // Images: place every downloaded image that belongs on the real page but is not used yet, where it sits on the real page.
-  const assetBatch = Number.parseInt(process.env.SOURCE_FILL_ASSET_BATCH, 10) || 25;
-  // As many batches as the unplaced images need (bounded), so a page with hundreds of images is not left half done.
-  const assetPasses = Math.min(Number.parseInt(process.env.SOURCE_FILL_ASSET_PASSES, 10) || 12, audit ? Math.ceil(audit.assetState.unplaced.length / assetBatch) + 1 : 0);
-  let skipped = 0;
-  for (let pass = 1; audit && pass <= assetPasses && audit.assetState.unplaced.length > skipped; pass += 1) {
-    signal?.throwIfAborted();
-    const batch = audit.assetState.unplaced.slice(skipped, skipped + assetBatch);
-    await onStep(`Placing images from the real page: ${audit.assetState.unplaced.length} of ${audit.assetState.needed} are not used yet (pass ${pass} of ${assetPasses})`);
-    const ownerCache = new Map();
-    const placements = batch.map(({ asset, spots }) => {
-      const spot = spots[0];
-      return { image: asset.publicPath, alt: asset.alt || spot.alt || '', realSize: `${spot.width}x${spot.height}`, kind: spot.kind === 'background' ? 'css background-image' : 'img element', positionFromTop: spot.documentY, nearbyText: spot.near || '', sourceFile: findOwningFile(working, spot.near, ownerCache), timesOnRealPage: spots.length };
-    });
-    const owners = [...new Set(placements.map((placement) => placement.sourceFile).filter(Boolean))].slice(0, 8);
-    const fallback = owners.length ? [] : working.filter((file) => file.encoding !== 'base64' && /\.(?:jsx|tsx)$/i.test(file.path) && String(file.content || '').length < 30000).map((file) => file.path).slice(0, 10);
-    let failureNote = '';
-    let accepted = false;
-    for (let attempt = 1; attempt <= 2 && !accepted; attempt += 1) {
-      try {
-        const patched = await runPatchStage({
-          files: working, model, signal, facts: `${JSON.stringify(placements, null, 1)}${failureNote ? `\n\nTHE PREVIOUS ATTEMPT WAS REJECTED: ${failureNote}` : ''}`, targetPaths: [...owners, ...fallback, ...cssPaths()],
-          instruction: 'Each listed image is downloaded in the project but not used. Place every one of them in the existing component whose content is next to it on the real page ("nearbyText", "sourceFile"), as an <img> (or a CSS background-image when kind says so) with its alt text and the same rendered size and crop (object-fit) as on the real page. Use the exact local "image" path. Keep all existing content and layout; only add or complete the images. Every edit must leave valid JSX (balanced tags, one root, no leftover fragments). If an image truly has no place in the existing markup, skip it.'
-        });
-        usage = mergeOpenRouterUsage(usage, patched.usage, model);
-        if (!staticOk(patched.files)) { failureNote = generationPipeline.formatDiagnostics(generationPipeline.validateGeneratedFiles(patched.files)).slice(0, 800); continue; }
-        const next = await measure(patched.files);
-        if (next.assetState.unplaced.length < audit.assetState.unplaced.length && next.style.problems.length <= audit.style.problems.length) {
-          working = patched.files;
-          report.audit.assetStages.push({ pass, attempt, accepted: true, placed: audit.assetState.unplaced.length - next.assetState.unplaced.length, stillUnplaced: next.assetState.unplaced.length });
-          audit = next;
-          skipped = 0;
-          accepted = true;
-        } else {
-          failureNote = next.style.problems.length > audit.style.problems.length ? 'the new images made existing text unreadable or hidden; place them without covering text or changing section backgrounds.' : 'no image was placed.';
-        }
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        failureNote = String(error?.message || error).slice(0, 500);
-      }
-    }
-    if (!accepted) { report.audit.assetStages.push({ pass, accepted: false, reason: failureNote.slice(0, 300) }); skipped += assetBatch; }
-  }
-  // Identity: an image that loads can still be the WRONG one. Whatever the real page ties to a specific element is restored
-  // deterministically (no model, no guessing); anything ambiguous or unavailable is reported, never substituted.
-  if (audit && report.audit) {
-    const identityReport = { before: audit.identity.defects.length, repaired: [], unresolved: [] };
-    for (let pass = 1; pass <= 2; pass += 1) {
-      const repairable = audit.identity.defects.filter((defect) => ['asset-mismatch', 'unrelated-substitute'].includes(defect.type));
-      if (!repairable.length) break;
-      const fixed = assetManifestLib.repairAssetReferences(working, repairable, identityManifest);
-      if (!fixed.repaired.length) { identityReport.unresolved = fixed.unresolved.map(({ defect, reason }) => ({ type: defect.type, alt: defect.alt, src: defect.src, reason })); break; }
-      if (!staticOk(fixed.files)) break;
-      const next = await measure(fixed.files);
-      if (next.identity.defects.length < audit.identity.defects.length && next.style.problems.length <= audit.style.problems.length) {
-        working = fixed.files;
-        audit = next;
-        identityReport.repaired.push(...fixed.repaired);
-      } else {
-        identityReport.unresolved = fixed.unresolved.map(({ defect, reason }) => ({ type: defect.type, alt: defect.alt, src: defect.src, reason }));
-        break;
-      }
-    }
-    identityReport.after = audit.identity.defects.length;
-    identityReport.remaining = audit.identity.defects.slice(0, 30).map(({ type, src, alt, expectedPublicPath, belongsTo }) => ({ type, src, alt, expectedPublicPath, belongsTo }));
-    report.audit.assetIdentity = identityReport;
-  }
-  if (audit && report.audit) {
-    report.audit.after = summarize(audit);
-    report.audit.imagesNotPlaced = audit.assetState.unplaced.slice(0, 50).map(({ asset, spots }) => ({ image: asset.publicPath, positionFromTop: spots[0].documentY }));
-  }
-
-  report.after = { total: coverage.total, missing: coverage.missing.length, ratio: Math.round(coverage.ratio * 100) / 100 };
-  // Only images the final source really uses stay in the project.
-  const sourceText = working.filter((file) => file.encoding !== 'base64').map((file) => String(file.content || '')).join('\n');
-  const unusedAssets = new Set(assets.filter((asset) => asset.localPath && !sourceText.includes(asset.publicPath) && !files.some((file) => file.path === asset.localPath)).map((asset) => asset.localPath));
-  working = working.filter((file) => !unusedAssets.has(file.path));
-  const changed = working.filter((file) => {
-    const original = files.find((candidate) => candidate.path === file.path);
-    return !original || original.content !== file.content;
-  });
-  return { files: working, changed, usage, report, coverage };
-}
-
-// True only when a route for this path is really defined in the code (not merely linked to from a menu).
-function hasRouteDefinition(files, pagePath) {
-  if (pagePath === '/') return true;
-  const escaped = pagePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const definition = new RegExp(`\\bpath\\s*[=:]\\s*\\{?\\s*['"\`]${escaped}/?['"\`]`);
-  return files.some((file) => file.encoding !== 'base64' && /\.(?:jsx?|tsx?)$/i.test(file.path) && definition.test(String(file.content || '')));
-}
-
-function pageExistsInFiles(files, pagePath, provenance = {}) {
-  if (pagePath === '/') return true;
-  if ((provenance.routes || []).some((route) => route.path === pagePath)) return true;
-  const quoted = new RegExp(`['"\`]${pagePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/?['"\`]`);
-  return files.some((file) => file.encoding !== 'base64' && /\.(?:jsx?|tsx?|json)$/i.test(file.path) && quoted.test(String(file.content || '')));
-}
-
-async function completeOpenRouterResponse(messages, completion, {
-  model,
-  continuationInstruction,
-  structured = false,
-  maxContinuations = Number.parseInt(process.env.OPENROUTER_MAX_CONTINUATIONS, 10) || 4,
-  timeout = 120000
-} = {}) {
-  // A structured answer is finished when the provider did not cut it for length AND nothing in it is visibly cut off (a provider can
-  // report "stop" for tool-call JSON that ends mid-string, or leave a <FILE> block open).
-  const isFinished = (candidate) => (candidate?.finishReason !== 'length' && !(structured && aiProtocol.isIncompleteStructuredResponse(candidate)))
-    || (structured && candidate?.finishReason === 'length' && aiProtocol.hasCompleteStructuredResponse(candidate));
-  if (isFinished(completion)) {
-    return completion;
-  }
-
-  const initialToolCalls = Array.isArray(completion?.tool_calls) ? completion.tool_calls : null;
-  const partialToolArguments = initialToolCalls?.[0]?.function?.arguments || initialToolCalls?.[0]?.arguments;
-  let combined = String(partialToolArguments || completion?.content || '');
-  let aggregateUsage = completion?.usage || null;
-  for (let attempt = 0; attempt < maxContinuations; attempt++) {
-    if (!combined || combined.length > 1024 * 1024) break;
-    const continued = await generateWithRetry([
-      ...messages,
-      { role: 'assistant', content: combined },
-      { role: 'user', content: continuationInstruction }
-    ], {
-      model,
-      temperature: 0,
-      max_tokens: 16000,
-      plugins: [{ id: 'context-compression' }],
-      reasoning: { effort: 'low', exclude: true },
-      response_format: false,
-      timeout
-    });
-    const continuedToolArguments = continued?.tool_calls?.[0]?.function?.arguments || continued?.tool_calls?.[0]?.arguments;
-    aggregateUsage = mergeRawOpenRouterUsage(aggregateUsage, continued?.usage);
-    const continuation = continuedToolArguments || continued?.content;
-    // A continuation that returns nothing cannot make progress; do not spend the remaining attempts on it.
-    if (!String(continuation || '').trim()) break;
-    combined = aiProtocol.appendResponseContinuation(combined, continuation);
-    const tool_calls = initialToolCalls?.map((call, index) => index === 0
-      ? { ...call, function: call.function ? { ...call.function, arguments: combined } : undefined, arguments: call.function ? call.arguments : combined }
-      : call);
-    completion = { ...continued, content: initialToolCalls ? '' : combined, tool_calls: tool_calls || continued?.tool_calls || null, usage: aggregateUsage };
-    if (isFinished(completion)) {
-      return completion;
-    }
-  }
-
-  const message = structured
-    ? `The AI returned an incomplete structured response after ${maxContinuations} continuation attempt(s).`
-    : `The AI returned incomplete generated code after ${maxContinuations} continuation attempt(s).`;
-  if (structured) throw new AIResponseMalformedError(message);
-  throw new Error(message);
 }
 
 // Every static <Route path="/x"> the app registers must render. Used to smoke-test each page of a created site,
@@ -1516,206 +196,6 @@ function salvagePartialProject(files, onRemaining) {
 
 function shouldUseIncrementalMode(type, project) {
   return type === 'modify' && Boolean(project && Array.isArray(project.files) && project.files.length);
-}
-
-function cleanSourceCode(content) {
-  if (!content) return '';
-  let str = String(content).trim();
-
-  // Try extracting from markdown JSON code block or direct JSON
-  const jsonBlockMatch = str.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/i);
-  const potentialJson = jsonBlockMatch ? jsonBlockMatch[1].trim() : ((str.startsWith('{') && str.endsWith('}')) ? str : null);
-
-  if (potentialJson) {
-    try {
-      const parsed = JSON.parse(potentialJson);
-      if (parsed['src/App.jsx'] && typeof parsed['src/App.jsx'] === 'string') return repairAndSanitizeReactCode(parsed['src/App.jsx'].trim());
-      if (parsed['App.jsx'] && typeof parsed['App.jsx'] === 'string') return repairAndSanitizeReactCode(parsed['App.jsx'].trim());
-      if (parsed.code && typeof parsed.code === 'string') return repairAndSanitizeReactCode(parsed.code.trim());
-      if (parsed.react && typeof parsed.react === 'string') return repairAndSanitizeReactCode(parsed.react.trim());
-      if (parsed.component && typeof parsed.component === 'string') return repairAndSanitizeReactCode(parsed.component.trim());
-      if (parsed.app && typeof parsed.app === 'string') return repairAndSanitizeReactCode(parsed.app.trim());
-
-      if (Array.isArray(parsed.actions)) {
-        const appAction = parsed.actions.find(a => a.path && (a.path === 'src/App.jsx' || a.path.endsWith('App.jsx')));
-        if (appAction?.content && typeof appAction.content === 'string') {
-          return repairAndSanitizeReactCode(appAction.content.trim());
-        }
-      }
-
-      if (Array.isArray(parsed.files)) {
-        const appFile = parsed.files.find(f => f.path && (f.path === 'src/App.jsx' || f.path.endsWith('App.jsx')));
-        if (appFile?.content && typeof appFile.content === 'string') {
-          return repairAndSanitizeReactCode(appFile.content.trim());
-        }
-      }
-
-      // Check if any top-level key ends with App.jsx
-      for (const key of Object.keys(parsed)) {
-        if (key.endsWith('App.jsx') && typeof parsed[key] === 'string') {
-          return repairAndSanitizeReactCode(parsed[key].trim());
-        }
-      }
-    } catch (e) {}
-  }
-
-  // Strip conversational preamble and extract code fences if present
-  const codeBlockMatch = str.match(/```(?:jsx|tsx|javascript|typescript|react)?\s*\n([\s\S]*?)\n```/i);
-  if (codeBlockMatch) {
-    str = codeBlockMatch[1].trim();
-  } else {
-    str = str.replace(/^```(?:jsx|tsx|javascript|typescript|react)?\s*\n?/i, '')
-             .replace(/\n?```\s*$/i, '')
-             .trim();
-  }
-
-  // Strip conversational preamble before code tokens if any
-  if (str.startsWith('Here is') || str.startsWith("Here's") || str.startsWith('Below is') || str.startsWith('Sure,') || str.startsWith('Certainly')) {
-    const firstCodeToken = str.search(/^(?:import|export|const|function|class|let|var)\s/m);
-    if (firstCodeToken > 0) {
-      str = str.slice(firstCodeToken).trim();
-    }
-  }
-
-  // If after stripping fences it is still a JSON object
-  if (str.startsWith('{') && str.endsWith('}')) {
-    try {
-      const parsed = JSON.parse(str);
-      if (parsed['src/App.jsx'] && typeof parsed['src/App.jsx'] === 'string') return repairAndSanitizeReactCode(parsed['src/App.jsx'].trim());
-      if (parsed['App.jsx'] && typeof parsed['App.jsx'] === 'string') return repairAndSanitizeReactCode(parsed['App.jsx'].trim());
-      if (parsed.code && typeof parsed.code === 'string') return repairAndSanitizeReactCode(parsed.code.trim());
-      if (parsed.react && typeof parsed.react === 'string') return repairAndSanitizeReactCode(parsed.react.trim());
-      if (parsed.component && typeof parsed.component === 'string') return repairAndSanitizeReactCode(parsed.component.trim());
-      if (parsed.app && typeof parsed.app === 'string') return repairAndSanitizeReactCode(parsed.app.trim());
-
-      if (Array.isArray(parsed.actions)) {
-        const appAction = parsed.actions.find(a => a.path && (a.path === 'src/App.jsx' || a.path.endsWith('App.jsx')));
-        if (appAction?.content && typeof appAction.content === 'string') {
-          return repairAndSanitizeReactCode(appAction.content.trim());
-        }
-      }
-
-      for (const key of Object.keys(parsed)) {
-        if (key.endsWith('App.jsx') && typeof parsed[key] === 'string') {
-          return repairAndSanitizeReactCode(parsed[key].trim());
-        }
-      }
-    } catch (e) {}
-  }
-
-  // Guard against returning bare JSON starting with {"src/App.jsx"
-  if (str.startsWith('{') && (str.includes('"src/App.jsx"') || str.includes('"App.jsx"'))) {
-    try {
-      const parsed = JSON.parse(str);
-      if (parsed['src/App.jsx']) return repairAndSanitizeReactCode(parsed['src/App.jsx'].trim());
-      if (parsed['App.jsx']) return repairAndSanitizeReactCode(parsed['App.jsx'].trim());
-    } catch (e) {}
-
-    // Fallback unescape for truncated or unclosed JSON
-    const match = str.match(/"(?:src\/)?App\.jsx"\s*:\s*"/);
-    if (match) {
-      const startIndex = match.index + match[0].length;
-      let inner = str.slice(startIndex);
-      const closingMatch = inner.match(/(?<!\\)"\s*(?:,|\})/);
-      if (closingMatch) {
-        inner = inner.slice(0, closingMatch.index);
-      } else {
-        if (inner.endsWith('\\')) inner = inner.slice(0, -1);
-        if (inner.endsWith('"')) inner = inner.slice(0, -1);
-      }
-      for (let i = 0; i <= 20; i++) {
-        try {
-          const candidate = '"' + inner.slice(0, inner.length - i) + '"';
-          return repairAndSanitizeReactCode(JSON.parse(candidate).trim());
-        } catch (e) {}
-      }
-      const manual = inner
-        .replace(/\\n/g, '\n')
-        .replace(/\\r/g, '\r')
-        .replace(/\\t/g, '\t')
-        .replace(/\\"/g, '"')
-        .replace(/\\\\/g, '\\');
-      return repairAndSanitizeReactCode(manual.trim());
-    }
-  }
-
-  return repairAndSanitizeReactCode(str);
-}
-
-function parseRepairFiles(responseText, targetPath) {
-  let raw = String(responseText || '').trim();
-  const jsonBlock = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (jsonBlock) {
-    raw = jsonBlock[1].trim();
-  } else {
-    raw = raw.replace(/^```(?:json|javascript|jsx|tsx)?\s*/i, '').replace(/\s*```$/i, '');
-  }
-
-  let parsed = null;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    const sanitized = raw.replace(/(?<!\\)\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})/g, '\\\\');
-    try {
-      parsed = JSON.parse(sanitized);
-    } catch (_) {
-      const first = sanitized.indexOf('{');
-      const last = sanitized.lastIndexOf('}');
-      if (first >= 0 && last > first) {
-        try {
-          parsed = JSON.parse(sanitized.slice(first, last + 1));
-        } catch (_) {}
-      }
-    }
-  }
-
-  if (!parsed) {
-    const fileMatches = [...raw.matchAll(/"path"\s*:\s*"([^"]+)"[\s\S]*?"content"\s*:\s*"([\s\S]*?)(?=(?:"\s*,\s*"path"|"\s*\}\s*\]|\s*\}\s*\]\s*\}|$))/g)];
-    if (fileMatches.length > 0) {
-      const extracted = [];
-      for (const m of fileMatches) {
-        let content = m[2];
-        content = content.replace(/(?<!\\)"\s*$/, '')
-          .replace(/\\n/g, '\n')
-          .replace(/\\r/g, '\r')
-          .replace(/\\t/g, '\t')
-          .replace(/\\"/g, '"')
-          .replace(/\\\\/g, '\\');
-        extracted.push({ path: m[1], content: repairAndSanitizeReactCode(content.trim()) });
-      }
-      if (extracted.length) return extracted;
-    }
-
-    const directCode = cleanSourceCode(responseText);
-    if (directCode && (directCode.includes('export default') || directCode.includes('function App') || directCode.includes('return'))) {
-      return [{ path: targetPath || 'src/App.jsx', content: directCode }];
-    }
-    return [];
-  }
-
-  let changes = [];
-  if (Array.isArray(parsed.files)) {
-    changes = parsed.files;
-  } else if (Array.isArray(parsed.actions)) {
-    changes = parsed.actions.filter((action) => action?.path && typeof action.content === 'string');
-  } else if (parsed.files && typeof parsed.files === 'object') {
-    changes = Object.entries(parsed.files).map(([filePath, content]) => ({ path: filePath, content }));
-  } else if (parsed.path && typeof parsed.content === 'string') {
-    changes = [parsed];
-  } else {
-    changes = Object.entries(parsed)
-      .filter(([filePath, content]) => /\.(?:jsx?|tsx?|json|css)$/.test(filePath) && typeof content === 'string')
-      .map(([filePath, content]) => ({ path: filePath, content }));
-  }
-
-  if (!changes.length && targetPath) {
-    const code = parsed.code || parsed.content || parsed.react || parsed.component;
-    if (typeof code === 'string') changes = [{ path: targetPath, content: cleanSourceCode(code) }];
-  }
-
-  return changes
-    .filter((change) => change?.path && typeof change.content === 'string')
-    .map((change) => ({ path: change.path, content: String(change.content) }));
 }
 
 // Which captured routes a set of validation diagnostics is about (a visual failure compares the home page).
@@ -1890,36 +370,6 @@ async function requestGeneratedCodeRepair(files, diagnostics, model, systemToken
 
 const SOURCE_EXTENSIONS_FOR_REPAIR = /\.(?:jsx?|tsx?)$/;
 
-async function syncProjectFilesTable(projectId, userId, files = []) {
-  if (!projectId || !Array.isArray(files) || files.length === 0) return;
-  try {
-    const paths = files.map(f => f.path);
-    await ProjectFile.deleteMany({ projectId, path: { $nin: paths } });
-    const ops = files.map(f => ({
-      updateOne: {
-        filter: { projectId, path: f.path },
-        update: {
-          $set: {
-            projectId,
-            userId: userId || null,
-            path: f.path,
-            content: String(f.content || ''),
-            language: f.language || 'javascript',
-            encoding: f.encoding || 'utf8',
-            blob: f.blob || null,
-            size: f.blob?.size ?? (f.encoding === 'base64' ? Buffer.byteLength(f.content || '', 'base64') : Buffer.byteLength(f.content || '', 'utf8')),
-            isBinary: f.encoding === 'base64'
-          }
-        },
-        upsert: true
-      }
-    }));
-    if (ops.length) await ProjectFile.bulkWrite(ops, { ordered: false });
-  } catch (err) {
-    logger.warn(`Failed to sync project_files collection for ${projectId}: ${err.message}`);
-  }
-}
-
 async function resolveSystemTokens(prompt, designSystem = 'Modern', options = {}) {
   const { customTokens, paletteId, userId } = options;
 
@@ -2002,16 +452,6 @@ function buildCloneSourceTokens(capture, fallback = {}) {
   };
 }
 
-// A generated website references images by public link. Those images are downloaded into the project (and stored in S3 when it
-// is saved), because the preview/validation sandbox does not load other websites and the links are not ours to depend on.
-async function localizeGeneratedImages(files, signal) {
-  const textPaths = files.filter((file) => file && file.encoding !== 'base64' && /\.(?:jsx?|tsx?|css|html)$/i.test(file.path || '')).map((file) => file.path);
-  const result = await remoteImageLocalizer.localizeIntroducedRemoteImages({
-    beforeFiles: [], files: files.map((file) => ({ ...file })), changedPaths: textPaths, skipFailed: true, signal
-  });
-  return { files: result.files, failed: result.failed || [], downloaded: result.added.length, skipped: (result.skipped || []).length };
-}
-
 const os = require('node:os');
 const INSTANCE_ID = `${os.hostname()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 const LEASE_MS = Number.parseInt(process.env.JOB_LEASE_MS, 10) || 45000;
@@ -2020,22 +460,8 @@ const HEARTBEAT_MS = Math.max(2000, Math.floor(LEASE_MS / 3));
 const JOB_MAX_MS = Number.parseInt(process.env.JOB_MAX_DURATION_MS, 10) || 90 * 60 * 1000;
 const leaseFilter = () => ({ $or: [{ leaseExpiresAt: null }, { leaseExpiresAt: { $lt: new Date() } }, { leaseOwner: INSTANCE_ID }] });
 
-/** A stable machine-readable code for the reason a job failed. */
-function failureCode(error, { timedOut = false } = {}) {
-  if (timedOut) return 'JOB_TIMEOUT';
-  if (error instanceof OpenRouterAuthError) return 'PROVIDER_AUTH';
-  if (error?.code === 'OPENROUTER_INSUFFICIENT_CREDITS') return 'PROVIDER_CREDITS';
-  if (error instanceof OpenRouterRateLimitError) return 'PROVIDER_RATE_LIMIT';
-  if (error instanceof OpenRouterModelError) return 'PROVIDER_MODEL';
-  if (error instanceof OpenRouterTimeoutError) return 'PROVIDER_TIMEOUT';
-  if (error instanceof AIResponseMalformedError) return 'AI_RESPONSE_MALFORMED';
-  if (error instanceof AIResponseValidationError) return /^Image check failed/.test(error.message) ? 'IMAGE_CHECK_FAILED' : /^Layout check failed/.test(error.message) ? 'LAYOUT_CHECK_FAILED' : /^Page check failed/.test(error.message) ? 'PAGE_CHECK_FAILED' : 'AI_RESPONSE_INVALID';
-  if (error instanceof RepairExhaustedError) return 'REPAIR_EXHAUSTED';
-  if (error?.report?.failureKind) return `VALIDATION_${String(error.report.failureKind).toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`;
-  return 'JOB_FAILED';
-}
-
 class JobManager {
+  validationWorker = new ValidationWorker({ requestGeneratedCodeRepair });
   activeValidations = new Map();
   // Jobs this process already took over after a restart; stops a second recovery pass from claiming them again.
   recoveringJobs = new Set();
@@ -2079,6 +505,11 @@ class JobManager {
       this.recoverInterruptedJobs().catch((error) => logger.warn(`Job recovery sweep failed: ${error.message}`));
     }, everyMs);
     this.sweeper.unref?.();
+    // Abandoned build directories and expired preview artifacts are removed in the background (cleanup worker; it only touches stale items).
+    if (!this.cleaner) {
+      this.cleaner = setInterval(() => { cleanupWorker.sweep().catch(() => {}); }, Number.parseInt(process.env.JOB_CLEANUP_INTERVAL_MS, 10) || 15 * 60 * 1000);
+      this.cleaner.unref?.();
+    }
   }
 
   async recoverInterruptedJobs() {
@@ -2140,511 +571,13 @@ class JobManager {
     };
   }
 
-  async validateCandidate(files, { model, tokens, signal, onProgress, targetVerification = null, pageVerification = null, cloneRoutes = [],
-    visualReference = null, allowLocalVisualFallback = false, completeness = null, baselineFiles = null, localizeImages = false,
-    visualThreshold = null, visualTarget = null, repairContext = null, visualAdvisory = false, templateCheck = null } = {}) {
-    // Strict duplicate handling: byte-identical asset files are merged deterministically (references rewritten); anything
-    // that cannot be merged mechanically (colliding paths, a route registered twice, a copied component) goes to the model.
-    let brokenImageLinks = [];
-    const imageContext = completeness?.imageContext || null;
-    // The verified pictures found before generation belong to the project from the start, so references to them resolve.
-    if (imageContext?.files?.length) files = imageDiscovery.mergeAssetFiles(files, imageContext.files);
-    if (localizeImages) {
-      const localized = await localizeGeneratedImages(files, signal);
-      files = localized.files;
-      brokenImageLinks = localized.failed;
-      if (localized.downloaded) logger.info(`Saved ${localized.downloaded} generated image(s) into the project${localized.skipped ? ` (${localized.skipped} unreachable link(s) left out)` : ''}.`);
-    }
-    const merged = duplicateGuard.enforceUniqueProjectFiles(files);
-    files = merged.files;
-    const baseline = new Set((baselineFiles ? duplicateGuard.findProjectDuplicates(baselineFiles) : []).map((issue) => `${issue.kind}|${issue.message}`));
-    const completenessReport = (completeness || duplicateGuard.findProjectDuplicates(files).some((issue) => !baseline.has(`${issue.kind}|${issue.message}`)))
-      ? await this.completeSite(files, { ...(completeness || {}), enforceCompleteness: Boolean(completeness), baseline, model, tokens, signal, localizeImages, brokenImageLinks, routeCheck: completeness && localizeImages && process.env.MULTIPAGE_RENDER_CHECK !== 'false' ? (candidate) => this.checkRenderedPages(candidate, { signal, spec: completeness.spec }) : null, imageContext, imageRenderCheck: imageContext && imageConfig().renderCheck ? (candidate, info) => this.checkRenderedImages(candidate, { signal, info }) : null, layoutReview: completeness && localizeImages && process.env.LAYOUT_REVIEW !== 'false' ? (candidate) => this.reviewRenderedLayout(candidate, { signal, plan: completeness.compositionPlan }) : null })
-      : null;
-    if (completenessReport) {
-      files = completenessReport.files;
-      // Discovered pictures no page ended up using are not kept in the project.
-      if (imageContext?.assets?.length) files = imageDiscovery.pruneUnused(files, imageContext.assets).files;
-      const leftover = completenessReport.summary.remaining.filter((issue) => issue.kind === 'duplicate' || String(issue.kind).startsWith('path-') || ['route', 'file-content', 'path-case'].includes(issue.kind));
-      if (leftover.length) throw new AIResponseValidationError(`Duplicate check failed after repair: ${leftover.map((issue) => issue.message).join(' ')}`);
-      const pageIssues = completenessReport.summary.remaining.filter((issue) => pageDistinctness.BLOCKING_KINDS.has(issue.kind));
-      if (pageIssues.length) throw new AIResponseValidationError(`Page check failed: the website was not created because its pages are not distinct. ${pageIssues.map((issue) => issue.message).join(' ')}`.slice(0, 1500));
-      const layoutBlocking = completenessReport.summary.remaining.filter((issue) => String(issue.kind).startsWith('layout-') && REVIEW_BLOCKING_KINDS.has(issue.kind));
-      if (layoutBlocking.length && String(process.env.LAYOUT_REVIEW_BLOCKING || 'false').toLowerCase() !== 'false') throw new AIResponseValidationError(`Layout check failed: the website was not created because its rendered pages have layout defects that could not be repaired. ${layoutBlocking.slice(0, 4).map((issue) => issue.message).join(' ')}`.slice(0, 1800));
-      const imageIssues = completenessReport.summary.remaining.filter((issue) => issue.kind === 'images');
-      if (imageIssues.length) throw new AIResponseValidationError(`Image check failed: the website was not created because it does not have working images after ${imageConfig().recoveryAttempts} recovery attempt(s). ${imageIssues.map((issue) => issue.message).join(' ')}${completenessReport.imageDiagnostic ? `\n${completenessReport.imageDiagnostic}` : ''}`.slice(0, 2400));
-    }
-    let requireExecution = false;
-    const dockerRequiredForVisual = requiresDockerForVisualReference(visualReference, allowLocalVisualFallback);
-    if (dockerRequiredForVisual) {
-      requireExecution = true;
-    } else if (process.env.ENABLE_DOCKER_VALIDATION === 'true') {
-      requireExecution = true;
-    } else if (process.env.ENABLE_DOCKER_VALIDATION === 'false') {
-      requireExecution = false;
-    } else {
-      requireExecution = await isDockerAvailable();
-    }
+  // Validation is a worker (workers/validationWorker.js); these methods keep the public API the controllers and the agent call.
+  validateCandidate(files, options) { return this.validationWorker.validateCandidate(files, options); }
+  reviewRenderedLayout(files, options) { return this.validationWorker.reviewRenderedLayout(files, options); }
+  checkRenderedImages(files, options) { return this.validationWorker.checkRenderedImages(files, options); }
+  checkRenderedPages(files, options) { return this.validationWorker.checkRenderedPages(files, options); }
+  completeSite(files, options) { return this.validationWorker.completeSite(files, options); }
 
-    if (!requireExecution) {
-      logger.info('Docker execution validator is unavailable or disabled; using local browser preview validation.');
-    }
-
-    const validationPlanPath = 'veave.validation.json';
-    const validationTests = [];
-    if (targetVerification && targetVerification.cssValue === undefined) {
-      validationTests.push({
-        name: 'Requested target style',
-        path: '/',
-        viewports: ['desktop'],
-        steps: [{
-          action: 'assert',
-          selector: targetVerification.selector,
-          targetText: targetVerification.targetText,
-          visible: true,
-          ...(targetVerification.expectedText !== undefined
-            ? { text: targetVerification.expectedText }
-            : { style: { property: targetVerification.property, value: targetVerification.value } })
-        }]
-      });
-    }
-    if (pageVerification) {
-      const sharedInitial = [
-        ...(pageVerification.headerSelector ? [{ action: 'assert', selector: pageVerification.headerSelector, visible: true, count: 1 }] : []),
-        ...(pageVerification.footerSelector ? [{ action: 'assert', selector: pageVerification.footerSelector, visible: true, count: 1 }] : [])
-      ];
-      validationTests.push({
-        name: 'Page layout isolation',
-        path: '/',
-        viewports: ['desktop'],
-        steps: [
-          { action: 'assert', selector: pageVerification.homeSelector, visible: true },
-          { action: 'assert', selector: pageVerification.pageSelector, visible: false },
-          ...sharedInitial,
-          { action: 'click', selector: pageVerification.openSelector },
-          { action: 'assert', selector: pageVerification.pageSelector, visible: true },
-          { action: 'assert', selector: pageVerification.homeSelector, visible: false },
-          ...sharedInitial,
-          { action: 'click', selector: pageVerification.homeLinkSelector },
-          { action: 'assert', selector: pageVerification.homeSelector, visible: true },
-          { action: 'assert', selector: pageVerification.pageSelector, visible: false },
-          ...sharedInitial
-        ]
-      });
-    }
-    for (const route of cloneRoutes) {
-      // Fatal check: the route renders. Heading wording is a fidelity expectation checked (advisorily) while pages are built.
-      const steps = [{ action: 'assert', selector: '#root', visible: true }];
-      validationTests.push({
-        name: `Clone route ${route.path}`,
-        path: route.path,
-        viewports: ['desktop', 'mobile'],
-        steps
-      });
-    }
-    const validationFiles = validationTests.length
-      ? [
-          ...files.filter((file) => file.path !== validationPlanPath),
-          {
-            path: validationPlanPath,
-            language: 'json',
-            content: JSON.stringify({
-              version: 1,
-              tests: validationTests
-            }, null, 2)
-          }
-        ]
-      : files;
-
-    const validated = await validateAndRepair(validationFiles, {
-      signal,
-      onProgress,
-      requireExecution: true,
-      maxRepairs: Number.parseInt(process.env.VALIDATION_MAX_REPAIRS, 10) || 3,
-      requireArtifacts: requireExecution,
-      extraStaticChecks: templateCheck ? (current) => templateCheck.check(current) : null,
-       run: requireExecution
-         ? async (current, options) => {
-             const outcome = await executeProject(current, { ...options, visualReference: visualAdvisory ? null : visualReference, ...(visualThreshold ? { visualThreshold } : {}) });
-             // The isolated runner itself failed (Docker went away or timed out mid-run): this says nothing about the
-             // generated code. Verify it in the local browser instead, and record that the build runner did not run.
-             // Screenshot comparisons that need the runner are never downgraded.
-             if (outcome?.infrastructure && !dockerRequiredForVisual) {
-               logger.warn(`Docker validation infrastructure failed (${outcome.diagnostics?.[0]?.message}); using local browser preview validation.`);
-               const local = await verifyPreviewRuntime(current, options);
-               return {
-                 ...local,
-                 degradedExecution: true,
-                 infrastructure: outcome.diagnostics,
-                 checks: [
-                   { name: 'execution', status: 'infrastructure_unavailable', reason: outcome.diagnostics?.[0]?.message },
-                   { name: 'build', status: 'skipped', reason: 'Isolated build runner unavailable; only the local browser runtime check ran.' },
-                   ...(local.checks || [])
-                 ]
-               };
-             }
-             return outcome;
-           }
-         : (current, options) => verifyPreviewRuntime(current, options),
-       repair: (current, diagnostics, history) => requestGeneratedCodeRepair(current, diagnostics, model, tokens, history, visualReference, { sourceContext: [repairContext ? repairContext(diagnostics, current) : '', templateCheck ? templateCheck.repairContext(diagnostics, current) : ''].filter(Boolean).join('\n\n') || null })
-    });
-
-    // If the runner failed mid-validation the local verifier produced this result: post-checks must use that path.
-    if (requireExecution && validated.report.validationMode === 'local-browser-fallback') requireExecution = false;
-    if (!requireExecution) {
-      validated.report.validationMode = 'local-browser-fallback';
-      if (!(validated.report.checks || []).some((check) => check.name === 'build')) {
-        validated.report.checks = [...(validated.report.checks || []), {
-          name: 'build', status: 'skipped', reason: 'Isolated build runner unavailable or disabled; only the local browser runtime check ran.'
-        }];
-      }
-    }
-
-    // Clones: the screenshot comparison is a quality measurement, not a gate. A site that builds, renders and has all its pages
-    // is delivered, with the similarity (and any shortfall against the target) recorded. Screenshot jobs keep the hard gate.
-    if (visualAdvisory && visualReference && validated.report.status === 'passed') {
-      try {
-        const compared = await verifyPreviewVisual(validated.files, { signal, routePath: '/', reference: visualReference, threshold: 0.5 });
-        const score = compared.comparison?.score;
-        if (Number.isFinite(score)) {
-          validated.report.visual = { passed: score >= (visualTarget || 0), score, threshold: visualTarget || null, advisory: true };
-          if (visualTarget && score < visualTarget) validated.report.visualWarning = { score, target: visualTarget, accepted: 'advisory' };
-        }
-      } catch (visualError) {
-        if (signal?.aborted || visualError?.name === 'AbortError') throw visualError;
-        validated.report.checks = [...(validated.report.checks || []), { name: 'visual-comparison', status: 'skipped', reason: `Similarity could not be measured: ${visualError.message}` }];
-      }
-    }
-
-    // A clone is accepted at its minimum similarity; anything under the target is recorded, not hidden.
-    if (visualTarget && validated.report.visual && Number.isFinite(validated.report.visual.score) && validated.report.visual.score < visualTarget) {
-      validated.report.visualWarning = { score: validated.report.visual.score, target: visualTarget, accepted: visualThreshold || null };
-    }
-
-    if (visualReference && !requireExecution) {
-      validated.report.checks = [...(validated.report.checks || []), {
-        name: 'visual-comparison',
-        status: 'skipped',
-        reason: 'Docker validator unavailable; local Chromium runtime validation passed.'
-      }];
-      validated.report.visual = null;
-      validated.report.validationMode = 'local-browser-fallback';
-    }
-
-    if (targetVerification) {
-      if (requireExecution && targetVerification.cssValue === undefined) {
-        const targetCheck = validated.report?.checks?.find((check) =>
-          check.name === 'plan' && check.test === 'Requested target style'
-        );
-        if (!targetCheck || targetCheck.status !== 'passed') {
-          throw new AIResponseValidationError('Rendered target verification failed: the requested visual property was not confirmed in the browser.');
-        }
-      } else {
-        try {
-          const rendered = await verifyRenderedTarget(validated.files, targetVerification, { signal });
-          validated.report.checks = [...(validated.report.checks || []), {
-            name: 'target-render',
-            status: 'passed',
-            target: targetVerification.targetText,
-            actual: rendered.actual
-          }];
-        } catch (error) {
-          throw new AIResponseValidationError(`Rendered target verification failed: ${error.message}`);
-        }
-      }
-      validated.files = validated.files.filter((file) => file.path !== validationPlanPath);
-      if (Array.isArray(validated.artifacts)) {
-        validated.artifacts = validated.artifacts.filter((file) => file.path !== validationPlanPath);
-      }
-      validated.report.targetVerification = { ...targetVerification, status: 'passed' };
-    }
-
-    if (pageVerification) {
-      if (requireExecution) {
-        const pageCheck = validated.report?.checks?.find((check) =>
-          check.name === 'plan' && check.test === 'Page layout isolation'
-        );
-        if (!pageCheck || pageCheck.status !== 'passed') {
-          throw new AIResponseValidationError('Rendered page isolation verification failed: route exclusivity was not confirmed in the browser.');
-        }
-      } else {
-        try {
-          await verifyPageIsolation(validated.files, pageVerification, { signal });
-          validated.report.checks = [...(validated.report.checks || []), {
-            name: 'page-isolation-render', status: 'passed', page: pageVerification.slug
-          }];
-        } catch (error) {
-          throw new AIResponseValidationError(`Rendered page isolation verification failed: ${error.message}`);
-        }
-      }
-      validated.report.pageVerification = { ...pageVerification, status: 'passed' };
-    }
-
-    if (cloneRoutes.length) {
-      const routeChecks = requireExecution
-        ? cloneRoutes.map((route) => ({
-            path: route.path,
-            pageType: route.pageType,
-            desktop: validated.report?.checks?.some((check) => check.name === 'plan' && check.test === `Clone route ${route.path}` && check.viewport === 'desktop' && check.status === 'passed') || false,
-            mobile: validated.report?.checks?.some((check) => check.name === 'plan' && check.test === `Clone route ${route.path}` && check.viewport === 'mobile' && check.status === 'passed') || false
-          }))
-        : await Promise.all(cloneRoutes.map(async (route) => {
-            const registered = route.derived || route.path === '/' || validated.files.some((file) => file.encoding !== 'base64' && String(file.content || '').includes(JSON.stringify(route.path)));
-            const runtime = registered
-              ? await verifyPreviewRuntime(validated.files, { signal, routePath: route.path, expectedHeading: route.expectedHeading, minimumTextLength: route.derived ? 0 : 200, expectedColors: route.expectedColors })
-              : { ok: false, diagnostics: [{ category: 'route-content', path: route.path, message: 'Route is not registered.' }] };
-            // A route that renders but misses a fidelity expectation (palette, heading wording, a broken image) is kept
-            // and reported; only a route that is unregistered, errors, or renders (almost) nothing is a failure.
-            const advisory = !runtime.ok && registered && isAdvisoryRenderFailure(runtime.diagnostics);
-            return {
-              path: route.path,
-              pageType: route.pageType,
-              registered,
-              runtimeSmoke: runtime.ok || advisory,
-              advisory,
-              diagnostics: runtime.ok ? [] : runtime.diagnostics
-            };
-          }));
-      if (requireExecution && routeChecks.some((route) => !route.desktop || !route.mobile) && cloneRoutes.every((route) => !route.derived)) {
-        throw new AIResponseValidationError('One or more cloned routes failed desktop or mobile browser validation.');
-      }
-      // Routes derived from a created site's own <Route> tags are advisory: they are reported, never fatal.
-      if (!requireExecution && routeChecks.some((route) => !route.registered || !route.runtimeSmoke) && cloneRoutes.every((route) => !route.derived)) {
-        const failed = routeChecks.filter((route) => !route.registered || !route.runtimeSmoke);
-        throw new AIResponseValidationError(`Generated clone failed route rendering: ${JSON.stringify(failed)}`);
-      }
-      validated.report.cloneCoverage = {
-        expectedRoutes: cloneRoutes.length,
-        validatedRoutes: routeChecks.filter((route) => (route.registered && !requireExecution) || (route.desktop && route.mobile)).length,
-        routes: routeChecks
-      };
-    }
-
-    if (validationTests.length) {
-      validated.files = validated.files.filter((file) => file.path !== validationPlanPath);
-      if (Array.isArray(validated.artifacts)) validated.artifacts = validated.artifacts.filter((file) => file.path !== validationPlanPath);
-    }
-
-    if (Array.isArray(validated.artifacts) && validated.artifacts.some(f => f.path === 'dist/index.html')) {
-      try {
-        validated.report.previewUrl = await publishPreview(validated.artifacts, validated.report.sourceHash);
-      } catch (err) {
-        logger.warn(`Could not publish preview: ${err.message}`);
-      }
-    } else {
-      validated.report.previewUrl = null;
-    }
-
-    if (completenessReport) { validated.report.completeness = completenessReport.summary; if (completenessReport.layoutSummary) validated.report.layoutReview = completenessReport.layoutSummary; }
-    validated.report.duplicates = { assetFilesMerged: merged.collected, remaining: duplicateGuard.findProjectDuplicates(validated.files).filter((issue) => !baseline.has(`${issue.kind}|${issue.message}`)).map(({ kind, path, message }) => ({ kind, path, message })) };
-    return validated;
-  }
-
-  /**
-   * Opens every route of a new site at desktop, tablet and mobile width and measures the rendered layout: gaps, empty boxes,
-   * overflow, text width, picture proportions, card heights. Returns the repairable issues (and which of them block).
-   */
-  async reviewRenderedLayout(files, { signal, plan = null } = {}) {
-    const found = pageDistinctness.extractRoutes(files).filter((route) => route.path.startsWith('/') && !/[:*]/.test(route.path));
-    const names = new Map((plan?.pages || []).map((page) => [page.route, page.name]));
-    const labels = pageDistinctness.navLabels(files).labels;
-    const unique = [...new Map([{ path: '/' }, ...found].map((route) => [route.path, route])).values()].slice(0, Number.parseInt(process.env.LAYOUT_REVIEW_ROUTES, 10) || 8);
-    const routes = unique.map((route) => ({ path: route.path, name: names.get(route.path) || labels.get(route.path) || (route.path === '/' ? 'Home' : pageDistinctness.humanize(route.path)) }));
-    const viewports = String(process.env.LAYOUT_REVIEW_VIEWPORTS || 'desktop,tablet,mobile').split(',').map((item) => item.trim()).filter(Boolean);
-    return visualReview.reviewComposition(files, { routes, viewports, signal, concurrency: 3, render: (candidate, options) => inspectRenderedPreview(candidate, { signal, ...options }) });
-  }
-
-  /**
-   * Opens the pages of a new site in the headless browser and checks that its pictures really render (lazy images are scrolled
-   * into view first). Returns [] when the preview environment cannot render; that is not a site defect.
-   */
-  async checkRenderedImages(files, { signal, info = null } = {}) {
-    const cfg = imageConfig();
-    const routes = pageDistinctness.extractRoutes(files).filter((route) => route.path.startsWith('/') && !/[:*]/.test(route.path)).map((route) => route.path);
-    return imageValidation.renderedImageReport(files, { routes: [...new Set(routes)], signal, cfg, info, render: (candidate, options) => inspectRenderedPreview(candidate, { signal, ...options }) });
-  }
-
-  /**
-   * Loads every route of a new multi-page site by its own URL (what a direct visit or a browser refresh does) and compares
-   * what each shows. A route that shows Home, two routes that show the same thing, or a blank route become issues that name
-   * the page file to rewrite. Returns [] when the preview environment cannot render (that is not a site defect).
-   */
-  async checkRenderedPages(files, { signal, spec = null } = {}) {
-    const routes = pageDistinctness.extractRoutes(files).filter((route) => route.path.startsWith('/') && route.path !== '/' && !/[:*]/.test(route.path));
-    const unique = [...new Map(routes.map((route) => [route.path, route])).values()].slice(0, 12);
-    if (unique.length < 1) return [];
-    const result = await routingValidation.validateRouting({
-      files, routes: unique.map((route) => ({ path: route.path })), signal,
-      render: (candidate, options) => inspectRenderedPreview(candidate, { signal, ...options })
-    });
-    const labels = pageDistinctness.navLabels(files).labels;
-    const issues = [];
-    for (const issue of result.fatal) {
-      if (!['route-shows-home', 'routes-identical', 'route-blank'].includes(issue.kind)) continue;
-      const route = unique.find((item) => item.path === issue.route);
-      const label = labels.get(issue.route) || pageDistinctness.humanize(issue.route);
-      const planned = Array.isArray(spec?.pages) ? spec.pages.find((page) => page?.route === issue.route) : null;
-      issues.push({
-        category: 'completeness', kind: 'page-rendered-duplicate', path: route?.target || route?.file || 'src/App.jsx', routes: [issue.route],
-        message: `When ${issue.route} (${label}) is opened by its own URL, the rendered page is wrong: ${issue.detail}${planned?.purpose ? ` It must be: ${planned.purpose}` : ''} Rewrite ${route?.target || 'its page component'} as a real ${label} page with its own heading, sections and content, make sure the route in src/App.jsx renders that component (not Home or a shared fallback), and keep the shared Navbar, Footer and design system.`
-      });
-    }
-    return issues;
-  }
-
-  /**
-   * A new site must have working navigation, several linked pages, real length and a footer (and honour a reference
-   * site's look). The build gate cannot tell, so missing pieces are sent to the model as exact instructions, at most
-   * COMPLETENESS_MAX_REPAIRS times (default 2). This phase is soft: a site that still lacks something after that is
-   * kept (it passed nothing worse than being short) and the gaps are recorded on the report for the UI.
-   */
-  async completeSite(files, { prompt, spec, prototypeBg, entityAssets = [], entityMissing = [], routeCheck = null, imageContext = null, imageRenderCheck = null, layoutReview = null, compositionPlan = null, enforceCompleteness = true, baseline = new Set(), model, tokens, signal, localizeImages = false, brokenImageLinks = [] }) {
-    const maxRounds = Number.parseInt(process.env.COMPLETENESS_MAX_REPAIRS, 10);
-    const rounds = Number.isFinite(maxRounds) ? maxRounds : 3;
-    const context = { prompt, spec, prototypeBg, brokenImageLinks, entityAssets, entityMissing, compositionPlan };
-    // Completeness (new sites only) plus strict duplicate rules (every candidate; duplicates already in the project are not blamed).
-    const findIssues = (candidateFiles) => [
-      ...(enforceCompleteness ? checkCompleteness(candidateFiles, context) : []),
-      ...duplicateGuard.findProjectDuplicates(candidateFiles).filter((issue) => !baseline.has(`${issue.kind}|${issue.message}`))
-    ];
-    // The images the project really has (decoded, one by one), so the check counts working pictures and not <img> tags.
-    const refreshImages = async (candidateFiles) => {
-      if (!imageContext) return;
-      context.imageInfo = await imageValidation.inspectProjectImages(candidateFiles);
-      context.spareImages = imageDiscovery.spareAssets(candidateFiles, imageContext.assets || []);
-      context.missingImages = (imageContext.missing || []).map((item) => ({ page: item.page, section: item.section, reason: imageDiscovery.reasonFor(item.code) }));
-    };
-    const stageNote = (stage) => { if (imageContext?.jobId) GenerationJob.updateOne({ jobId: imageContext.jobId, status: 'processing' }, { $set: { 'analysis.imagePipeline.stage': stage } }).catch(() => {}); };
-    // The rendered checks (each route loaded by its own URL, as on a refresh; then the images in the browser) only run once the
-    // static checks are clean.
-    const findAllIssues = async (candidateFiles) => {
-      await refreshImages(candidateFiles);
-      let found = findIssues(candidateFiles);
-      const pageBroken = (list) => list.some((issue) => issue.kind.startsWith('page-') || issue.kind === 'pages' || issue.kind === 'routing');
-      if (routeCheck && !pageBroken(found)) {
-        try { found = [...found, ...await routeCheck(candidateFiles)]; } catch (error) { if (signal?.aborted) throw error; logger.warn(`Rendered page check skipped: ${error.message}`); }
-      }
-      const countIssue = (issue) => issue.kind === 'images' && /^The site has \d+ image/.test(issue.message);
-      const otherIssues = found.filter((issue) => !countIssue(issue) && !['image-alt', 'image-layout'].includes(issue.kind));
-      if (imageRenderCheck && enforceCompleteness && !pageBroken(found) && (!found.some((issue) => issue.kind === 'images') || (found.some(countIssue) && !otherIssues.some((issue) => issue.kind === 'images')))) {
-        try {
-          stageNote('image_render_validation');
-          const report = await imageRenderCheck(candidateFiles, context.imageInfo);
-          context.renderedImages = { home: report.home, site: report.site, byRoute: report.byRoute };
-          // The source can hide pictures from a static count (paths built at run time, data files). What the browser renders is the truth:
-          // when it shows enough distinct, working pictures, the static count does not fail the site.
-          const cfgNow = imageConfig();
-          if (report.home !== null && report.home >= cfgNow.minHome && report.site >= cfgNow.minSite) found = found.filter((issue) => !countIssue(issue));
-          found = [...found, ...report.issues.filter((issue) => !(issue.kind === 'images' && /distinct image\(s\) render/.test(issue.message) && report.home >= cfgNow.minHome && report.site >= cfgNow.minSite))];
-        } catch (error) { if (signal?.aborted) throw error; logger.warn(`Rendered image check skipped: ${error.message}`); }
-      }
-      // Visual composition review: only on a site that is otherwise complete, so its repairs never fight the structural ones.
-      if (layoutReview && enforceCompleteness && !found.some((issue) => !['image-alt', 'image-layout'].includes(issue.kind) && !issue.kind.startsWith('layout-'))) {
-        try {
-          stageNote('visual_review');
-          const reviewed = await layoutReview(candidateFiles);
-          found = [...found.filter((issue) => !issue.kind.startsWith('layout-')), ...reviewed.issues];
-          context.layoutSummary = { issues: reviewed.issues.length, blocking: reviewed.blocking.length, kinds: [...new Set(reviewed.issues.map((issue) => issue.kind))], skipped: reviewed.skipped || null, metrics: reviewed.metrics };
-        } catch (error) { if (signal?.aborted) throw error; logger.warn(`Visual composition review skipped: ${error.message}`); }
-      }
-      return found;
-    };
-    let current = files;
-    let issues = await findAllIssues(current);
-    const initial = issues.map((issue) => issue.kind);
-    const history = [];
-    let attempts = 0;
-    // Targeted image recovery first: restore or replace failed pictures at their own paths and find more pictures when the site
-    // still has too few. The model is only asked to place pictures that already exist.
-    let imageDiagnostic = null;
-    const recoverImages = async ({ placeOnly = false } = {}) => {
-      if (!imageContext || !issues.some((issue) => issue.kind === 'images' || issue.kind === 'entity-images')) return false;
-      try {
-        const recovered = await imageRecovery.recoverImages({ files: current, imageContext, prompt, spec, signal, placeOnly, onStage: (stage) => stageNote(stage) });
-        imageDiagnostic = recovered.diagnostic;
-        if (imageContext.jobId) GenerationJob.updateOne({ jobId: imageContext.jobId }, { $set: { 'analysis.imagePipeline.reconciliation': imageContext.report || null, 'analysis.imagePipeline.recoveryLog': (imageContext.recoveryLog || []).slice(-6).map(({ attempt, before, after, placed, failed, discovered, note }) => ({ attempt, before, after, placed: (placed || []).map((item) => `${item.path} -> ${item.file} (${item.strategy})`), failed, discovered, note })) } }).catch(() => {});
-        logger.info(`Image recovery: ${recovered.diagnostic.replace(/\n/g, ' | ')}`);
-        if (!recovered.changed) return false;
-        current = recovered.files;
-        issues = await findAllIssues(current);
-        return true;
-      } catch (error) { if (signal?.aborted) throw error; logger.warn(`Image recovery skipped: ${error.message}`); return false; }
-    };
-    await recoverImages();
-    const layoutRounds = Number.parseInt(process.env.LAYOUT_REPAIR_ROUNDS, 10) || 4;
-    for (let round = 0; issues.length && round < Math.max(rounds, issues.some((issue) => String(issue.kind).startsWith('layout-')) ? layoutRounds : 0); round++) {
-      if (signal?.aborted) throw Object.assign(new Error('Validation cancelled'), { name: 'AbortError' });
-      if (round > 0) await recoverImages();
-      if (!issues.length) break;
-      attempts++;
-      let changes;
-      try {
-        changes = await requestGeneratedCodeRepair(current, issues, model, tokens, history, null, { maxTokens: Number.parseInt(process.env.COMPLETENESS_MAX_TOKENS, 10) || 16000 });
-      } catch (error) {
-        logger.warn(`Completeness repair unavailable: ${error.message}`);
-        history.push({ attempt: attempts, failureKind: 'provider', diagnostics: [{ category: 'completeness', message: error.message }] });
-        if (signal?.aborted) throw error;
-        if (error instanceof OpenRouterAuthError || error instanceof OpenRouterRateLimitError) break;
-        continue;
-      }
-      const merged = new Map(current.map((file) => [file.path, file]));
-      for (const change of changes || []) merged.set(change.path, { ...merged.get(change.path), ...change });
-      for (const deleted of changes?.deletedPaths || []) merged.delete(deleted);
-      let candidate = [...merged.values()];
-      if (localizeImages) {
-        // The repair may have added new image links: download them like the first ones.
-        try {
-          const localized = await localizeGeneratedImages(candidate, signal);
-          candidate = localized.files;
-          context.brokenImageLinks = localized.failed;
-        } catch (error) {
-          if (signal?.aborted) throw error;
-          logger.warn(`Image download after repair failed: ${error.message}`);
-        }
-      }
-      const unsafe = generationPipeline.validateFilePaths(candidate);
-      const broken = generationPipeline.validateGeneratedFiles(candidate).filter((item) => item.category === 'syntax');
-      const after = await findAllIssues(candidate);
-      if (unsafe.length || broken.length || after.length > issues.length) {
-        // Never trade a working site for a broken or worse one.
-        history.push({ attempt: attempts, rejectedRepair: true, diagnostics: [...unsafe, ...broken, ...issues].slice(0, 8) });
-        continue;
-      }
-      history.push({ attempt: attempts, changedFiles: (changes || []).map((change) => change.path), diagnostics: issues.slice(0, 4) });
-      current = candidate;
-      issues = after;
-    }
-    // Layout self-heal, last resort: when the model could not clear the layout defects, a guard stylesheet fixes the usual causes
-    // deterministically (sideways overflow, unbroken long words, oversized fixed-height or padded sections, empty blocks on small screens).
-    const layoutLeft = () => issues.filter((issue) => String(issue.kind).startsWith('layout-'));
-    if (layoutReview && layoutLeft().length) {
-      try {
-        stageNote('layout_self_heal');
-        const cssFile = current.find((file) => file.path === 'src/index.css');
-        const GUARD_MARK = '/* veave-layout-guard */';
-        if (cssFile && !String(cssFile.content || '').includes(GUARD_MARK)) {
-          const guard = `\n${GUARD_MARK}\nhtml, body { max-width: 100%; overflow-x: hidden; }\nimg, video, svg, canvas, iframe { max-width: 100%; }\nh1, h2, h3, h4, p, li, a, span { overflow-wrap: anywhere; }\nsection:empty, div:empty:not([class*="absolute"]):not([aria-hidden]) { display: none; }\n@media (max-width: 767px) {\n  section { min-height: 0 !important; padding-top: min(var(--sec-py, 4rem), 4rem); padding-bottom: min(var(--sec-py, 4rem), 4rem); }\n  section[class*="min-h-screen"], section[class*="h-screen"] { min-height: auto !important; height: auto !important; }\n  [class*="grid-cols-"] { grid-template-columns: minmax(0, 1fr); }\n}\n@media (min-width: 768px) and (max-width: 1023px) { section { min-height: 0 !important; } }\n`;
-          const healed = current.map((file) => file === cssFile ? { ...file, content: `${file.content}${guard}` } : file);
-          const reviewed = await findAllIssues(healed);
-          const beforeCount = layoutLeft().length;
-          const afterCount = reviewed.filter((issue) => String(issue.kind).startsWith('layout-')).length;
-          const nonLayoutBefore = issues.length - beforeCount;
-          const nonLayoutAfter = reviewed.length - afterCount;
-          if (afterCount <= beforeCount && nonLayoutAfter <= nonLayoutBefore) { current = healed; issues = reviewed; history.push({ attempt: ++attempts, selfHeal: 'layout-guard', before: beforeCount, after: afterCount }); }
-          logger.info(`Layout self-heal: ${beforeCount} defect(s) before, ${afterCount} after the guard stylesheet${current === healed ? ' (kept)' : ' (not better, discarded)'}.`);
-        }
-      } catch (error) { if (signal?.aborted) throw error; logger.warn(`Layout self-heal skipped: ${error.message}`); }
-    }
-    // Final pass: whatever the model did, pictures that are saved but still unplaced are placed deterministically (no further searching).
-    await recoverImages({ placeOnly: true });
-    if (imageContext) stageNote(issues.some((issue) => issue.kind === 'images') ? 'image_failed' : 'completed');
-    return {
-      files: current,
-      layoutSummary: context.layoutSummary || null,
-      imageDiagnostic,
-      summary: { checked: true, initialIssues: initial, remaining: issues.map(({ kind, message }) => ({ kind, message })), repairAttempts: attempts, complete: issues.length === 0 }
-    };
-  }
   /**
    * Resolves or initializes the authoritative Session / Conversation document
    */
@@ -2783,6 +716,13 @@ class JobManager {
       // Not started: the job is gone, finished, cancelled, or another live process holds its lease.
       if (!started) return;
       job = started;
+      // `analysis` starts as null, and MongoDB cannot $set 'analysis.imagePipeline...' inside a null: those progress and diagnostic
+      // writes (which swallow their errors) were silently lost for text-prompt jobs. Make it an object first.
+      if (job.analysis == null) {
+        await GenerationJob.updateOne({ jobId, analysis: null }, { $set: { analysis: {} } }).catch(() => {});
+        job.analysis = {};
+        if (typeof job.unmarkModified === 'function') job.unmarkModified('analysis'); // already written above; a later save() must not overwrite what workers add
+      }
       leaseTimers = this.startLease(jobId, validationController, (reason) => { leaseLost = reason; });
       timeoutTimer = setTimeout(() => { timedOut = true; logger.error(`Job ${jobId} exceeded its ${Math.round(JOB_MAX_MS / 60000)} minute limit; stopping it.`); validationController.abort(); }, JOB_MAX_MS);
       timeoutTimer.unref?.();
@@ -2802,7 +742,8 @@ class JobManager {
         uploadedFiles = [],
         selectedElement = null,
         templateId: payloadTemplateId = null,
-        templateVersion: payloadTemplateVersion = null
+        templateVersion: payloadTemplateVersion = null,
+        deepGeneration: payloadDeepGeneration = true
       } = job.payload || {};
       const model = resolveGenerationModel(job.type, requestedModel);
       // TEMPLATE: re-validated here (the request body is never trusted): the template must exist, be available to this
@@ -2833,6 +774,7 @@ class JobManager {
       let image = payloadImage;
       let visualReference = payloadImage;
       let cloneCapture = null;
+      let cloneBrowser = null; // shared Chromium of this clone job (closed once the plan is decided)
       let clonePromptPages = [];
       let cloneContext = '';
 
@@ -2913,10 +855,13 @@ class JobManager {
         job.progress = 20;
         job.stepName = 'Extracting source HTML, DOM, CSS, routes, and assets...';
         await job.save();
+        // One Chromium for the first crawl and every "scrape more pages" request while the plan waits for approval.
+        cloneBrowser = require('../browser/launchChromium').createBrowserSession();
         cloneCapture = await captureWebsite(sourceUrl, {
           signal: validationController.signal,
-          maxRoutes: resolveCloneRouteLimit(requestedMaxRoutes)
-        });
+          maxRoutes: resolveCloneRouteLimit(requestedMaxRoutes),
+          session: cloneBrowser
+        }).catch(async (error) => { await cloneBrowser.close(); throw error; });
         // What the crawl really delivered, kept on the job so a short crawl or missing images are visible, not silent.
         const coverage = cloneCapture.coverage || {};
         job.analysis = {
@@ -2949,6 +894,7 @@ class JobManager {
                 sourceUrl,
                 signal: validationController.signal,
                 captureWebsite,
+                session: cloneBrowser,
                 hardCap: planOptions.hardCap,
                 merge: (current, extra) => cloneSelection.mergeCapture(current, extra, { normalizeRoute, dedupePlacements, buildSiteMap, guard: duplicateGuard })
               });
@@ -2956,6 +902,7 @@ class JobManager {
               return { plan: cloneSelection.buildClonePlan(cloneCapture, planOptions), message: result.message };
             }
           });
+          await cloneBrowser.close();
           if (!approved) {
             await GenerationJob.updateOne({ jobId, status: { $in: ['queued', 'processing'] } }, { $set: { status: 'cancelled', stepName: 'Plan cancelled. The project was not changed.' } });
             return;
@@ -2967,6 +914,8 @@ class JobManager {
           job = await GenerationJob.findOneAndUpdate({ jobId, status: { $in: ['queued', 'processing'] } }, { $set: { status: 'processing', stepName: 'Plan approved. Starting the build...' } }, { new: true });
           if (!job) return;
         }
+
+        await cloneBrowser?.close(); // no more scraping once the plan is decided (or was never asked for)
 
         // STEP-BY-STEP INPUT. This first request builds the shell and the home page only, so it receives the home page's data
         // (structure, HTML, styles, its own assets and placement queue) plus just the list of the other routes. Every other
@@ -3179,55 +1128,59 @@ class JobManager {
       let researchDossier = null;
       const canAskModel = Boolean(process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key');
       const askModel = (maxTokens, temperature = 0) => (canAskModel ? async (system, user) => {
-        const completion = await openrouterService.generateCompletion([{ role: 'system', content: system }, { role: 'user', content: user }], { model, temperature, max_tokens: maxTokens, response_format: false, reasoning: { effort: 'minimal', exclude: true } });
+        const completion = await openrouterService.generateCompletion([{ role: 'system', content: system }, { role: 'user', content: user }], { model, temperature, max_tokens: maxTokens, response_format: false, reasoning: { effort: 'minimal', exclude: true }, signal: validationController.signal });
         return completion?.content || '';
       } : null);
       // Everything below applies to a NEW site made from a written request (not an edit, clone, template, screenshot or prototype).
       const compositionEligible = String(process.env.COMPOSITION_PLANNING || 'true').toLowerCase() !== 'false' && !isIncremental && !cloneCapture && job.type !== 'clone' && !template && !prototypeStyle && !prototypeFromUrl && !image && Boolean(prompt);
+      // Deep generation (on by default for every new site; a request with deepGeneration:false or DEEP_GENERATION=false turns it off): a larger sitemap, requirement coverage and section-by-section writing. New sites only.
+      const deepMode = compositionEligible && payloadDeepGeneration !== false && payloadDeepGeneration !== 'false' && String(process.env.DEEP_GENERATION || 'true').toLowerCase() !== 'false';
+      let deepPlan = null;
       const wantsNoImages = /\b(no images?|without images?|text[- ]only)\b/i.test(prompt || '');
       const namedSubjects = !isIncremental && !cloneCapture && job.type !== 'clone' && Boolean(prompt) && (String(process.env.ENTITY_IMAGES || 'true').toLowerCase() !== 'false' || (compositionEligible && String(process.env.RESEARCH || 'true').toLowerCase() !== 'false'));
+      // Orchestration only: each stage below is a worker (workers/) that returns a result; this code decides what a failure means.
+      const reportProgress = (set) => { GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: set }).catch(() => {}); };
+      const persistJob = (set) => GenerationJob.updateOne({ jobId }, { $set: set }).catch(() => {});
+      // A worker failure never stops a generation here (the validation and repair steps still run), but a cancellation always does.
+      const softFail = (result, what) => {
+        // A cancelled job stops at the next stage boundary, even when the worker it just ran returned normally.
+        validationController.signal.throwIfAborted();
+        if (result.ok) return false;
+        if (validationController.signal.aborted) throw result.error.cause;
+        logger.warn(`Job ${jobId} ${what} skipped: ${result.error.message}`);
+        return true;
+      };
       if (namedSubjects) {
-        try {
-          job.stepName = 'Finding the people and organisations in your request...';
-          await job.save();
-          const entities = await entityImages.extractEntities(prompt, { ask: askModel(700) });
-          const stop = (ms) => AbortSignal.any([validationController.signal, AbortSignal.timeout(ms)]);
-
-          // 1. Research: verified facts about the named people and institutions, so the site is written from facts and not placeholders.
-          if (compositionEligible && entities.length && String(process.env.RESEARCH || 'true').toLowerCase() !== 'false') {
-            try {
-              GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: { stepName: 'Researching the people and institutions in your request...', 'analysis.imagePipeline.stage': 'research' } }).catch(() => {});
-              researchDossier = await webResearch.researchSubjects({ prompt, entities, ask: askModel(3200), signal: stop(Number.parseInt(process.env.RESEARCH_TIMEOUT_MS, 10) || 120000) });
-              const researchBlock = webResearch.buildResearchBlock(researchDossier);
-              if (researchBlock) generationPrompt = `${generationPrompt}\n\n${researchBlock}`;
-              if (researchDossier) await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.research': {
-                subjects: researchDossier.subjects.map((subject) => ({ name: subject.name, role: subject.role, affiliation: subject.affiliation, facts: subject.facts.length, corroborated: subject.facts.filter((fact) => fact.corroborated).length })),
-                sources: researchDossier.sources, diagnostics: { searched: researchDossier.diagnostics.searched, pages: researchDossier.diagnostics.pages, rejectedPages: researchDossier.diagnostics.rejectedPages.slice(0, 12), droppedFacts: researchDossier.diagnostics.droppedFacts.length }
-              } } }).catch(() => {});
-              logger.info(`Job ${jobId} research: ${researchDossier ? researchDossier.subjects.map((subject) => `${subject.name} ${subject.facts.length} fact(s)`).join(', ') : 'nothing to research'} from ${researchDossier?.sources.length || 0} source(s).`);
-            } catch (error) {
-              if (validationController.signal.aborted) throw error;
-              logger.warn(`Job ${jobId} research skipped: ${error.message}`);
-            }
-          }
-
-          // 2. Pictures of the named subjects: contextual searches (name + institution), identity-checked, saved into the project.
-          if (String(process.env.ENTITY_IMAGES || 'true').toLowerCase() !== 'false' && !wantsNoImages) {
-            job.stepName = 'Searching the web for the images of the names in your request...';
-            await job.save();
-            const found = await entityImages.discoverEntityImages({ prompt, entities, researchImages: researchDossier?.imageCandidates || [], signal: stop(Number.parseInt(process.env.ENTITY_IMAGES_TIMEOUT_MS, 10) || 90000), onNote: (note) => logger.info(`Job ${jobId} entity images: ${note}`) });
-            entityImageReport = found;
-            if (compositionEligible && found.assets.length) entityLocal = await entityImages.materializeAssets(found);
-            const block = entityLocal ? '' : entityImages.buildPromptBlock(found);
-            if (block) generationPrompt = `${generationPrompt}\n\n${block}`;
-            await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.entityImages': {
-              entities: found.entities, missing: found.missing.map((item) => item.name), rejectedIdentity: (found.rejectedIdentity || []).slice(0, 20),
-              assets: (entityLocal?.assets || found.assets).map(({ entity, kind, pictureKind, url, publicPath, pageUrl, source, title, width, height, identity }) => ({ entity, kind: pictureKind || kind, url: publicPath || url, pageUrl, source, title, width, height, identity }))
-            } } }).catch(() => {});
-          }
-        } catch (error) {
-          if (validationController.signal.aborted) throw error;
-          logger.warn(`Job ${jobId} entity research / image search skipped: ${error.message}`);
+        const research = await runWorker('research', ({ log }) => researchWorker.discoverNamedSubjects({
+          prompt, compositionEligible, wantsNoImages, signal: validationController.signal, log,
+          ask: (maxTokens) => askModel(maxTokens),
+          onProgress: async ({ stepName, stage }) => {
+            if (stage) reportProgress({ stepName, 'analysis.imagePipeline.stage': stage });
+            else { job.stepName = stepName; await job.save(); }
+          },
+          persist: persistJob
+        }), { jobId, signal: validationController.signal });
+        if (!softFail(research, 'entity research / image search')) {
+          ({ researchDossier, entityImageReport, entityLocal } = research.output);
+          for (const block of [research.output.researchBlock, research.output.entityBlock]) if (block) generationPrompt = `${generationPrompt}\n\n${block}`;
+        }
+      }
+      // KNOWLEDGE: every detail of the request becomes a tracked requirement, the organisation's own website is crawled for the content those
+      // requirements need, and the people it names get identity-checked portraits. Nothing below is written from the prompt alone.
+      let knowledgeResult = null;
+      if (compositionEligible && String(process.env.KNOWLEDGE_RETRIEVAL || 'true').toLowerCase() !== 'false') {
+        const saved = job.knowledge && job.knowledge.promptHash === deepState.hashPrompt(prompt) ? job.knowledge : null;
+        const retrieval = await runWorker('knowledge', ({ log, signal }) => knowledgeWorker.buildKnowledge({
+          prompt, ask: makeAsk({ model, maxTokens: 8000, signal }), entityAssets: entityLocal?.assets || [], wantsNoImages, signal, log,
+          reuse: saved, onProgress: ({ stepName, stage }) => reportProgress({ stepName, 'analysis.imagePipeline.stage': stage })
+        }), { jobId, signal: validationController.signal });
+        if (!softFail(retrieval, 'requirement and knowledge retrieval')) {
+          knowledgeResult = retrieval.output;
+          const person = knowledgeResult.personAssets;
+          if (person?.assets?.length) entityLocal = { assets: [...(entityLocal?.assets || []), ...person.assets], files: [...(entityLocal?.files || []), ...person.files] };
+          const record = knowledgeWorker.knowledgeRecord(knowledgeResult);
+          persistJob({ knowledge: { promptHash: deepState.hashPrompt(prompt), site: knowledgeResult.site, requirements: knowledgeResult.requirements, knowledge: { ...knowledgeResult.knowledge, unverified: (knowledgeResult.knowledge.unverified || []).slice(0, 40) } }, 'analysis.knowledge': record });
+          logger.info(`Job ${jobId} knowledge: ${knowledgeResult.requirements.length} requirement(s), ${knowledgeResult.knowledge.entries.length} verified entr${knowledgeResult.knowledge.entries.length === 1 ? 'y' : 'ies'}, ${knowledgeResult.knowledge.gaps.length} gap(s), ${person?.assets?.length || 0} verified portrait(s).`);
         }
       }
       const entityAssetsLocal = entityLocal?.assets || [];
@@ -3240,75 +1193,84 @@ class JobManager {
       let imageDiscoveryReport = null;
       // Pictures of named subjects already taken: a topical search must never return the same photograph again.
       const sharedTaken = { sha256: new Set(entityAssetsLocal.map((asset) => asset.sha256)), hashes: entityAssetsLocal.map((asset) => asset.hash).filter(Boolean) };
+      // One record of every picture this job selects or rejects. A retry starts from it, so a rejected picture is never chosen again and a
+      // picture already used in one section is never offered to another.
+      const imageRegistry = ImageAssetRegistry.fromJSON(job.imageRegistry);
+      imageRegistry.seedTaken(sharedTaken);
       // The page composition plan is decided before any code is written: which sections each page has, what each says, which layout
       // presents it, which pictures belong in it and how much room it takes. It drives image discovery and the generation prompt.
       let compositionPlan = null;
       if (compositionEligible) {
-        try {
-          GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: { stepName: 'Planning the pages and their layout...', 'analysis.imagePipeline.stage': 'composition_planning' } }).catch(() => {});
-          const canAskPlan = process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key';
-          compositionPlan = await compositionPlanner.buildCompositionPlan({
-            prompt, spec: job.analysis?.spec || null, entities: entityImageReport?.entities || [], dossier: researchDossier,
-            ask: canAskPlan ? async (system, user) => {
-              const completion = await openrouterService.generateCompletion([{ role: 'system', content: system }, { role: 'user', content: user }], { model, temperature: 0.2, max_tokens: 4200, response_format: false, reasoning: { effort: 'minimal', exclude: true } });
-              return completion?.content || '';
-            } : null
-          });
-          if (!imageEligible) compositionPlan.pages.forEach((page) => page.sections.forEach((section) => { section.images = []; }));
-          if (entityAssetsLocal.length) compositionPlanner.assignEntityAssets(compositionPlan, entityAssetsLocal);
-          logger.info(`Job ${jobId} composition plan (${compositionPlan.source}): ${compositionPlan.pages.map((page) => `${page.name}[${page.sections.map((section) => section.layout).join(',')}]`).join(' ')}`);
-        } catch (error) {
-          if (validationController.signal.aborted) throw error;
-          logger.warn(`Job ${jobId} composition planning skipped: ${error.message}`);
-          compositionPlan = null;
+        const planning = await runWorker('planning', () => planningWorker.planComposition({
+          prompt, spec: job.analysis?.spec || null, entities: entityImageReport?.entities || [], dossier: researchDossier, imageEligible, entityAssets: entityAssetsLocal,
+          ask: makeAsk({ model, maxTokens: deepMode ? 14000 : 4200, temperature: 0.2, signal: validationController.signal }),
+          deep: deepMode, requirements: knowledgeResult?.requirements || null, knowledge: knowledgeResult?.knowledge || null, personStatus: knowledgeResult?.personStatus || [],
+          onProgress: ({ stepName, stage }) => reportProgress({ stepName, 'analysis.imagePipeline.stage': stage })
+        }), { jobId, signal: validationController.signal });
+        if (!softFail(planning, 'composition planning')) {
+          compositionPlan = planning.output.compositionPlan;
+          deepPlan = planning.output.deepPlan || null;
+          if (deepPlan?.mapping) persistJob({ 'analysis.requirementMap': { table: deepPlan.mapping.table, tasks: [...deepPlan.mapping.tasks, ...(deepPlan.gate?.tasks || [])], unresolved: deepPlan.gate?.open || [], issues: deepPlan.gate?.issues || [] } });
+          logger.info(`Job ${jobId} composition plan (${planning.output.summary})`);
         }
       }
       if (imageEligible) {
-        const IMAGE_STAGE_TEXT = {
-          image_requirements: 'Planning the images your website needs...',
-          image_discovery: 'Searching for real photographs...',
-          image_verification: 'Checking the photographs...',
-          image_download: 'Saving the verified photographs...',
-          asset_mapping: 'Matching photographs to your pages...'
-        };
-        try {
-          const canAsk = process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key';
-          const planned = compositionPlan ? compositionPlanner.topUpRequirements(compositionPlanner.requirementsFromComposition(compositionPlan, { entityAssets: entityAssetsLocal.length ? entityAssetsLocal : (entityImageReport?.assets || []), cfg: imageCfg }), { prompt, spec: job.analysis?.spec || null, plan: compositionPlan, cfg: imageCfg }) : null;
-          const found = await imageDiscovery.discoverImages({
-            prompt, spec: job.analysis?.spec || null, scope: jobId, requirements: planned && planned.length >= 3 ? planned : null, taken: sharedTaken,
-            signal: validationController.signal,
-            ask: canAsk ? async (system, user) => {
-              const completion = await openrouterService.generateCompletion([{ role: 'system', content: system }, { role: 'user', content: user }], { model, temperature: 0, max_tokens: 1400, response_format: false, reasoning: { effort: 'minimal', exclude: true } });
-              return completion?.content || '';
-            } : null,
-            onStage: (stage, info) => {
-              logger.info(`Job ${jobId} images: ${stage} ${JSON.stringify(info || {})}`);
-              GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: { ...(IMAGE_STAGE_TEXT[stage] ? { stepName: IMAGE_STAGE_TEXT[stage] } : {}), 'analysis.imagePipeline.stage': stage } }).catch(() => {});
-            }
-          });
-          imageDiscoveryReport = found;
-          const imageBlock = imageDiscovery.buildPromptBlock(found);
-          if (imageBlock) generationPrompt = `${generationPrompt}\n\n${imageBlock}`;
-          await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.imagePipeline': {
-            stage: 'website_generation', industry: found.plan.industry, subject: found.plan.subject, source: found.plan.source,
-            requested: found.plan.requirements.length, verified: found.assets.length, diagnostics: found.diagnostics,
-            assets: found.assets.map(({ id, page, section, publicPath, width, height, provider, sourcePage, creator, license, query }) => ({ id, page, section, publicPath, width, height, provider, sourcePage, creator, license, query })),
-            missing: found.missing.map(({ slot, page, section, code, tried }) => ({ slot, page, section, code, tried }))
-          } } }).catch(() => {});
-          logger.info(`Job ${jobId} images: ${found.assets.length}/${found.plan.requirements.length} verified${found.missing.length ? `, missing ${JSON.stringify(found.diagnostics)}` : ''}.`);
-        } catch (error) {
-          if (validationController.signal.aborted) throw error;
-          logger.warn(`Job ${jobId} image discovery skipped: ${error.message}`);
+        const imaging = await runWorker('image', ({ log }) => imageWorker.discoverSiteImages({
+          jobId, prompt, spec: job.analysis?.spec || null, compositionPlan, entityAssets: entityAssetsLocal, entityReportAssets: entityImageReport?.assets || [], taken: sharedTaken,
+          signal: validationController.signal, log, imageCfg,
+          ask: makeAsk({ model, maxTokens: 1400, signal: validationController.signal }),
+          // A vision model looks at each downloaded candidate and judges it against its section. Without one, only metadata is used and
+          // nothing is reported as visually verified.
+          vision: imageCfg.visionEval ? makeVision({ model: imageCfg.visionModel, signal: validationController.signal }) : null,
+          onProgress: ({ stepName, stage }) => reportProgress({ ...(stepName ? { stepName } : {}), 'analysis.imagePipeline.stage': stage }),
+          persist: persistJob
+        }), { jobId, signal: validationController.signal });
+        if (!softFail(imaging, 'image discovery')) {
+          imageDiscoveryReport = imaging.output.found;
+          if (imaging.output.promptBlock) generationPrompt = `${generationPrompt}\n\n${imaging.output.promptBlock}`;
         }
       }
 
+      // Pictures the organisation's own website already shows next to the subject of a section come first: they are verified as its own.
+      if (compositionPlan && imageEligible && knowledgeResult?.pages?.length) {
+        try {
+          const officialFound = await officialImageSource.findOfficialAssets({ plan: compositionPlan, pages: knowledgeResult.pages, registry: imageRegistry, taken: imageDiscoveryReport?.taken || sharedTaken, download: (url, options) => remoteImageLocalizer.downloadPublicImage(url, options), siteName: knowledgeResult.site?.name || '', signal: validationController.signal, cfg: imageCfg });
+          if (officialFound.assets.length) {
+            imageDiscoveryReport = imageDiscoveryReport || { assets: [], files: [], missing: [], plan: null, taken: sharedTaken };
+            // An official picture replaces whatever general picture was found for the same section.
+            const taken = new Set(officialFound.assets.map((asset) => asset.sectionId));
+            imageDiscoveryReport.assets = [...imageDiscoveryReport.assets.filter((asset) => !taken.has(asset.sectionId) || asset.officialVerified), ...officialFound.assets];
+            imageDiscoveryReport.files = [...(imageDiscoveryReport.files || []), ...officialFound.files];
+            logger.info(`Job ${jobId} official pictures: ${officialFound.matched.map((item) => `${item.section} <- ${item.source}`).join('; ')}`);
+          }
+          persistJob({ 'analysis.officialImages': { matched: officialFound.matched, skipped: officialFound.skipped.slice(0, 12) } });
+        } catch (error) { if (validationController.signal.aborted) throw error; logger.warn(`Job ${jobId} official picture search skipped: ${error.message}`); }
+      }
+
+      // Section-aware image check: each picture is judged against the section it was found for (subject, institution, photograph or
+      // illustration, source, identity, uniqueness); the ones that do not belong are withheld and the section is laid out without them.
+      let allSiteAssets = [...entityAssetsLocal, ...(imageDiscoveryReport?.assets || [])];
+      let withheldIds = new Set();
+      if (compositionPlan && allSiteAssets.length) {
+        const audit = contextualImageSelector.auditAssets({ plan: compositionPlan, requirements: knowledgeResult?.requirements || [], assets: allSiteAssets, personStatus: knowledgeResult?.personStatus || [], registry: imageRegistry, siteName: knowledgeResult?.site?.name || '', officialUrl: knowledgeResult?.site?.officialUrl || '' });
+        withheldIds = new Set(audit.rejected.map((item) => item.id));
+        if (withheldIds.size) logger.info(`Job ${jobId} image check withheld ${withheldIds.size} picture(s): ${audit.rejected.slice(0, 4).map((item) => `${item.id} (${item.reasons[0]})`).join('; ')}`);
+        allSiteAssets = allSiteAssets.filter((asset) => !withheldIds.has(asset.id));
+        persistJob({ 'analysis.imageManifest': { pages: audit.manifest.pages, withheld: audit.rejected, missingRequired: audit.missingRequired }, imageRegistry: imageRegistry.toJSON() });
+      }
+      // The layouts are decided again now that the pictures are known: a section without a picture reserves no picture frame.
+      if (compositionPlan && knowledgeResult) {
+        const layouts = adaptiveLayout.adaptPlan({ plan: compositionPlan, requirements: knowledgeResult.requirements, knowledge: knowledgeResult.knowledge, assets: allSiteAssets, finalPass: true });
+        persistJob({ 'analysis.adaptiveLayouts': layouts });
+      }
       if (compositionPlan) {
-        const compositionBlock = compositionPlanner.buildPromptBlock(compositionPlan, { assets: [...entityAssetsLocal, ...(imageDiscoveryReport?.assets || [])], entityAssets: entityAssetsLocal.length ? [] : (entityImageReport?.assets || []) });
+        const compositionBlock = planningWorker.planPromptBlock(compositionPlan, { assets: allSiteAssets, entityAssets: entityAssetsLocal.length ? [] : (entityImageReport?.assets || []) });
         if (compositionBlock) generationPrompt = `${generationPrompt}\n\n${compositionBlock}`;
-        GenerationJob.updateOne({ jobId }, { $set: { 'analysis.composition': {
-          source: compositionPlan.source, industry: compositionPlan.industry,
-          pages: compositionPlan.pages.map((page) => ({ id: page.id, name: page.name, route: page.route, balance: page.balanceNotes, sections: page.sections.map((section) => ({ id: section.id, layout: section.layout, spacing: section.spacing, width: section.width, words: section.words, density: section.density?.state, images: section.images.length })) }))
-        } } }).catch(() => {});
+        if (knowledgeResult && deepPlan) {
+          const verifiedBlock = requirementMapper.knowledgePromptBlock({ plan: compositionPlan, requirements: knowledgeResult.requirements, knowledge: knowledgeResult.knowledge });
+          if (verifiedBlock) generationPrompt = `${generationPrompt}\n\n${verifiedBlock}`;
+        }
+        persistJob({ 'analysis.composition': planningWorker.planRecord(compositionPlan) });
       }
 
       // Command Directive detection
@@ -3373,43 +1335,11 @@ class JobManager {
         incrementalUsage = addBilledUsage(incrementalUsage, completion, messages, opts?.model || model);
         return completion;
       };
-      // "Remove the empty space": render the viewed page, measure the blank regions, patch only their causes and verify in the browser.
-      let spacingEngineRan = false;
-      let spacingEngineFixed = false; // the engine verified a fix in the browser
-      const engineChangedPaths = new Set(); // files the engine edited: already verified, so the scope guard must not revert them
-      const runSpacingEngine = async (files) => {
-        spacingEngineRan = true;
-        const spacingRoute = editTarget.route;
-        const canAsk = process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key';
-        const engineReport = await runBlankSpaceEngine({
-          files, route: spacingRoute, request: prompt, signal: validationController.signal,
-          maxAttempts: Number.parseInt(process.env.BLANK_SPACE_MAX_ATTEMPTS, 10) || 4,
-          chooseCandidate: canAsk ? makeLlmChooser(async (messages) => {
-            const completion = await openrouterService.generateCompletion(messages, { model, temperature: 0, max_tokens: 400, reasoning: { effort: 'low', exclude: true }, response_format: false });
-            tokenUsage = sumUsageRecords(tokenUsage, addBilledUsage(null, completion, messages, model));
-            return completion;
-          }) : null,
-          onState: (state, detail) => { GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: { stepName: `Blank space: ${state.toLowerCase().replace(/_/g, ' ')}${detail ? ` - ${String(detail).slice(0, 80)}` : ''}` } }).catch(() => {}); }
-        });
-        if (engineReport.changes.length) { for (const change of engineReport.changes) engineChangedPaths.add(change.file); spacingEngineFixed = ['fixed', 'partially-fixed'].includes(engineReport.status); }
-        const { files: _omit, ...summary } = engineReport;
-        await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.blankSpaceEngine': summary } }).catch(() => {});
-        logger.info(`Job ${jobId} blank-space engine on ${spacingRoute}: ${engineReport.status} (${engineReport.state}), ${engineReport.changes.length} verified change(s), ${engineReport.attempts.length} attempt(s).`);
-        return engineReport;
-      };
-      // "Make the footer black with white text": locate that region on the page being viewed, restyle exactly it, verify in the browser.
-      const runStyleEngine = async (files, intent) => {
-        const route = editTarget.route;
-        const report = await runElementStyleEngine({
-          files, route, request: prompt, intent, signal: validationController.signal,
-          onState: (state, detail) => { GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: { stepName: `Restyle: ${state.toLowerCase().replace(/_/g, ' ')}${detail ? ` - ${String(detail).slice(0, 80)}` : ''}` } }).catch(() => {}); }
-        });
-        for (const change of report.changes) engineChangedPaths.add(change.file);
-        const { files: _omit, ...summary } = report;
-        await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.styleEngine': summary } }).catch(() => {});
-        logger.info(`Job ${jobId} style engine on ${route}: ${report.status} (${report.state}), target ${report.target?.selector || 'none'}, ${report.changes.length} verified change(s), ${report.attempts.length} attempt(s).`);
-        return report;
-      };
+      const engines = createEditEngines({
+        jobId, prompt, model, signal: validationController.signal, project, editTarget, editViewingRoute, previousAppCode,
+        onUsage: (completion, messages) => { tokenUsage = sumUsageRecords(tokenUsage, addBilledUsage(null, completion, messages, model)); }
+      });
+      const engineChangedPaths = engines.state.changedPaths; // files the engines edited: already verified, so the scope guard must not revert them
       const publishTokenUsage = async () => {
         if (!tokenUsage) return;
         await GenerationJob.updateOne(
@@ -3563,268 +1493,90 @@ class JobManager {
           await job.save();
         }
         // "You missed some links/pages, re-run and capture all of them": crawl the whole real site again and build every page the project lacks.
+        // One step reporter for the three source-refresh paths: reloads the job, stops when it was cancelled, saves the step name.
+        const reportSourceStep = async (message) => {
+          job = await GenerationJob.findOne({ jobId });
+          if (!job || job.status === 'cancelled') throw new Error('Cancelled');
+          job.stepName = message;
+          await job.save();
+        };
         if (sourceDecision.recrawl) {
-          const onStep = async (message) => {
-            job = await GenerationJob.findOne({ jobId });
-            if (!job || job.status === 'cancelled') throw new Error('Cancelled');
-            job.stepName = message;
-            await job.save();
-          };
-          await onStep('Crawling the real website again to find the pages that were missed...');
-          const found = await sourceRefreshService.findMissingPages({
-            project, signal: validationController.signal, capture: captureWebsite,
-            exists: (pagePath) => hasRouteDefinition(updatedFiles, pagePath)
+          const recrawled = await sourceRefreshWorker.recrawlMissingPages({
+            jobId, project, files: updatedFiles, model, signal: validationController.signal, onStep: reportSourceStep, usage: tokenUsage,
+            deps: { captureWebsite, hasRouteDefinition, pageExistsInFiles, fillMissingFromRealPage, localizeInternalRouteLinks, sumUsageRecords, logger }
           });
-          const maxNewPages = Number.parseInt(process.env.SOURCE_RECRAWL_MAX_PAGES, 10) || 8;
-          const batch = found.missing.slice(0, maxNewPages);
-          if (!batch.length) {
-            const failedNote = found.failed.length ? ` ${found.failed.length} page(s) could not be opened (${found.failed.slice(0, 5).map((item) => item.path).join(', ')}).` : '';
-            throw new Error(`Crawled the real website again: ${found.totalCaptured} page(s) found, and the project already has all of them.${failedNote} The project was not changed.`);
-          }
-          let routes = [...(project.provenance.routes || [])];
-          const created = [];
-          const failures = [];
-          let working = updatedFiles;
-          for (let index = 0; index < batch.length; index += 1) {
-            const page = batch[index];
-            try {
-              const filled = await fillMissingFromRealPage({
-                files: working, source: { page, capture: found.capture }, provenance: { ...project.provenance, routes },
-                model, signal: validationController.signal, treatAsNew: true,
-                onStep: (message) => onStep(`Page ${index + 1} of ${batch.length} (${page.path}): ${message}`)
-              });
-              if (!filled.changed.length || !pageExistsInFiles(filled.files, page.path, { routes })) throw new Error('the page could not be added to the project routes');
-              working = filled.files;
-              if (filled.usage) tokenUsage = mergeOpenRouterUsage(tokenUsage, filled.usage, model);
-              routes = [...routes, { path: page.path, title: page.title, description: page.description, headings: (page.headings || []).slice(0, 12), sections: (page.sections || []).slice(0, 20).map(({ tag, id, text }) => ({ tag, id, text })) }];
-              created.push({ path: page.path, textMissingAfter: filled.report.after.missing, textTotal: filled.report.after.total });
-            } catch (error) {
-              if (validationController.signal.aborted || /^Cancelled$/.test(error?.message)) throw error;
-              failures.push({ path: page.path, reason: String(error?.message || error).slice(0, 300) });
-              logger.warn(`Job ${jobId} re-crawl could not add ${page.path}: ${failures[failures.length - 1].reason}`);
-            }
-          }
-          if (!created.length) throw new Error(`Found ${found.missing.length} missing page(s) but could not build any: ${failures.map((item) => `${item.path} (${item.reason})`).join('; ')}. The project was not changed.`);
-          // Menus and links elsewhere that still point at the real site now go to the new local pages.
-          working = localizeInternalRouteLinks(working, { pages: batch.filter((page) => created.some((item) => item.path === page.path)) });
+          const working = recrawled.working;
+          tokenUsage = recrawled.usage;
           job = await GenerationJob.findOne({ jobId });
           if (!job || job.status === 'cancelled') return;
-          recrawlResult = {
-            routes, siteMap: found.capture.siteMap, created, failures,
-            remaining: found.missing.slice(maxNewPages).map((page) => page.path),
-            unreachable: found.failed.slice(0, 20), totalCaptured: found.totalCaptured
-          };
-          job.analysis = { ...(job.analysis || {}), recrawl: { created, failures, remaining: recrawlResult.remaining, unreachable: recrawlResult.unreachable } };
+          recrawlResult = recrawled.recrawlResult;
+          job.analysis = { ...(job.analysis || {}), recrawl: { created: recrawlResult.created, failures: recrawlResult.failures, remaining: recrawlResult.remaining, unreachable: recrawlResult.unreachable } };
           await job.save();
           updatedFiles = working;
-          generatedChanges = working.filter((file) => {
-            const original = project.files.find((candidate) => candidate.path === file.path);
-            return !original || original.content !== file.content;
-          });
-          appliedOperations = generatedChanges.map((file) => ({ operation: project.files.some((original) => original.path === file.path) ? 'modify' : 'create', path: file.path }));
-          generatedAppCode = updatedFiles.find((file) => file?.path && file.path.endsWith('App.jsx'))?.content || previousAppCode || '__INCREMENTAL_EDIT_APPLIED__';
+          ({ generatedChanges, appliedOperations, generatedAppCode } = editEngineResult.describeSourceChanges({ originalFiles: project.files, files: updatedFiles, previousAppCode }));
         }
         // "Re-run the clone for this page": rebuild the page from a fresh read of the real one (checked against it afterwards).
         if (sourceRefresh && sourceDecision.reclone) {
           const rebuilt = await recloneRoute({
             files: updatedFiles, source: sourceRefresh, provenance: project.provenance, model, signal: validationController.signal,
-            onStep: async (message) => {
-              job = await GenerationJob.findOne({ jobId });
-              if (!job || job.status === 'cancelled') throw new Error('Cancelled');
-              job.stepName = message;
-              await job.save();
-            }
+            onStep: reportSourceStep
           });
           job = await GenerationJob.findOne({ jobId });
           if (!job || job.status === 'cancelled') return;
           job.analysis = { ...(job.analysis || {}), reclone: rebuilt.report };
           await job.save();
           recloned = { route: sourceRefresh.routePath, report: rebuilt.report };
-          if (rebuilt.usage) tokenUsage = mergeOpenRouterUsage(tokenUsage, rebuilt.usage, model);
+          if (rebuilt.usage) tokenUsage = sumUsageRecords(tokenUsage, rebuilt.usage);
           if (!rebuilt.changed.length || !rebuilt.report.via) throw new Error(`Cloned ${sourceRefresh.routePath} again from the real website, but the result did not match the real page better than the current page (${rebuilt.report.before === null ? 'unmeasured' : `${Math.round(rebuilt.report.before * 100)}%`} now), so the project was not changed.`);
           updatedFiles = rebuilt.files;
-          generatedChanges = rebuilt.changed;
-          appliedOperations = rebuilt.changed.map((file) => ({ operation: project.files.some((original) => original.path === file.path) ? 'modify' : 'create', path: file.path }));
-          generatedAppCode = updatedFiles.find((file) => file?.path && file.path.endsWith('App.jsx'))?.content || previousAppCode || '__INCREMENTAL_EDIT_APPLIED__';
-          // The page is a copy of the real one WITHOUT the real site's scripts: make it visible and let the model fix what still
-          // differs from the real page BEFORE the edit is validated, so validation judges the repaired page, not the raw copy.
-          try {
-            const guarded = await capturedVisibility.ensureCapturedContentVisible(updatedFiles, { signal: validationController.signal, routes: [sourceRefresh.routePath] });
-            updatedFiles = guarded.files;
-            const repairPasses = Number.parseInt(process.env.CLONE_VISUAL_REPAIR_PASSES ?? '2', 10);
-            if (repairPasses > 0 && process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key') {
-              const repaired = await cloneVisualRepair.runCloneVisualRepair({
-                files: updatedFiles, routes: [sourceRefresh.routePath], maxPasses: repairPasses, signal: validationController.signal,
-                validation: incrementalValidation, fidelity: fidelityAudit,
-                render: (files, options) => inspectRenderedPreview(files, { signal: validationController.signal, ...options }),
-                reference: async () => ({ url: sourceRefresh.url, snapshot: sourceRefresh.page.fidelity || await snapshotLivePage(sourceRefresh.url, { signal: validationController.signal }) }),
-                ask: async (messages) => {
-                  const completion = await openrouterService.generateCompletion(messages, { model, temperature: 0, max_tokens: 8000, reasoning: { effort: 'low', exclude: true }, response_format: false });
-                  tokenUsage = sumUsageRecords(tokenUsage, addBilledUsage(null, completion, messages, model));
-                  return completion;
-                },
-                onState: async (note) => { await GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: { stepName: note } }).catch(() => {}); }
-              });
-              if (repaired.passes?.length) {
-                updatedFiles = repaired.files;
-                recloned.repair = { initial: repaired.initial, final: repaired.final, passes: repaired.passes, remaining: repaired.remaining };
-                await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.recloneRepair': recloned.repair } }).catch(() => {});
-                logger.info(`Job ${jobId} re-cloned ${sourceRefresh.routePath}: ${repaired.initial.issues} -> ${repaired.final.issues} difference(s) from the real page after repair.`);
-              }
-            }
-            const original = new Map(project.files.map((file) => [file.path, file.content]));
-            generatedChanges = updatedFiles.filter((file) => original.get(file.path) !== file.content);
-            appliedOperations = generatedChanges.map((file) => ({ operation: original.has(file.path) ? 'modify' : 'create', path: file.path }));
-          } catch (repairError) {
-            if (validationController.signal.aborted || repairError?.name === 'AbortError') throw repairError;
-            logger.warn(`Job ${jobId} re-clone visual repair skipped: ${repairError.message}`);
+          ({ generatedChanges, appliedOperations, generatedAppCode } = editEngineResult.describeSourceChanges({ originalFiles: project.files, files: updatedFiles, changed: rebuilt.changed, previousAppCode }));
+          const repairedClone = await sourceRefreshWorker.repairRecloned({
+            jobId, files: updatedFiles, source: sourceRefresh, signal: validationController.signal,
+            ask: async (messages) => {
+              const completion = await openrouterService.generateCompletion(messages, { model, temperature: 0, max_tokens: 8000, reasoning: { effort: 'low', exclude: true }, response_format: false });
+              tokenUsage = sumUsageRecords(tokenUsage, addBilledUsage(null, completion, messages, model));
+              return completion;
+            },
+            onState: async (note) => { await GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: { stepName: note } }).catch(() => {}); },
+            deps: { capturedVisibility, cloneVisualRepair, incrementalValidation, fidelityAudit, inspectRenderedPreview, snapshotLivePage, logger }
+          });
+          updatedFiles = repairedClone.files;
+          if (repairedClone.repair) {
+            recloned.repair = repairedClone.repair;
+            await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.recloneRepair': recloned.repair } }).catch(() => {});
+          }
+          if (!repairedClone.failed) {
+            ({ generatedChanges, appliedOperations } = editEngineResult.describeSourceChanges({ originalFiles: project.files, files: updatedFiles, previousAppCode }));
           }
         } else
         // "Add what is missing" on a cloned page: fill it completely with the cloner's own pipeline and coverage loop.
         if (sourceRefresh && sourceDecision.fillAll) {
           const filled = await fillMissingFromRealPage({
             files: updatedFiles, source: sourceRefresh, provenance: project.provenance, model, signal: validationController.signal,
-            onStep: async (message) => {
-              job = await GenerationJob.findOne({ jobId });
-              if (!job || job.status === 'cancelled') throw new Error('Cancelled');
-              job.stepName = message;
-              await job.save();
-            }
+            onStep: reportSourceStep
           });
           job = await GenerationJob.findOne({ jobId });
           if (!job || job.status === 'cancelled') return;
           job.analysis = { ...(job.analysis || {}), sourceFill: filled.report };
           await job.save();
           sourceFillReport = filled.report;
-          if (filled.usage) tokenUsage = filled.usage;
+          if (filled.usage) tokenUsage = sumUsageRecords(tokenUsage, filled.usage);
           if (filled.changed.length) {
             updatedFiles = filled.files;
-            generatedChanges = filled.changed;
-            appliedOperations = filled.changed.map((file) => ({ operation: project.files.some((original) => original.path === file.path) ? 'modify' : 'create', path: file.path }));
-            generatedAppCode = updatedFiles.find((file) => file?.path && file.path.endsWith('App.jsx'))?.content || previousAppCode || '__INCREMENTAL_EDIT_APPLIED__';
+            ({ generatedChanges, appliedOperations, generatedAppCode } = editEngineResult.describeSourceChanges({ originalFiles: project.files, files: updatedFiles, changed: filled.changed, previousAppCode }));
           }
         }
-        // "There are 2 footers, remove one": the claim is checked against the rendered page first. A model asked to do this blindly removes
-        // the wrong footer (or the only one), so the model is not used: either the duplicate is removed and verified, or nothing changes
-        // and the user is told what the page really shows.
-        if (!generatedAppCode && parseDuplicateRequest(prompt)) {
-          const report = await runDuplicateRegionEngine({
-            files: project.files.map(incrementalEditor.normalizeFile).filter(Boolean), route: editTarget.route, request: prompt, provenance: project.provenance, signal: validationController.signal,
-            onState: (state, detail) => { GenerationJob.updateOne({ jobId, status: 'processing' }, { $set: { stepName: `Duplicate check: ${state.toLowerCase().replace(/_/g, ' ')}${detail ? ` - ${String(detail).slice(0, 80)}` : ''}` } }).catch(() => {}); }
-          });
-          for (const change of report.changes) engineChangedPaths.add(change.file);
-          const { files: _omit, ...summary } = report;
-          await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.duplicateRegionEngine': summary } }).catch(() => {});
-          logger.info(`Job ${jobId} duplicate-region engine on ${editTarget.route}: ${report.status}${report.reason ? ` - ${report.reason}` : ''}`);
-          if (report.status === 'fixed') {
-            const original = new Map(project.files.map((file) => [file.path, file.content]));
-            updatedFiles = report.files;
-            generatedChanges = updatedFiles.filter((file) => file.encoding !== 'base64' && original.get(file.path) !== file.content);
-            appliedOperations = generatedChanges.map((file) => ({ operation: 'modify', path: file.path }));
-            generatedAppCode = updatedFiles.find((file) => file?.path?.endsWith('App.jsx'))?.content || previousAppCode || '__INCREMENTAL_EDIT_APPLIED__';
-          } else if (report.status !== 'not-a-duplicate-request') {
-            throw new AIResponseValidationError(report.reason || 'The duplicate could not be removed safely, so the project was not changed.');
-          }
-        }
-        // Colour/background change of a named region ("footer", "header", ...): done by the style engine before any model call, so the
-        // edit lands on what the viewed page really renders (a captured route is not drawn by the component with the same name).
-        const styleAsk = process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key' ? async (messages) => {
-          const completion = await openrouterService.generateCompletion(messages, { model, temperature: 0, max_tokens: 200, reasoning: { effort: 'low', exclude: true }, response_format: false });
-          tokenUsage = sumUsageRecords(tokenUsage, addBilledUsage(null, completion, messages, model));
-          return completion;
-        } : null;
-        const styleIntent = !generatedAppCode && !incrementalValidation.isSpacingRequest(prompt) ? await interpretStyleRequest(prompt, styleAsk).catch(() => null) : null;
-        if (styleIntent) {
-          try {
-            const styleReport = await runStyleEngine(project.files.map(incrementalEditor.normalizeFile).filter(Boolean), styleIntent);
-            if (styleReport.status === 'fixed' && styleReport.changes.length) {
-              const original = new Map(project.files.map((file) => [file.path, file.content]));
-              updatedFiles = styleReport.files;
-              generatedChanges = updatedFiles.filter((file) => file.encoding !== 'base64' && original.get(file.path) !== file.content);
-              appliedOperations = generatedChanges.map((file) => ({ operation: 'modify', path: file.path }));
-              generatedAppCode = updatedFiles.find((file) => file?.path?.endsWith('App.jsx'))?.content || previousAppCode || '__INCREMENTAL_EDIT_APPLIED__';
-            }
-          } catch (styleError) {
-            if (validationController.signal.aborted || styleError?.name === 'AbortError') throw styleError;
-            logger.warn(`Job ${jobId} style engine skipped: ${styleError.message}`);
-          }
-        }
-        // "Remove the empty space": solve it automatically, before any model call. The layout engine measures the viewed page,
-        // traces each blank region to its cause, patches only that and verifies it in the browser. When it verifies a fix, the
-        // model is not asked at all; otherwise the model path below runs as before (and the engine runs again on its result).
-        if (!generatedAppCode && incrementalValidation.isSpacingRequest(prompt)) {
-          try {
-            const engineReport = await runSpacingEngine(project.files.map(incrementalEditor.normalizeFile).filter(Boolean));
-            if (engineReport.changes.length && ['fixed', 'partially-fixed'].includes(engineReport.status)) {
-              const original = new Map(project.files.map((file) => [file.path, file.content]));
-              updatedFiles = engineReport.files;
-              generatedChanges = updatedFiles.filter((file) => file.encoding !== 'base64' && original.get(file.path) !== file.content);
-              appliedOperations = generatedChanges.map((file) => ({ operation: 'modify', path: file.path }));
-              generatedAppCode = updatedFiles.find((file) => file?.path?.endsWith('App.jsx'))?.content || previousAppCode || '__INCREMENTAL_EDIT_APPLIED__';
-            } else {
-              spacingEngineRan = false; // nothing verified: let the model try, then run the engine on its result
-            }
-          } catch (autoSpacingError) {
-            if (validationController.signal.aborted || autoSpacingError?.name === 'AbortError') throw autoSpacingError;
-            spacingEngineRan = false;
-            logger.warn(`Job ${jobId} automatic blank-space engine skipped: ${autoSpacingError.message}`);
-          }
-        }
-        // "Remove the empty space": measure WHERE this page has more space than the real page and tell the model, so it patches the
-        // elements that cause it instead of guessing (a blind attempt changes nothing).
+        // Deterministic engines first (workers/editEnginesWorker.js): each measures the rendered page and edits it itself; when one
+        // verifies a fix the model is not asked. Order matters: a duplicate, then a restyle, then blank space, then the measurements.
+        const takeEngineResult = (result) => { if (result) ({ updatedFiles, generatedChanges, appliedOperations, generatedAppCode } = result); };
+        if (!generatedAppCode) takeEngineResult(await engines.duplicate());
+        if (!generatedAppCode) takeEngineResult(await engines.style());
+        if (!generatedAppCode) takeEngineResult(await engines.autoSpacing());
         let spacingContext = '';
-        if (!generatedAppCode && incrementalValidation.isSpacingRequest(prompt) && project.provenance?.type === 'website-clone' && project.provenance.sourceUrl) {
-          try {
-            const route = editTarget.route;
-            const url = sourceRefreshService.sourceUrlForRoute(project.provenance, route);
-            const [real, mine] = await Promise.all([
-              snapshotLivePage(url, { signal: validationController.signal }),
-              inspectRenderedPreview(project.files.map(incrementalEditor.normalizeFile).filter(Boolean), { signal: validationController.signal, routePath: route, inspect: fidelityAudit.pageSnapshot, argument: { maxTexts: 2500, maxImages: 1500 } })
-            ]);
-            const extra = incrementalValidation.extraSpaceIssues(real, mine);
-            if (extra.length || (real.docHeight && mine.docHeight > real.docHeight * 1.05)) {
-              spacingContext = `\nMEASURED EMPTY SPACE (the page ${route} rendered next to the real website at the same width; the real page is ${real.docHeight}px tall, this one ${mine.docHeight}px):\n${extra.map((issue) => `- ${issue.detail}`).join('\n') || '- the page is taller than the real page'}\nFind the elements that sit between those texts (in the markup above, in page order) and remove or shrink what creates the extra space: fixed pixel min-height / height / padding / margin in style attributes or classes, empty spacer blocks. Change ONLY those values on those elements. Do not remove real content, images or text.\n`;
-              logger.info(`Job ${jobId} measured ${extra.length} extra-space gap(s) on ${route} (page ${mine.docHeight}px vs real ${real.docHeight}px).`);
-            }
-          } catch (spacingError) {
-            if (validationController.signal.aborted || spacingError?.name === 'AbortError') throw spacingError;
-            logger.warn(`Job ${jobId} spacing measurement skipped: ${spacingError.message}`);
-          }
-        }
-        // "Make these images horizontal": measure how the images are placed today, so the model edits the real cause instead of guessing.
-        const layoutAsk = incrementalValidation.extractLayoutRequest(prompt);
-        if (layoutAsk) {
-          try {
-            const route = editViewingRoute || '/';
-            const measured = await inspectRenderedPreview(project.files.map(incrementalEditor.normalizeFile).filter(Boolean), { signal: validationController.signal, routePath: route, inspect: incrementalValidation.layoutInspector, argument: { count: layoutAsk.count, anchors: layoutAsk.anchors } });
-            const followed = incrementalValidation.layoutTarget(layoutAsk, measured);
-            // A captured page: wrap only the run of blocks that holds those images, then check by rendering that they are really in
-            // that arrangement and that nothing else moved. Verified -> the model is not asked.
-            if (!generatedAppCode && followed && measured.children?.length) {
-              const arranged = layoutEngine.arrangeCapturedBlocks(project.files.map(incrementalEditor.normalizeFile).filter(Boolean), measured, layoutAsk);
-              if (arranged) {
-                const after = await inspectRenderedPreview(arranged.files, { signal: validationController.signal, routePath: route, inspect: incrementalValidation.layoutInspector, argument: { srcs: followed } });
-                const verdict = incrementalValidation.verifyLayoutRequest(layoutAsk, measured, after);
-                logger.info(`Job ${jobId} arrangement engine on ${route}: ${verdict.ok ? 'verified' : 'rejected'} (${verdict.detail.slice(0, 200)}).`);
-                if (verdict.ok) {
-                  const original = new Map(project.files.map((file) => [file.path, file.content]));
-                  updatedFiles = arranged.files;
-                  generatedChanges = updatedFiles.filter((file) => file.encoding !== 'base64' && original.get(file.path) !== file.content);
-                  appliedOperations = generatedChanges.map((file) => ({ operation: 'modify', path: file.path }));
-                  for (const change of generatedChanges) engineChangedPaths.add(change.path);
-                  generatedAppCode = updatedFiles.find((file) => file?.path?.endsWith('App.jsx'))?.content || previousAppCode || '__INCREMENTAL_EDIT_APPLIED__';
-                }
-              }
-            }
-            if (!generatedAppCode && followed && measured.facts) {
-              spacingContext += `\nMEASURED LAYOUT (the page ${route} rendered at 1440px): the ${followed.length} images to arrange ${layoutAsk.orientation === 'row' ? 'in one row' : 'in one column'} are ${followed.join(', ')}; they are currently NOT arranged that way.\n${measured.facts}\nHOW TO CHANGE IT: the container also holds other content that must not move. Make the change with ONE scoped rule that targets only the blocks marked [holds an image] (and the caption blocks between them if they belong to the images), for example with a <style> element placed next to the container and selectors built from the block classes above, giving those blocks a row layout (flex or grid with ${followed.length} equal columns, width:auto, position:static, no fixed pixel width). Reset the old placement (grid-area, absolute position, fixed width) on those blocks and let each img fill its block (width:100%; height:auto). Do not change the container's own display for the whole page. Each SEARCH block must be a short unique line.\n`;
-              logger.info(`Job ${jobId} measured the layout of ${followed.length} image(s) on ${route} for the arrangement request.`);
-            }
-          } catch (layoutError) {
-            if (validationController.signal.aborted || layoutError?.name === 'AbortError') throw layoutError;
-            logger.warn(`Job ${jobId} layout measurement skipped: ${layoutError.message}`);
-          }
-        }
+        if (!generatedAppCode) spacingContext = await engines.measureSpacing();
+        const arrangement = await engines.arrange({ alreadyEdited: Boolean(generatedAppCode) });
+        takeEngineResult(arrangement.applied);
+        spacingContext += arrangement.context;
         const incrementalPrompt = incrementalEditor.buildIncrementalPrompt({
           prompt,
           targetFiles,
@@ -3886,187 +1638,29 @@ class JobManager {
 
             let completion = null;
             let parsed = null;
-
-            try {
-              completion = await billedCompletion(incrementalPrompt.messages, options);
-              if (completion?.finishReason === 'length' && !aiProtocol.hasCompleteStructuredResponse(completion)) {
-                throw new Error('The AI response was truncated at the configured token limit.');
-              }
-              parsed = aiProtocol.parseAIResponse(completion, null);
-              parsed.files = incrementalEditor.hydrateUploadedImageOperations(parsed.files, uploadedFiles, compactedProject.assets);
-              if (selectedElement || sourceRefresh?.focused) incrementalEditor.validateStrictScopeOperations(prompt, parsed.files, project.files, contextualSelectedElement, { sourceFocused: Boolean(sourceRefresh?.focused), sourceFacts: sourceRefresh?.facts || null });
-            } catch (pErr) {
-              logger.warn(`Job ${jobId} OpenRouter initial incremental parse attempt failed (${pErr.message}); retrying with pure deterministic delimiters...`);
-              const toolArgs = completion?.tool_calls?.[0]?.function?.arguments;
-              if (toolArgs !== undefined) logger.warn(`Job ${jobId} first attempt tool arguments (${String(toolArgs).length} chars): ${String(toolArgs).slice(0, 300).replace(/\s+/g, ' ')}`);
-              logger.warn(`Job ${jobId} first attempt: finish=${completion?.finishReason || 'n/a'} contentChars=${String(completion?.content || '').length} toolCalls=${completion?.tool_calls?.length || 0} promptChars=${incrementalPrompt.messages.reduce((n, m) => n + String(m.content || '').length, 0)}`);
-              try {
-              const delimiterPrompt = [
-                {
-                  role: 'system',
-                   content: aiProtocol.DELIMITER_INSTRUCTIONS +
-                     `\n\nRETRY REQUIREMENT: The previous response failed because: ${pErr.message}\n` +
-                     'Return only concise PATCH operations for existing files. FILE is allowed only to create a new file. Never rewrite an existing file in full. For a new page, include the page creation plus small import, route/render registration, and navigation patches as one atomic change set.'
-                },
-                incrementalPrompt.messages[1]
-              ];
-               completion = await billedCompletion(delimiterPrompt, {
-                 model,
-                 temperature: 0.2,
-                 max_tokens: retryMaxTokens,
-                 reasoning: { effort: 'low', exclude: true },
-                 response_format: false
-               });
-               if (completion?.finishReason === 'length' && !aiProtocol.hasCompleteStructuredResponse(completion)) {
-                 let combined = String(completion.content || '');
-                 const continuationMessages = [...delimiterPrompt];
-                 for (let continuationAttempt = 1; continuationAttempt <= 2; continuationAttempt++) {
-                   if (!combined || combined.length > 1024 * 1024) break;
-                   const continued = await billedCompletion([
-                     ...continuationMessages,
-                     { role: 'assistant', content: combined },
-                     { role: 'user', content: 'Continue exactly where the interrupted response stopped. Do not repeat earlier text. Output only the remaining delimiter content, close every open SEARCH, REPLACE, PATCH, and FILE tag, then stop.' }
-                   ], {
-                     model,
-                     temperature: 0,
-                     max_tokens: 16000,
-                     reasoning: { effort: 'low', exclude: true },
-                     response_format: false
-                   });
-                   combined = aiProtocol.appendResponseContinuation(combined, continued?.content);
-                   completion = { ...continued, content: combined };
-                   if (aiProtocol.hasCompleteStructuredResponse(completion)) break;
-                 }
-                 if (!aiProtocol.hasCompleteStructuredResponse(completion)) {
-                   throw new Error('The AI returned an incomplete patch after two bounded continuation attempts. The partial response was rejected to protect the existing project.');
-                 }
-               }
-               parsed = aiProtocol.parseAIResponse(completion, null);
-               parsed.files = incrementalEditor.hydrateUploadedImageOperations(parsed.files, uploadedFiles, compactedProject.assets);
-               if (selectedElement || sourceRefresh?.focused) incrementalEditor.validateStrictScopeOperations(prompt, parsed.files, project.files, contextualSelectedElement, { sourceFocused: Boolean(sourceRefresh?.focused), sourceFacts: sourceRefresh?.facts || null });
-              } catch (retryErr) {
-                if (retryErr instanceof OpenRouterAuthError || retryErr instanceof OpenRouterRateLimitError || validationController.signal.aborted) throw retryErr;
-                // Last resort: the model returned nothing usable (often a reasoning model that spent its budget thinking). Ask once more with a compact prompt (target files + real-site data only), minimal reasoning and a larger budget.
-                logger.warn(`Job ${jobId} delimiter retry failed (${retryErr.message}; finish=${completion?.finishReason || 'n/a'} chars=${String(completion?.content || '').length}; reply: ${String(completion?.content || '').slice(0, 200).replace(/\s+/g, ' ')}); trying a compact prompt with minimal reasoning...`);
-                // The compact retry shows the complete target files, so the partial-view plan no longer applies.
-                structuralPlan = null;
-                structuralMetrics.fullFileRetry = true;
-                const compactPrompt = incrementalEditor.buildIncrementalPrompt({ prompt, targetFiles, projectFiles: compactedProject.files, conversation: null, projectProvenance: null, selectedElement: contextualSelectedElement, uploadedFiles, sourceContext: (sourceRefresh?.context || '') + spacingContext, compact: true });
-                const compactMessages = [
-                  { role: 'system', content: aiProtocol.DELIMITER_INSTRUCTIONS + '\n\nReturn ONLY <PATCH path="..."><SEARCH>..</SEARCH><REPLACE>..</REPLACE></PATCH> blocks for existing files (and <FILE path="..."> only for new files). Do not think out loud, do not explain, no code fences. Copy SEARCH text verbatim from the files shown.' },
-                  compactPrompt.messages[1]
-                ];
-                // Some models answer with nothing (all budget spent reasoning). Try the same model, then a different one.
-                const fallbackModel = String(process.env.INCREMENTAL_FALLBACK_MODEL || process.env.OPENROUTER_MODEL || '').trim();
-                const compactModels = [{ model, effort: 'low' }];
-                if (fallbackModel && fallbackModel !== model) compactModels.push({ model: fallbackModel, effort: 'low' });
-                for (let compactIndex = 0; compactIndex < compactModels.length; compactIndex += 1) {
-                  const attempt = compactModels[compactIndex];
-                  completion = await billedCompletion(compactMessages, { model: attempt.model, temperature: 0, max_tokens: 32000, reasoning: { effort: attempt.effort, exclude: true }, response_format: false });
-                  logger.warn(`Job ${jobId} compact attempt ${compactIndex + 1} (${attempt.model}): finish=${completion?.finishReason || 'n/a'} chars=${String(completion?.content || '').length}`);
-                  if (completion?.reasoning && completion.content === completion.reasoning) completion = { ...completion, content: '' };
-                  if (String(completion?.content || '').trim()) break;
-                }
-                parsed = aiProtocol.parseAIResponse(completion, null);
-                parsed.files = incrementalEditor.hydrateUploadedImageOperations(parsed.files, uploadedFiles, compactedProject.assets);
-               if (selectedElement || sourceRefresh?.focused) incrementalEditor.validateStrictScopeOperations(prompt, parsed.files, project.files, contextualSelectedElement, { sourceFocused: Boolean(sourceRefresh?.focused), sourceFacts: sourceRefresh?.facts || null });
-              }
-
-            }
+            const patchCtx = { jobId, prompt, model, signal: validationController.signal, project, targetFiles, compactedProject, conversation, uploadedFiles, selectedElement, contextualSelectedElement, sourceRefresh, spacingContext, incrementalPrompt, options, retryMaxTokens, billedCompletion, structuralMetrics, structuralPlan };
+            ({ completion, parsed, structuralPlan } = await patchWorker.requestPatch(patchCtx));
 
             if (parsed && parsed.files && parsed.files.length) {
-              let validated = aiProtocol.validateFileOperations(parsed, project.files);
-              let applied;
-              try {
-                // Before applying: the edit must stay inside what the model was shown and match the source it read.
-                structuralContext.assertOperationsMatchPlan(structuralPlan, validated.files, project.files, { projectKey: String(project._id) });
-                applied = aiProtocol.applyOperationsSafely(project.files, validated.files);
-                // A patch whose REPLACE equals its SEARCH "applies" but does nothing: ask for a real change instead of ending the job.
-                if (sourceHash(applied.files) === sourceHash(project.files)) throw new Error('The patch changed nothing: the replacement text is identical to the text it replaces.');
-                // After applying: re-parse the result and compare it with the original.
-                structuralContext.assertAppliedStructure({ before: project.files, after: applied.files, plan: structuralPlan, prompt, operations: validated.files, resolveImportPath: incrementalEditor.resolveImportPath, projectKey: String(project._id) });
-              } catch (applyError) {
-                if (applyError instanceof structuralContext.StructuralEditError) {
-                  structuralMetrics.structuralRejections += 1;
-                  structuralMetrics.fullFileRetry = true;
-                  logger.warn(`Job ${jobId} structural check rejected the edit: ${applyError.message}`);
-                } else if (!/Patch search block not found|search block matched \d+ locations|The patch changed nothing/i.test(applyError.message)) throw applyError; // a missing OR ambiguous search text is corrected against the full file
-
-                const failedPaths = [...new Set(validated.files.map((file) => file.path))];
-                const authoritativeFiles = compactedProject.files
-                  .filter((file) => file && failedPaths.includes(file.path));
-                const correctionMessages = [{
-                  role: 'system',
-                  content: `${incrementalPrompt.systemPrompt}\n\n${/changed nothing/i.test(applyError.message) ? 'PATCH CORRECTION: Your previous patch changed nothing, so the request was NOT done. Make the requested change for real: the REPLACE text must differ from the SEARCH text and must add/alter exactly what the user asked for (for an image: an <img> with the attached image token or a real image link, with alt text, in the place they named).' : 'PATCH CORRECTION: A prior patch did not match the current project.'} Return only corrected PATCH delimiters. Copy each SEARCH block verbatim from the authoritative file content below. Do not reuse or approximate the failed search text.`
-                }, {
-                  role: 'user',
-                  content: `USER REQUEST:\n${prompt}\n\nAPPLICATION ERROR:\n${applyError.message}\n\nAUTHORITATIVE CURRENT FILES:\n${authoritativeFiles.map((file) => `--- FILE: ${file.path} ---\n${file.content}`).join('\n\n')}\n\nReturn only the minimal corrected <PATCH> operation(s).`
-                }];
-
-                logger.warn(`Job ${jobId} retrying an unmatched OpenRouter patch against authoritative file contents.`);
-                if (sourceRefresh?.context) {
-                  correctionMessages[1].content += `\n\n${sourceRefresh.context}`;
-                }
-                let correctionError = null;
-                for (let correctionAttempt = 1; correctionAttempt <= 3; correctionAttempt++) {
-                  try {
-                    const askCorrection = (correctionModel) => billedCompletion(correctionMessages, {
-                      model: correctionModel,
-                      temperature: correctionAttempt === 1 ? 0 : 0.3,
-                      max_tokens: retryMaxTokens,
-                      reasoning: { effort: 'low', exclude: true },
-                      response_format: false
-                    });
-                    completion = await askCorrection(model);
-                    if (completion?.reasoning && completion.content === completion.reasoning) completion = { ...completion, content: '' };
-                    // Some editor models (reasoning models) finish with an empty reply after spending their budget thinking.
-                    // Ask a different model right away instead of repeating the same empty answer.
-                    const correctionFallbackModel = String(process.env.INCREMENTAL_FALLBACK_MODEL || process.env.OPENROUTER_MODEL || '').trim();
-                    if (!String(completion?.content || '').trim() && !completion?.tool_calls?.length && correctionFallbackModel && correctionFallbackModel !== model) {
-                      logger.warn(`Job ${jobId} patch correction attempt ${correctionAttempt}: ${model} returned an empty reply; asking ${correctionFallbackModel} instead.`);
-                      completion = await askCorrection(correctionFallbackModel);
-                      if (completion?.reasoning && completion.content === completion.reasoning) completion = { ...completion, content: '' };
-                    }
-                    if (completion?.finishReason === 'length' && !aiProtocol.hasCompleteStructuredResponse(completion)) {
-                      throw new Error('The AI patch correction was truncated.');
-                    }
-                    parsed = aiProtocol.parseAIResponse(completion, null);
-                    if (!parsed.files?.length) throw new Error('The correction contained no file operations.');
-                    parsed.files = incrementalEditor.hydrateUploadedImageOperations(parsed.files, uploadedFiles, compactedProject.assets);
-                    if (selectedElement || sourceRefresh?.focused) incrementalEditor.validateStrictScopeOperations(prompt, parsed.files, project.files, contextualSelectedElement, { sourceFocused: Boolean(sourceRefresh?.focused), sourceFacts: sourceRefresh?.facts || null });
-                    validated = aiProtocol.validateFileOperations(parsed, project.files);
-                    structuralMetrics.correctionAttempts += 1;
-                    applied = aiProtocol.applyOperationsSafely(project.files, validated.files);
-                    // The correction was written against the complete files, so only the after-the-fact checks apply.
-                    structuralContext.assertAppliedStructure({ before: project.files, after: applied.files, plan: null, prompt, operations: validated.files, resolveImportPath: incrementalEditor.resolveImportPath, projectKey: String(project._id) });
-                    correctionError = null;
-                    break;
-                  } catch (attemptError) {
-                    if (attemptError instanceof AIResponseValidationError || attemptError instanceof OpenRouterAuthError || attemptError instanceof OpenRouterRateLimitError) throw attemptError;
-                    correctionError = attemptError;
-                    const preview = String(completion?.content ?? '').slice(0, 400).replace(/\s+/g, ' ');
-                    logger.warn(`Job ${jobId} patch correction attempt ${correctionAttempt} failed: ${attemptError.message} | finish=${completion?.finishReason || 'n/a'} | response="${preview}"`);
-                    correctionMessages[1].content = correctionMessages[1].content.split('\n\nFORMAT REMINDER:')[0]
-                      + `\n\nFORMAT REMINDER: your last reply was unusable (${attemptError.message}). Reply with ONLY one or more blocks of exactly this form and nothing else (no prose, no code fences):\n<PATCH path="relative/file.jsx">\n<SEARCH>\nexact existing text copied from the file above\n</SEARCH>\n<REPLACE>\nnew text\n</REPLACE>\n</PATCH>\nKeep SEARCH short (one to five lines) and unique in the file.`;
-                  }
-                }
-                if (correctionError) throw correctionError;
-              }
+              const { validated, applied } = await patchWorker.applyPatchWithCorrection({ ...patchCtx, structuralPlan, completion, parsed });
               const diffCheck = aiProtocol.validateMinimalDiff(project.files, applied.files, targetFiles, prompt);
               structuralMetrics.patchApplied = true;
               structuralMetrics.changedFiles = applied.changedFiles.length;
               await saveStructuralMetrics();
+              // Every model call that went into this patch (retries and corrections included), billed whether or not the diff check passes.
+              const patchUsage = incrementalUsage
+                ? { ...incrementalUsage, modelUsed: model || incrementalUsage.modelUsed || 'Veave AI' }
+                : { promptTokens: 0, completionTokens: 0, totalTokens: 0, modelUsed: model || 'Veave AI', provider: 'Veave AI', cost: 0, costReported: false, usageSource: 'unknown' };
+              tokenUsage = sumUsageRecords(tokenUsage, patchUsage);
               if (diffCheck.valid) {
                 updatedFiles = applied.files;
                 appliedOperations = validated.files;
                 generatedChanges = updatedFiles.filter(f => applied.changedFiles.includes(f.path));
                 generatedAppCode = updatedFiles.find(f => Boolean(f?.path && typeof f.path === 'string' && f.path.endsWith('App.jsx')))?.content || previousAppCode || (generatedChanges.length ? '__INCREMENTAL_EDIT_APPLIED__' : null);
                  // Sum of every model call that went into this patch (retries and corrections included).
-                 tokenUsage = incrementalUsage
-                   ? { ...incrementalUsage, modelUsed: model || incrementalUsage.modelUsed || 'Veave AI' }
-                   : { promptTokens: 0, completionTokens: 0, totalTokens: 0, modelUsed: model || 'Veave AI', provider: 'Veave AI', cost: 0, costReported: false, usageSource: 'unknown' };
-                 structuralMetrics.actualPromptTokens = tokenUsage.promptTokens ?? null; // all calls of this edit, as reported by the provider
-                 structuralMetrics.usageSource = tokenUsage.usageSource || (tokenUsage.costReported ? 'provider' : null);
+                 // Added to what earlier steps of this job already spent (a source fill that changed nothing), never replacing it.
+                 structuralMetrics.actualPromptTokens = patchUsage.promptTokens ?? null; // all calls of this edit, as reported by the provider
+                 structuralMetrics.usageSource = patchUsage.usageSource || (patchUsage.costReported ? 'provider' : null);
                  await saveStructuralMetrics();
               } else {
                 if (incrementalEditor.isElementScopedRequest(prompt)) {
@@ -4089,216 +1683,75 @@ class JobManager {
         }
       }
 
+      // DEEP GENERATION: the site is written section by section from the persistent plan (deep/ + workers/deepGenerationWorker.js). When it cannot
+      // produce a usable site, the standard one-shot generation below runs exactly as before.
+      let deepResult = null;
+      if (deepMode && compositionPlan && deepPlan && !isIncremental && !image && process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key') {
+        validationController.signal.throwIfAborted();
+        const resumed = deepState.resumable(job.deepGeneration, prompt);
+        if (resumed) logger.info(`Job ${jobId} continues a deep generation (${deepState.summarize(resumed).sections.completed}/${deepState.summarize(resumed).sections.total} sections already written).`);
+        const deep = await runWorker('deep-generation', ({ log, signal }) => deepGenerationWorker.generateDeepProject({
+          prompt, plan: compositionPlan, deepPlan, state: resumed, baseSystem: contextData.messages[0].content, designTokens: systemTokens,
+          assets: allSiteAssets, entityAssets: entityAssetsLocal.length ? [] : (entityImageReport?.assets || []),
+          knowledge: knowledgeResult?.knowledge || null,
+          retrieve: knowledgeResult ? (requirement, knowledge) => knowledgeWorker.retrieveForRequirement({ requirement, knowledge, requirements: deepPlan.requirements, ask: makeAsk({ model, maxTokens: 8000, signal }), signal, pages: knowledgeResult.pages }) : null,
+          model, ask: makeAsk({ model, maxTokens: 4000, signal }), log, signal,
+          persist: (state, summary) => GenerationJob.updateOne({ jobId }, { $set: { deepGeneration: state, deepSummary: summary } }),
+          onProgress: ({ stepName }) => reportProgress({ stepName })
+        }, { salvagePartialProject }), { jobId, signal: validationController.signal });
+        if (!deep.ok) {
+          if (validationController.signal.aborted || isProviderStop(deep.error.cause)) throw deep.error.cause;
+          providerFailureReason = deep.error.message;
+        } else if (deep.output.ok) {
+          deepResult = deep.output;
+          ({ updatedFiles, generatedChanges, generatedAppCode, tokenUsage } = deepResult);
+        } else {
+          providerFailureReason = deep.output.providerFailureReason;
+          logger.warn(`Job ${jobId} deep generation produced nothing usable (${providerFailureReason}); using the standard generation.`);
+        }
+      }
+
       // INITIAL CREATION OR FALLBACK FLOW
        if (!generatedAppCode && (!isIncremental || image)) {
           if (!generatedAppCode && process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key') {
-            try {
-              const baseMessages = image
-                ? [contextData.messages[0], {
-                    role: 'user',
-                    content: [
-                     { type: 'text', text: contextData.promptText },
-                     { type: 'image_url', image_url: { url: image } }
-                   ]
-                  }]
-                : contextData.messages;
-              const defaultModularInstruction = `Generate a modular React project as file operations. The FIRST file operation must create src/App.jsx; never defer the entry file until the end. Create separate files under src/pages and src/components after it. Every local import in src/App.jsx and every generated module must resolve to a file returned in the same response, with default and named imports matching the target exports exactly. For a sequential website clone, create a valid minimal page module for every route registered in App even when that page body will be completed later. Never import a page that you did not create. Keep modules compact by extracting repeated UI. App.jsx must stay under 500 lines and contain only providers, routing, shared layout composition, and top-level state. Do not put the complete website in App.jsx. Style everything with Tailwind CSS utility classes (use arbitrary values like w-[1354px] or text-[#d9d9d9] for exact measurements) and do NOT create per-page or per-component .css files or a styles.css; src/index.css with the @tailwind directives is the only stylesheet.`;
-              const templateInstruction = `Customise the selected template, which is already in the project. Do NOT create src/App.jsx, src/main.jsx or any template file from scratch: use "patch" (exact unique search block) or "modify" for existing files and "create" only for new pages and components. Keep the template's shared components, locked files and design tokens. Register every new page as a <Route> in src/App.jsx and add it to src/data/site.js navigation. Every local import must resolve to an existing or newly created file, and every link must point to a registered route. Style with Tailwind and the template's semantic colour classes; do not add per-page .css files.`;
-              const modularInstruction = template ? templateInstruction : defaultModularInstruction;
-              const messages = [
-                { role: 'system', content: `${baseMessages[0].content}\n\n${modularInstruction}` },
-                ...baseMessages.slice(1)
-              ];
-              // Template jobs start from the template's files: the model's operations are applied on top of them.
-              let accumulatedProjectFiles = templateBaseFiles.map((file) => ({ ...file }));
-              const generationTimeout = Number.parseInt(process.env.OPENROUTER_GENERATION_TIMEOUT_MS, 10) || 300000;
-              const parseProject = (response) => {
-                try {
-                  accumulatedProjectFiles = parseInitialProjectResponse(response, accumulatedProjectFiles);
-                  if (template && !templateService.differsFromTemplate(accumulatedProjectFiles, template)) {
-                    const unchanged = new AIResponseValidationError('The response left the selected template unchanged: apply the requested brand, content, pages and features to the template files.');
-                    unchanged.partialFiles = accumulatedProjectFiles;
-                    throw unchanged;
-                  }
-                  return accumulatedProjectFiles;
-                } catch (error) {
-                  if (Array.isArray(error.partialFiles)) accumulatedProjectFiles = error.partialFiles;
-                  throw error;
-                }
-              };
-              const preservedProjectContext = () => JSON.stringify(compactClonePageSource(accumulatedProjectFiles, '/', 24000), null, 2);
-              let completion;
-              let projectFiles;
-              try {
-                completion = await generateWithRetry(messages, {
-                  model,
-                   max_tokens: parseInt(process.env.OPENROUTER_GENERATION_MAX_TOKENS, 10) || 24000,
-                   timeout: generationTimeout,
-                   reasoning: { effort: 'low', exclude: true },
-                  plugins: [{ id: 'context-compression' }],
-                  tools: [aiProtocol.FILE_OPERATIONS_TOOL],
-                  tool_choice: { type: 'function', function: { name: aiProtocol.FILE_OPERATIONS_TOOL.function.name } }
-                });
-                completion = await completeOpenRouterResponse(messages, completion, {
-                  model,
-                  structured: true,
-                  continuationInstruction: 'Continue the interrupted file-operation arguments exactly where they stopped. Complete all files and close the structured response.'
-                });
-                projectFiles = parseProject(completion);
-              } catch (structuredError) {
-                if (isProviderStop(structuredError)) throw structuredError;
-                const delimiterMessages = [{
-                  role: 'system',
-                  content: `${modularInstruction}\nReturn only complete FILE delimiters.\n\n${aiProtocol.DELIMITER_INSTRUCTIONS}`
-                 }, baseMessages.at(-1), {
-                   role: 'user',
-                   content: `The structured attempt failed: ${structuredError.message}. Valid files from that attempt are preserved below. Return only the missing or corrected files using FILE operation="create" blocks; do not repeat valid files.\n\nPRESERVED FILES:\n${preservedProjectContext()}`
-                 }];
-                completion = await generateWithRetry(delimiterMessages, {
-                  model,
-                   max_tokens: parseInt(process.env.OPENROUTER_GENERATION_MAX_TOKENS, 10) || 24000,
-                   timeout: generationTimeout,
-                   reasoning: { effort: 'low', exclude: true },
-                  plugins: [{ id: 'context-compression' }],
-                  response_format: false
-                });
-                completion = await completeOpenRouterResponse(delimiterMessages, completion, {
-                  model,
-                  structured: true,
-                  continuationInstruction: 'Continue exactly after the interrupted FILE delimiter. Do not repeat prior output. Finish all source files and close every FILE tag.'
-                });
-                try {
-                  projectFiles = parseProject(completion);
-                } catch (delimiterError) {
-                  if (isProviderStop(delimiterError)) throw delimiterError;
-                  const repairMessages = [
-                    ...delimiterMessages,
-                    { role: 'assistant', content: completion.content || '' },
-                    {
-                     role: 'user',
-                     content: `The project is still incomplete because ${delimiterError.message}. The valid files below are already preserved. Return only the missing or corrected FILE operation="create" blocks needed to complete the project. Do not repeat valid files or return commentary.\n\nPRESERVED FILES:\n${preservedProjectContext()}`
-                   }
-                  ];
-                  completion = await generateWithRetry(repairMessages, {
-                    model,
-                    temperature: 0,
-                     max_tokens: parseInt(process.env.OPENROUTER_GENERATION_MAX_TOKENS, 10) || 24000,
-                     timeout: generationTimeout,
-                     reasoning: { effort: 'low', exclude: true },
-                    plugins: [{ id: 'context-compression' }],
-                    response_format: false
-                  });
-                  completion = await completeOpenRouterResponse(repairMessages, completion, {
-                    model,
-                    structured: true,
-                    continuationInstruction: 'Continue exactly after the interrupted FILE delimiter. Do not repeat prior output. Finish all source files and close every FILE tag.'
-                  });
-                  try {
-                    projectFiles = parseProject(completion);
-                  } catch (repairError) {
-                    if (isProviderStop(repairError)) throw repairError;
-                    // Last resort before another paid call: complete what the model already produced deterministically
-                    // (missing exports, case-mismatched imports, stub pages) when an App and modular files exist.
-                    let remainingDiagnostics = '';
-                    let salvaged = salvagePartialProject(accumulatedProjectFiles, (text, fixed) => { remainingDiagnostics = text; accumulatedProjectFiles = fixed; });
-                    if (!salvaged && remainingDiagnostics) {
-                      // Feed the exact leftover errors (after the free deterministic fixes) back to the model for one targeted repair.
-                      logger.warn(`Job ${jobId} deterministic salvage left errors; asking the model to fix them:\n${remainingDiagnostics}`);
-                      try {
-                        const fixMessages = [{
-                          role: 'system',
-                          content: `You fix compile errors in a React project. Return only complete <FILE path="..." operation="create"> blocks for the files that must change (full file contents), no commentary. Every import must resolve to an existing file and match its default or named export.\n\n${aiProtocol.DELIMITER_INSTRUCTIONS}`
-                        }, {
-                          role: 'user',
-                          content: `Fix exactly these errors:\n${remainingDiagnostics}\n\nCURRENT PROJECT:\n${preservedProjectContext()}`
-                        }];
-                        const fixCompletion = await generateWithRetry(fixMessages, { model, temperature: 0, max_tokens: 12000, timeout: generationTimeout, reasoning: { effort: 'low', exclude: true }, response_format: false });
-                        const merged = aiProtocol.applyOperationsSafely(accumulatedProjectFiles, aiProtocol.validateFileOperations(aiProtocol.parseAIResponse(fixCompletion.content || '', 'src/App.jsx'), accumulatedProjectFiles).files).files;
-                        salvaged = salvagePartialProject(merged, (text) => { remainingDiagnostics = text; });
-                      } catch (fixError) {
-                        if (isProviderStop(fixError)) throw fixError;
-                        logger.warn(`Job ${jobId} targeted error repair failed: ${fixError.message}`);
-                      }
-                    }
-                    if (!salvaged && remainingDiagnostics) logger.warn(`Job ${jobId} still invalid after targeted repair:\n${remainingDiagnostics}`);
-                    if (salvaged) {
-                      logger.warn(`Job ${jobId} salvaged ${salvaged.length} generated files deterministically after: ${repairError.message.split('\n')[0]}`);
-                      projectFiles = salvaged;
-                    } else {
-                    const hasModularFiles = accumulatedProjectFiles.some((file) => /^src\/(?:pages|components)\//.test(file.path));
-                    if (!/did not create src\/App\.jsx/i.test(repairError.message) || !hasModularFiles) throw repairError;
-                    const preservedPaths = accumulatedProjectFiles.map((file) => file.path);
-                    logger.warn(`Job ${jobId} requesting only missing src/App.jsx after preserving ${preservedPaths.length} generated files.`);
-
-                    const entryMessages = [{
-                      role: 'system',
-                      content: `Create exactly one missing React entry file. Return only one complete <FILE path="src/App.jsx" operation="create"> block and no commentary. Import and compose the preserved pages/components where appropriate. Every import must exactly match the target file's default or named export. Do not render an identifier unless its import is present and valid. Keep App.jsx under 500 lines.\n\n${aiProtocol.DELIMITER_INSTRUCTIONS}`
-                    }, {
-                      role: 'user',
-                      content: `src/App.jsx is the only missing file. Create it now as the first and only output. These files already exist and must not be repeated.\n\nEXISTING FILE PATHS:\n${JSON.stringify(preservedPaths, null, 2)}\n\nCOMPACT EXISTING SOURCE:\n${preservedProjectContext()}`
-                    }];
-                    completion = await generateWithRetry(entryMessages, {
-                      model,
-                      temperature: 0,
-                      max_tokens: 8000,
-                      timeout: generationTimeout,
-                      reasoning: { effort: 'low', exclude: true },
-                      response_format: false
-                    });
-                    completion = await completeOpenRouterResponse(entryMessages, completion, {
-                      model,
-                      structured: true,
-                      continuationInstruction: 'Continue only the interrupted src/App.jsx FILE block and close its FILE tag.'
-                    });
-                    projectFiles = parseProject(completion);
-                    }
-                  }
-                }
-              }
-              // Editing with an attached image must keep every existing file the model did not re-emit.
-              updatedFiles = isIncremental
-                ? [...new Map([...(project.files || []), ...projectFiles].map((file) => [file.path, file])).values()]
-                : projectFiles;
-              generatedChanges = projectFiles;
-              generatedAppCode = projectFiles.find((file) => file.path === 'src/App.jsx').content;
-              if (generatedAppCode) {
-              const estimatedPromptTokens = Math.ceil(contextData.promptText.length / 4);
-              const estimatedCompletionTokens = Math.ceil(projectFiles.reduce((sum, file) => sum + file.content.length, 0) / 4);
-              tokenUsage = completion.usage
-                ? mergeOpenRouterUsage(null, completion.usage, model)
-                : {
-                    promptTokens: estimatedPromptTokens,
-                    completionTokens: estimatedCompletionTokens,
-                    totalTokens: estimatedPromptTokens + estimatedCompletionTokens,
-                    modelUsed: model || 'Veave AI',
-                    provider: 'Veave AI',
-                    cost: 0,
-                    costReported: false
-                  };
-              }
-          } catch (aiErr) {
-            providerFailureReason = aiErr.message;
-            logger.warn(`Job ${jobId} OpenRouter contextual generation fallback: ${aiErr.message}`);
-            if (isProviderStop(aiErr)) throw aiErr;
-          }
+            const baseMessages = image
+              ? [contextData.messages[0], { role: 'user', content: [{ type: 'text', text: contextData.promptText }, { type: 'image_url', image_url: { url: image } }] }]
+              : contextData.messages;
+            validationController.signal.throwIfAborted(); // never start (or pay for) generation for a cancelled job
+            const generation = await runWorker('code-generation', ({ log, signal }) => codeGenerationWorker.generateProject({
+              baseMessages, contextPromptText: contextData.promptText, template, templateBaseFiles, model, isIncremental, existingFiles: project?.files || [], log, signal
+            }, { completeOpenRouterResponse, parseInitialProjectResponse, salvagePartialProject, compactClonePageSource }), { jobId, signal: validationController.signal });
+            if (!generation.ok) {
+              // Provider stops (bad key, no credits, rate limit) end the job; a cancellation always propagates; anything else falls back below.
+              if (validationController.signal.aborted || isProviderStop(generation.error.cause)) throw generation.error.cause;
+              providerFailureReason = generation.error.message;
+            } else if (generation.output.ok) {
+              ({ updatedFiles, generatedChanges, generatedAppCode, tokenUsage } = generation.output);
+            } else {
+              providerFailureReason = generation.output.providerFailureReason;
+            }
         }
       }
 
       await publishTokenUsage();
 
+      // A deep site is only accepted when every core requirement is addressed and every page was written; nothing is marked complete before that.
+      if (deepResult && deepResult.status !== 'complete' && String(process.env.DEEP_COVERAGE_BLOCKING || 'true').toLowerCase() !== 'false') {
+        const parts = [];
+        if (deepResult.blocking?.length) parts.push(`these requested topics are not covered: ${deepResult.blocking.join(', ')}`);
+        if (deepResult.unfinished?.length) parts.push(`these pages could not be written: ${deepResult.unfinished.join(', ')}`);
+        throw new AIResponseValidationError(`Coverage check failed: the website was not created because ${parts.join('; ')}. The progress was saved; please try again.`);
+      }
+
       // The model could not produce a usable patch (e.g. ambiguous search block) for a spacing request: do not give up, measure the
       // rendered page and remove the blank space deterministically.
-      if (isIncremental && !generatedAppCode && (!generatedChanges || generatedChanges.length === 0) && !spacingEngineRan
+      if (isIncremental && !generatedAppCode && (!generatedChanges || generatedChanges.length === 0) && !engines.state.spacingEngineRan
         && incrementalValidation.isSpacingRequest(prompt)) {
         try {
           const base = project.files.map(incrementalEditor.normalizeFile).filter(Boolean);
-          const engineReport = await runSpacingEngine(base);
+          const engineReport = await engines.runSpacing(base);
           if (engineReport.changes.length) {
-            const original = new Map(project.files.map((file) => [file.path, file.content]));
-            updatedFiles = engineReport.files;
-            generatedChanges = updatedFiles.filter((file) => file.encoding !== 'base64' && original.get(file.path) !== file.content);
-            appliedOperations = generatedChanges.map((file) => ({ operation: 'modify', path: file.path }));
-            generatedAppCode = updatedFiles.find((file) => file?.path?.endsWith('App.jsx'))?.content || '__INCREMENTAL_EDIT_APPLIED__';
+            ({ updatedFiles, generatedChanges, appliedOperations, generatedAppCode } = editEngineResult.applyEngineFiles({ originalFiles: project.files, engineFiles: engineReport.files, previousAppCode }));
             providerFailureReason = '';
           } else {
             providerFailureReason = `${providerFailureReason} Blank-space engine: ${engineReport.status}${engineReport.reason ? ` - ${engineReport.reason}` : ''}`.trim();
@@ -4381,10 +1834,11 @@ class JobManager {
           const remote = await remoteImageLocalizer.localizeIntroducedRemoteImages({
             beforeFiles: project.files, files: updatedFiles, signal: validationController.signal,
             changedPaths: generatedChanges.filter((file) => file.encoding !== 'base64').map((file) => file.path),
-            skipFailed: Boolean(requestedImageCount > 1 || siteWideEdit)
+            skipFailed: Boolean(requestedImageCount > 1 || siteWideEdit),
+            gate: require('./images/imageEvaluator').editGate({ vision: process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key' ? async ({ system, user, image: visionImage }) => (await openrouterService.generateCompletion([{ role: 'system', content: system }, { role: 'user', content: [{ type: 'text', text: user }, { type: 'image_url', image_url: { url: visionImage } }] }], { model: imageConfig().visionModel, temperature: 0, max_tokens: 500, response_format: false, reasoning: { effort: 'minimal', exclude: true } }))?.content || '' : null, site: { name: project?.name || '' } })
           });
           if (remote.failed.length) {
-            throw new AIResponseValidationError(`The image could not be downloaded, so nothing was changed: ${remote.failed.map((item) => `${item.url} (${item.reason})`).join('; ')}. Attach the image you want with the + button, or paste a working image link.`);
+            throw new AIResponseValidationError(`${remote.failed.some((item) => item.unrelated) ? 'An image did not match where it was placed, so nothing was changed' : 'The image could not be downloaded, so nothing was changed'}: ${remote.failed.map((item) => `${item.url} (${item.reason})`).join('; ')}. Attach the image you want with the + button, or paste a working image link.`);
           }
           if (remote.added.length || remote.replaced.length) {
             updatedFiles = remote.files;
@@ -4450,9 +1904,9 @@ class JobManager {
         // "Remove the empty space": the model's edit is not trusted to have found it. The layout engine renders the viewed page,
         // measures where blank regions are, traces each to the property that causes it, patches only that, and verifies the
         // result in the browser (retrying/rolling back). It runs even when the model changed nothing.
-        if (!spacingEngineRan && incrementalValidation.isSpacingRequest(prompt)) {
+        if (!engines.state.spacingEngineRan && incrementalValidation.isSpacingRequest(prompt)) {
           try {
-            const engineReport = await runSpacingEngine(updatedFiles);
+            const engineReport = await engines.runSpacing(updatedFiles);
             if (engineReport.changes.length) updatedFiles = engineReport.files;
           } catch (spacingSearchError) {
             if (validationController.signal.aborted || spacingSearchError?.name === 'AbortError') throw spacingSearchError;
@@ -5302,6 +2756,7 @@ class JobManager {
 
       let progressWrites = Promise.resolve();
        const validationOptions = {
+        timingScope: jobId,
          model, tokens: systemTokens, signal: validationController.signal, targetVerification, pageVerification,
          cloneRoutes: (!cloneCapture && job.type !== 'modify') ? deriveStaticRoutes(updatedFiles) : cloneCapture?.pages?.filter((page) => page.captureStatus === 'captured' && !skippedPaths.has(page.path) && !unvalidatedPaths.has(page.path)).map(({ path, title, pageType, headings, design }) => ({
             path,
@@ -5323,7 +2778,7 @@ class JobManager {
              const assets = [...entityAssetsLocal, ...(imageDiscoveryReport?.assets || [])];
              const files = [...(entityLocal?.files || []), ...(imageDiscoveryReport?.files || []).filter((file) => file.path !== imageDiscovery.MANIFEST_PATH)];
              if (assets.length) files.push(imageDiscovery.manifestFile(assets, imageDiscoveryReport?.plan || compositionPlan));
-             return { jobId, assets, files, missing: imageDiscoveryReport?.missing || [], plan: imageDiscoveryReport?.plan || null, taken: imageDiscoveryReport?.taken || sharedTaken, recoveries: 0 };
+             return { jobId, assets, files, missing: imageDiscoveryReport?.missing || [], plan: imageDiscoveryReport?.plan || null, taken: imageDiscoveryReport?.taken || sharedTaken, recoveries: 0, unplaceable: new Set(withheldIds), floor: imageDiscoveryReport?.floor?.waived?.length ? imageDiscoveryReport.floor : null, vision: imageDiscoveryReport?.vision || null, ask: imageDiscoveryReport?.ask || null, site: imageDiscoveryReport?.site || null };
            })() : null, compositionPlan } : null,
         onProgress: (report) => {
           progressWrites = progressWrites.then(() => GenerationJob.updateOne({ jobId, status: 'processing' }, {
@@ -5370,7 +2825,7 @@ class JobManager {
       let visualSummary = '';
       // A request about empty space on a page rebuilt from a captured website: the space usually comes from the captured stylesheet,
       // which the model cannot patch line by line. Measure it against the real page and let the model write CSS for the exact gaps.
-      if (isIncremental && !spacingEngineFixed && !image && !degradedInfo && incrementalValidation.isSpacingRequest(prompt) && project.provenance?.type === 'website-clone' && project.provenance.sourceUrl
+      if (isIncremental && !engines.state.spacingEngineFixed && !image && !degradedInfo && incrementalValidation.isSpacingRequest(prompt) && project.provenance?.type === 'website-clone' && project.provenance.sourceUrl
         && capturedVisibility.hasCapturedPages(updatedFiles) && process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key' && Number.parseInt(process.env.CLONE_VISUAL_REPAIR_PASSES ?? '2', 10) > 0) {
         try {
           const spacingRoute = editTarget.route;
@@ -5469,7 +2924,7 @@ class JobManager {
         });
         const report = outcome.report;
         await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.visualValidation': report } }).catch(() => {});
-        if (report.status === incrementalValidation.STATES.FAILED && visualConfig.enforce && (report.defects.introducedRemaining.some((defect) => incrementalValidation.BLOCKING_KINDS.has(defect.kind)) || report.checks.some((item) => ['edit-reaches-screen', 'multipage-routing', 'requested-content', 'requested-layout', 'requested-link', 'rendered-theme-validation', 'request-intent-validation', 'route-regression-validation'].includes(item.name) && item.status === 'failed') || (incrementalValidation.isSpacingRequest(prompt) && !spacingEngineFixed && report.checks.some((item) => item.name === 'reference-comparison' && item.status === 'failed')))) {
+        if (report.status === incrementalValidation.STATES.FAILED && visualConfig.enforce && (report.defects.introducedRemaining.some((defect) => incrementalValidation.BLOCKING_KINDS.has(defect.kind)) || report.checks.some((item) => ['edit-reaches-screen', 'multipage-routing', 'requested-content', 'requested-layout', 'requested-link', 'rendered-theme-validation', 'request-intent-validation', 'route-regression-validation'].includes(item.name) && item.status === 'failed') || (incrementalValidation.isSpacingRequest(prompt) && !engines.state.spacingEngineFixed && report.checks.some((item) => item.name === 'reference-comparison' && item.status === 'failed')))) {
           const reasons = report.checks.filter((item) => item.status === 'failed').map((item) => `${item.name}: ${item.detail}`).join(' | ');
           throw new AIResponseValidationError(`The edit did not pass visual validation after ${report.repairAttempts.length} correction attempt(s), so the project was not changed. ${reasons}`.slice(0, 1500));
         }
@@ -5583,9 +3038,7 @@ class JobManager {
           roles: manifest.assets.reduce((counts, asset) => ({ ...counts, [asset.role]: (counts[asset.role] || 0) + 1 }), {})
         };
       }
-      const committing = await GenerationJob.findOneAndUpdate({ jobId, status: 'processing' }, {
-        $set: { status: 'committing', ...(finalCloneAnalysis ? { analysis: finalCloneAnalysis } : {}) }
-      }, { new: true });
+      const committing = await jobState.beginCommitting(jobId, { analysis: finalCloneAnalysis });
       if (!committing) return;
       job = committing;
       job.validation = validated.report;
@@ -5609,10 +3062,7 @@ class JobManager {
         })
       }] : [];
       const persistedFiles = await dehydrateFiles([...updatedFiles.filter((file) => scrapedContentFiles.length === 0 || file.path !== 'src/data/scraped-content.json'), ...scrapedContentFiles]);
-      commitRollback = project
-        ? { created: false, projectId: project._id, files: project.files, validation: project.validation,
-            provenance: project.provenance || null, appliedHash: validated.report?.sourceHash || null }
-        : { created: true, projectId: null, appliedHash: validated.report?.sourceHash || null };
+      commitRollback = commitWorker.snapshotForRollback({ project, validated });
       // The crawler's per-image records are large (tens of MB for a big site) and are never read back while editing. They go to S3
       // and the project keeps a small reference, so the project document stays small and fast to load.
       let captureBlob = null;
@@ -5621,58 +3071,15 @@ class JobManager {
         try { captureBlob = await require('../storage/s3BlobStorage').putJson('provenance/capture-assets', { assets: captureAssets, assetQueue: cloneCapture.assetQueue || [] }); }
         catch (error) { logger.warn(`Capture assets could not be moved to S3, keeping them in the project: ${error.message}`); }
       }
-      if (!project) {
-        project = await Project.create({
-          userId: userId || null,
-          name: projectName,
-          description: prompt.trim(),
-          template: template ? { id: template.id, version: template.version } : null,
-          files: persistedFiles,
-          validation: validated.report,
-          settings: {
-            framework: 'react',
-            styling: 'tailwindcss',
-            designSystem: systemTokens.mood || designSystem,
-            theme: {
-              primary: systemTokens.primary,
-              secondary: systemTokens.secondary,
-              background: systemTokens.bg,
-              foreground: systemTokens.text,
-              radius: systemTokens.radius
-            },
-            aiModel: model,
-            lastTokenUsage: tokenUsage
-          },
-          provenance: cloneCapture ? {
-            type: 'website-clone',
-            sourceUrl: cloneCapture.sourceUrl,
-            canonicalUrl: cloneCapture.canonicalUrl,
-            capturedAt: cloneCapture.capturedAt,
-             routes: cloneCapture.pages.map(({ path, title, description, headings, sections }) => ({
-              path,
-              title,
-              description,
-              headings: (headings || []).slice(0, 12),
-              sections: (sections || []).slice(0, 20).map(({ tag, id, text }) => ({ tag, id, text }))
-             })),
-             ...(captureBlob ? { captureAssetsBlob: captureBlob } : { assets: captureAssets, assetQueue: cloneCapture.assetQueue }),
-             coverage: cloneCapture.coverage,
-             siteMap: cloneCapture.siteMap,
-             urlRegistry: cloneCapture.urlRegistry
-          } : (template ? {
-            type: 'template',
-            templateId: template.id,
-            templateVersion: template.version,
-            template: { ...templateService.provenanceFor(template, templateTokenInfo || undefined), usedTemplateOnly: Boolean(degradedInfo), restored: templateRestored }
-          } : prototypeReport ? { type: 'website-prototype', sourceUrl: prototypeUrl, mode: prototypeReport.mode, status: 'complete', report: { mode: prototypeReport.mode, headline: prototypeReport.headline, counts: prototypeReport.counts, missingEvidence: prototypeReport.missingEvidence.slice(0, 40) } } : null)
-        });
+      const written = await commitWorker.writeProject({
+        project, userId, projectName, prompt, template, files: persistedFiles, validation: validated.report, systemTokens, designSystem, model, tokenUsage,
+        recrawlResult,
+        provenance: commitWorker.buildProvenance({ cloneCapture, captureBlob, captureAssets, template, templateTokenInfo, templateRestored, degradedInfo, prototypeReport, prototypeUrl })
+      });
+      project = written.project;
+      if (written.created) {
         conversation.projectId = project._id;
         commitRollback.projectId = project._id;
-      } else {
-        const saved = await Project.findOneAndUpdate({ _id: project._id, updatedAt: project.updatedAt },
-          { $set: { files: persistedFiles, validation: validated.report, ...(recrawlResult ? { 'provenance.routes': recrawlResult.routes, 'provenance.siteMap': recrawlResult.siteMap } : {}) } }, { new: true });
-        if (!saved) throw new Error('Project changed during validation. Newer edits were preserved; submit the modification again.');
-        project = saved;
       }
       revisionSaved = true;
       projectIndexHooks.invalidate(project._id); // saved state changed: drop cached symbols; the next use re-syncs from the saved files
@@ -5699,97 +3106,25 @@ class JobManager {
           : contextBuilder.extractChangeSummary(prompt, previousAppCode, generatedAppCode);
       const changeSummary = (prototypeReport ? `${prototypeReport.headline} ` : '') + verifiedNote + recrawlNote + sourceFillNote + remoteImageNote + friendlySummary;
 
-      let generationId;
-      let parentGenId = null;
-      let versionNumber = 1;
-      let userCredits = null;
-
-      await Promise.all([
-        syncProjectFilesTable(project._id, userId, persistedFiles),
-        (async () => {
-          // 7. Persist Session Checkpoint & Conversation Turns (1-day retention, bounded history)
-          await sessionManager.recordCheckpoint(conversation, {
-            prompt,
-            changeSummary,
-            files: updatedFiles,
-            activeCode: generatedAppCode,
-            designTokens: systemTokens,
-            dependencies: project.dependencies,
-            validation: validated.report
-          });
-
-          generationId = conversation.activeGenerationId;
-          parentGenId = conversation.checkpoints.length > 1
-            ? conversation.checkpoints[conversation.checkpoints.length - 2]?.checkpointId
-            : null;
-          versionNumber = conversation.checkpoints.length;
-
-          conversation.messages.push({
-            role: 'user',
-            content: prompt,
-            generationId,
-            timestamp: new Date()
-          });
-          conversation.messages.push({
-            role: 'assistant',
-            content: `Applied changes: ${changeSummary}`,
-            generationId,
-            changeSummary,
-            actions: appliedOperations.map((operation) => ({
-              type: `${operation.operation || 'modify'}_file`,
-              path: operation.path,
-              reason: operation.reason || ''
-            })),
-            meta: {
-              changedPaths: generatedChanges.map((file) => file.path),
-              targetVerification
-            },
-            timestamp: new Date()
-          });
-
-          if (conversation.checkpoints.length > 3) {
-            const genSummaries = conversation.checkpoints.map(g => `Step ${g.stepNumber}: ${g.changeSummary || g.userPrompt}`).slice(-6);
-            conversation.contextSummary = genSummaries.join('; ');
-          }
-
-          await conversation.save();
-        })(),
-        (async () => {
-          if (!tokenUsage) return;
-          try {
-            await AIUsage.create({
-              userId: userId || undefined,
-              projectId: project._id,
-              model: tokenUsage.modelUsed,
-              provider: tokenUsage.provider,
-              inputTokens: tokenUsage.promptTokens,
-              outputTokens: tokenUsage.completionTokens,
-              totalTokens: tokenUsage.totalTokens,
-              usageSource: tokenUsage.usageSource || 'reported',
-              cost: tokenUsage.costReported ? tokenUsage.cost : 0,
-              requestDuration: Date.now() - startTime
-            });
-          } catch (uErr) {
-            logger.warn(`Failed to record AIUsage for job ${jobId}: ${uErr.message}`);
-          }
-        })()
+      // Bookkeeping (commit worker): the file table, the conversation checkpoint and the usage record are written together, then the
+      // credit is charged exactly once and only after the revision and its checkpoint are safely recorded.
+      const [, turn] = await Promise.all([
+        commitWorker.syncProjectFilesTable(project._id, userId, persistedFiles),
+        commitWorker.recordConversationTurn({ conversation, prompt, changeSummary, files: updatedFiles, activeCode: generatedAppCode, designTokens: systemTokens, project, validation: validated.report, appliedOperations, changedPaths: generatedChanges.map((file) => file.path), targetVerification }),
+        commitWorker.recordUsage({ jobId, userId, projectId: project._id, tokenUsage, durationMs: Date.now() - startTime })
       ]);
+      const { generationId, parentGenId, versionNumber } = turn;
+      const userCredits = await commitWorker.chargeOnce({ jobId, userId, tokenUsage, projectId: project?._id, degraded: Boolean(degradedInfo) });
 
-      // Charge only after the revision and its checkpoint are safely recorded, exactly once per job (the claim makes a
-      // retried or recovered job idempotent), and never for a degraded fallback site, which used no AI work.
-      if (userId && !degradedInfo) {
-        const claimed = await GenerationJob.findOneAndUpdate({ jobId, creditChargedAt: null }, { $set: { creditChargedAt: new Date() } });
-        if (claimed) {
-          try {
-      const updatedUser = await require('../billing/usageService').chargeCredits(userId, tokenUsage?.totalTokens, { projectId: project?._id });
-            if (updatedUser) userCredits = updatedUser.credits;
-          } catch (billingError) {
-            await GenerationJob.updateOne({ jobId }, { $set: { creditChargedAt: null } }).catch(() => {});
-            logger.error(`Job ${jobId} credit deduction failed: ${billingError.message}`);
-          }
+      // Where the time went (workers and the slow validation stages), kept with the job so a slow run can be diagnosed afterwards.
+      {
+        const timings = stageTimer.summary(jobId);
+        if (Object.keys(timings).length) {
+          await GenerationJob.updateOne({ jobId }, { $set: { 'analysis.timings': { totalMs: Date.now() - startTime, stages: timings } } }).catch(() => {});
+          logger.info(`Job ${jobId} timings: ${Object.entries(timings).map(([stage, value]) => `${stage}=${Math.round(value.ms / 1000)}s/${value.calls}`).join(' ')} total=${Math.round((Date.now() - startTime) / 1000)}s`);
         }
+        stageTimer.forget(jobId);
       }
-
       // Step 4: Complete
       job.status = 'completed';
       job.progress = 100;
@@ -5845,12 +3180,7 @@ class JobManager {
            model: screenshotAnalysis.model
          } : null
       };
-      const completion = await GenerationJob.updateOne({ jobId, status: 'committing' }, { $set: {
-        status: job.status, progress: job.progress, step: job.step, stepName: job.stepName,
-        projectId: job.projectId, conversationId: job.conversationId, generationId: job.generationId,
-        parentGenerationId: job.parentGenerationId, changeSummary: job.changeSummary,
-        completedAt: job.completedAt, result: job.result, validation: job.validation, usage: tokenUsage
-      } });
+      const completion = await jobState.markCompleted(job, { tokenUsage });
       // Never report success unless the completed state was really written.
       if (!completion.matchedCount) throw new Error('The job was no longer committing when it finished; the saved revision was rolled back.');
       commitRollback = null;
@@ -5861,6 +3191,7 @@ class JobManager {
       logger.info(`Stateful Job ${jobId} [Conv: ${conversation.conversationId}, Gen: ${generationId}] completed in ${Date.now() - startTime}ms`);
     } catch (err) {
       logger.error(`Job ${jobId} failed: ${err.stack || err.message}`);
+      { const timings = stageTimer.summary(jobId); if (Object.keys(timings).length) logger.info(`Job ${jobId} timings before failing: ${Object.entries(timings).map(([stage, value]) => `${stage}=${Math.round(value.ms / 1000)}s/${value.calls}`).join(' ')}`); stageTimer.forget(jobId); }
       let rolledBack = false;
       if (revisionSaved && commitRollback) {
         try { rolledBack = await this.rollbackCommit(commitRollback); }
@@ -5873,59 +3204,50 @@ class JobManager {
         ? Object.assign(new Error(`The generation took longer than ${Math.round(JOB_MAX_MS / 60000)} minutes and was stopped. Your previous project is unchanged. Please try again, or ask for a smaller site.`), { report: null })
         : leaseLost ? Object.assign(new Error(`The generation was interrupted (${leaseLost}). Your previous project is unchanged. Please try again.`), { report: null })
         : err;
-      const currentJob = await GenerationJob.findOne({ jobId }).select('status').lean();
-      if (currentJob && ['queued', 'processing', 'committing'].includes(currentJob.status)) {
-        const stepName = revisionSaved && !rolledBack
-          ? 'Verified revision saved, but final bookkeeping failed and it could not be rolled back; check the project before retrying.'
-          : `Generation ${status}; previous project preserved.`;
-        await GenerationJob.updateOne({ jobId, status: { $in: ['queued', 'processing', 'committing'] } }, { $set: {
-          status, error: fallbackSite.actionableMessage(failure), errorCode: leaseLost && !timedOut ? 'JOB_LEASE_LOST' : failureCode(err, { timedOut }), stepName,
-          ...(failure.report ? { validation: failure.report } : {}), leaseOwner: null, leaseExpiresAt: null
-        } }).catch((writeError) => logger.error(`Job ${jobId} failure state could not be written: ${writeError.message}`));
-      } else {
-        logger.warn(`Job ${jobId} raised "${String(err.message).slice(0, 160)}" after reaching state ${currentJob?.status || 'unknown'}; the state was left unchanged.`);
-      }
+      await jobState.markFailed({ jobId, error: err, failure, status, errorCode: leaseLost && !timedOut ? 'JOB_LEASE_LOST' : failureCode(err, { timedOut }), rolledBack, revisionSaved, message: fallbackSite.actionableMessage(failure) });
     } finally {
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (leaseTimers) leaseTimers.stop();
+      // A cancelled job keeps its final state but must not keep holding the lease of the process that ran it.
+      await GenerationJob.updateOne({ jobId, status: 'cancelled', leaseOwner: INSTANCE_ID }, { $set: { leaseOwner: null, leaseExpiresAt: null } }).catch(() => {});
       this.activeValidations.delete(jobId);
       this.recoveringJobs.delete(jobId);
     }
   }
 
-  /**
-   * Undo a project write whose bookkeeping failed. New projects are removed. Existing projects are restored only if
-   * they still hold the revision this job wrote, so a newer user edit is never overwritten.
-   * Blobs in S3 are content-addressed (sha256 keys), so uploaded blobs need no per-job cleanup: they are shared,
-   * immutable and harmless if unreferenced.
-   */
+  /** Undo a project write whose bookkeeping failed (see workers/commitWorker). Kept as a method for existing callers. */
   async rollbackCommit(rollback) {
-    if (!rollback?.projectId) return false;
-    if (rollback.created) {
-      await Project.deleteOne({ _id: rollback.projectId });
-      await ProjectFile.deleteMany({ projectId: rollback.projectId });
-      return true;
-    }
-    const previousFiles = await dehydrateFiles(rollback.files);
-    const restored = await Project.findOneAndUpdate(
-      { _id: rollback.projectId, 'validation.sourceHash': rollback.appliedHash },
-      { $set: { files: previousFiles, validation: rollback.validation, provenance: rollback.provenance } },
+    return commitWorker.rollbackCommit(rollback);
+  }
+
+  /**
+   * A clone plan waiting for approval lives in the memory of the process that captured the site. If that process is gone (server
+   * restarted, database was unreachable) nobody can answer "scrape more pages" any more and the screen would spin for ever.
+   * That case (no live owner here, lease expired) is closed with a clear message so the user can start the clone again.
+   */
+  async settleLostPlan(job) {
+    if (!job || job.type !== 'clone' || job.status !== 'processing' || job.approval?.state !== 'pending') return job;
+    if (this.activeValidations.has(job.jobId) || this.recoveringJobs.has(job.jobId)) return job;
+    if (!job.leaseExpiresAt) return job; // never leased: not something this check can judge
+    if (new Date(job.leaseExpiresAt).getTime() > Date.now() - LEASE_MS) return job; // another live process may still own it
+    const closed = await GenerationJob.findOneAndUpdate(
+      { jobId: job.jobId, status: 'processing', 'approval.state': 'pending' },
+      { $set: { status: 'failed', errorCode: 'PLAN_SESSION_LOST', error: 'The clone session was lost (the server restarted or the database was unreachable while the plan was waiting). Nothing was changed or charged. Start the clone again.', stepName: 'Clone session lost', 'approval.request': null, leaseOwner: null, leaseExpiresAt: null } },
       { new: true }
-    );
-    if (!restored) return false; // somebody edited since; their newer revision wins
-    await syncProjectFilesTable(restored._id, restored.userId, previousFiles);
-    return true;
+    ).catch(() => null);
+    return closed || job;
   }
 
   async getJob(jobId) {
     if (!jobId) return null;
-    return await GenerationJob.findOne({ jobId }).populate('projectId', 'name description settings');
+    const job = await GenerationJob.findOne({ jobId }).populate('projectId', 'name description settings');
+    return this.settleLostPlan(job);
   }
 
   async getActiveJob(userId, clientJobId) {
     if (clientJobId) {
       const job = await GenerationJob.findOne({ jobId: clientJobId });
-      if (job) return job;
+      if (job) return this.settleLostPlan(job);
     }
 
     if (userId) {
@@ -5968,7 +3290,16 @@ class JobManager {
     const deadline = Date.now() + timeoutMs;
     while (true) {
       signal?.throwIfAborted();
-      const current = await GenerationJob.findOne({ jobId }, { status: 1, approval: 1 }).lean();
+      // A short database outage must not end the plan: keep waiting and try again.
+      let current;
+      try { current = await GenerationJob.findOne({ jobId }, { status: 1, approval: 1 }).lean(); }
+      catch (error) {
+        signal?.throwIfAborted();
+        logger.warn(`Plan ${jobId}: database not reachable, retrying (${error.message})`);
+        if (Date.now() > deadline) return false;
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        continue;
+      }
       if (!current || current.status === 'cancelled') return false;
       if (current.approval?.state === 'approved') return true;
       if (current.approval?.state === 'cancelled') return false;
@@ -6014,6 +3345,8 @@ class JobManager {
     const job = await GenerationJob.findOne({ jobId }, { userId: 1, approval: 1, status: 1, type: 1 }).lean();
     if (!job || job.type !== 'clone' || job.approval?.state !== 'pending' || job.status !== 'processing') return 'not_found';
     if (job.userId && userId && String(job.userId) !== String(userId)) return 'forbidden';
+    const settled = await this.settleLostPlan(await GenerationJob.findOne({ jobId }));
+    if (settled?.status === 'failed') return 'lost';
     const res = await GenerationJob.updateOne(
       { jobId, 'approval.state': 'pending', 'approval.request': null },
       { $set: { 'approval.request': { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, type: 'scrape', paths: Array.isArray(paths) ? paths.map(String).slice(0, 50) : [], requestedAt: new Date() } } }

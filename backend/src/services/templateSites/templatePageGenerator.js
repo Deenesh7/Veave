@@ -113,7 +113,8 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   if (!text) throw new PageGenerationError('Describe the change you want for this page.', { code: 'EMPTY_INSTRUCTION' });
 
   const baseline = files;
-  const scope = validation.pageScope({ files, page, pages, template });
+  const siteWide = validation.wantsSiteWide(text, files);
+  const scope = validation.pageScope({ files, page, pages, template, siteWide });
   const get = (path) => files.find((file) => file.path === path);
   if (!get(page.componentPath)) throw new PageGenerationError(`The page file ${page.componentPath} is missing from the site.`, { code: 'PAGE_FILE_MISSING' });
   const ownedFiles = scope.ownedList.map(get).filter(Boolean);
@@ -125,7 +126,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   try { entity = await discoverImages?.(text, { signal }); } catch (error) { if (signal?.aborted) throw error; logger.warn(`Image search for the page instruction was skipped: ${error.message}`); }
 
   const promptFor = (repair, current = files) => buildPageMessages({
-    template, page, otherPages, instruction: text, ownedFiles: scope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles,
+    template, page, otherPages, instruction: text, ownedFiles: scope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
     entityBlock: entity?.block || '', attachments, repair, siteContext
   });
 
@@ -177,7 +178,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     // What really changed (a file the model returned unchanged is not a change).
     changedPaths = store.diffFiles(baseline, working).changed.map((item) => item.path);
     candidate = working;
-    problems = validation.checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments })
+    problems = validation.checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments, instruction: text, siteWide, rewrite: siteContext?.mode === 'website' })
       .concat(validation.imageProblems(failed, (entity?.assets || []).filter((asset) => !working.some((file) => textOfFile(file).includes(asset.url)))));
     // Right content for THIS website: only once the page is otherwise sound (it is the costly check), and only when the site has a plan.
     if (siteContext?.plan && !problems.length) {
@@ -201,9 +202,9 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     const routes = [...new Set(['/', ...pages.map((item) => item.route)])];
     const gateRepair = async (current, diagnostics) => {
       onState('repairing', 'Fixing a build or browser error');
-      const gateScope = validation.pageScope({ files: current, page, pages, template });
+      const gateScope = validation.pageScope({ files: current, page, pages, template, siteWide });
       const gateRepairPrompt = buildPageMessages({
-        template, page, otherPages, instruction: text, ownedFiles: gateScope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles,
+        template, page, otherPages, instruction: text, ownedFiles: gateScope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
         entityBlock: '', attachments, repair: { diagnostics: [generationPipeline.formatDiagnostics(diagnostics)], candidate: null }, siteContext
       });
       const response = await callModel(gateRepairPrompt, { signal });
@@ -231,7 +232,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     });
     for (const original of candidate) if (!finalFiles.some((file) => file.path === original.path)) finalFiles = [...finalFiles, original];
     const finalChanged = store.diffFiles(baseline, finalFiles).changed.map((item) => item.path);
-    const finalProblems = validation.checkCandidate({ baseline, candidate: finalFiles, scope, page, pages, template, changedPaths: finalChanged });
+    const finalProblems = validation.checkCandidate({ baseline, candidate: finalFiles, scope, page, pages, template, changedPaths: finalChanged, attachments, instruction: text, siteWide, rewrite: siteContext?.mode === 'website' });
     if (finalProblems.length) throw new PageGenerationError(`The validated version of the ${page.name} page failed the final checks: ${finalProblems[0].message}`, { code: 'FINAL_CHECK_FAILED', issues: finalProblems, report });
     changedPaths = finalChanged;
   }

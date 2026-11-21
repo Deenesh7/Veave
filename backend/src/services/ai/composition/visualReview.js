@@ -8,6 +8,7 @@
  */
 const sharp = require('sharp');
 const { REVIEW, VIEWPORTS } = require('./layoutCatalog');
+const visualQuality = require('./visualQuality');
 
 /* Runs inside the page. Everything it returns is plain data. */
 const PAGE_MEASURE = async () => {
@@ -79,7 +80,7 @@ const PAGE_MEASURE = async () => {
     if (!shown(img)) continue;
     const r = rectOf(img); const style = getComputedStyle(img);
     const holder = sectionEls.find((el) => el.contains(img));
-    images.push({ src: img.currentSrc || img.src, alt: img.getAttribute('alt'), width: r.width, height: r.height, top: r.top, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, fit: style.objectFit, section: holder ? sectionEls.indexOf(holder) : -1, sectionChars: holder ? extentOf(holder).chars : 0 });
+    images.push({ src: img.currentSrc || img.src, alt: img.getAttribute('alt'), width: r.width, height: r.height, top: r.top, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, fit: style.objectFit, section: holder ? sectionEls.indexOf(holder) : -1, sectionChars: holder ? extentOf(holder).chars : 0, complete: img.complete && img.naturalWidth > 0, context: holder ? (holder.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500) : '' });
   }
 
   const rows = [];
@@ -120,7 +121,60 @@ const PAGE_MEASURE = async () => {
   const scrollBlocked = (target > 100 && scrolled < target - 4) || lowest > docHeight + 160;
   const clip = scrollBlocked ? { html: rootStyle.overflowY, body: bodyStyle.overflowY, lowest: Math.round(lowest), docHeight } : null;
 
-  return { scrollBlocked, clip, viewport: { width: vw, height: vh }, docHeight, scrollWidth: document.documentElement.scrollWidth, sections, emptyBlocks, paragraphs, images, rows, fontSizes: [...sizes].sort((a, b) => a - b), h1Count: root.querySelectorAll('h1').length, overflowers };
+  // VISUAL QUALITY: where the content of each section sits horizontally (a timeline hugging one side leaves the other empty), and whether
+  // grids hold what they promise (no empty cards, no template columns without items, no lone orphan in the last row).
+  const BINS = 12;
+  const massOf = (container, box) => {
+    const bins = new Array(BINS).fill(0);
+    const binWidth = box.width / BINS;
+    const add = (r) => {
+      if (r.width <= 0 || r.height <= 0) return;
+      const from = Math.max(0, Math.min(BINS - 1, Math.floor((r.left - box.left) / binWidth)));
+      const to = Math.max(from, Math.min(BINS - 1, Math.floor((r.right - 0.5 - box.left) / binWidth)));
+      const share = (r.width * r.height) / (to - from + 1);
+      for (let i = from; i <= to; i += 1) bins[i] += share;
+    };
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (!node.textContent.trim() || !node.parentElement || !shown(node.parentElement)) continue;
+        const range = document.createRange(); range.selectNodeContents(node); add(range.getBoundingClientRect());
+      } else if (shown(node) && MEDIA.test(node.tagName)) add(node.getBoundingClientRect());
+      else if (shown(node) && node !== container) { const st = getComputedStyle(node); if (st.backgroundImage !== 'none' && !/gradient/.test(st.backgroundImage)) add(node.getBoundingClientRect()); }
+    }
+    const total = bins.reduce((sum, value) => sum + value, 0);
+    return total > 0 ? bins.map((value) => value / total) : null;
+  };
+  const balance = sectionEls.map((el, index) => {
+    if (!/^(SECTION|DIV|ARTICLE)$/i.test(el.tagName)) return null;
+    const box = rectOf(el);
+    if (box.width < 600) return null;
+    const e = extentOf(el);
+    const bins = massOf(el, box);
+    if (!bins) return null;
+    return { index, heading: label(el), containerLeft: box.left, containerRight: box.right, bins, chars: e.chars, images: e.images, height: box.height };
+  }).filter(Boolean);
+  const cells = [];
+  for (const parent of root.querySelectorAll('div, ul, ol, section')) {
+    if (cells.length >= 12) break;
+    const style = getComputedStyle(parent);
+    const isGrid = style.display === 'grid' || style.display === 'inline-grid';
+    const isWrap = style.display === 'flex' && style.flexWrap === 'wrap';
+    if (!isGrid && !isWrap) continue;
+    const kids = [...parent.children].filter(shown);
+    if (kids.length < 2) continue;
+    const hasVisual = (kid) => MEDIA.test(kid.tagName) || Boolean(kid.querySelector('img, svg, picture, video, canvas, iframe, input, button, select, textarea')) || (getComputedStyle(kid).backgroundImage !== 'none');
+    const empty = kids.filter((kid) => { const e = extentOf(kid); return e.chars === 0 && e.images === 0 && e.controls === 0 && !hasVisual(kid) && rectOf(kid).height > 40 && getComputedStyle(kid).position !== 'absolute'; }).length;
+    const tracks = isGrid ? style.gridTemplateColumns.split(' ').filter((track) => /\d/.test(track)).length : 0;
+    const holder = sectionEls.find((el) => el.contains(parent));
+    const rects = kids.map(rectOf);
+    const rowTop = rects[0].top;
+    const firstRow = rects.filter((r) => Math.abs(r.top - rowTop) <= 6).length;
+    const lastTop = rects[rects.length - 1].top;
+    const lastRow = rects.filter((r) => Math.abs(r.top - lastTop) <= 6).length;
+    cells.push({ heading: holder ? label(holder) : '', className: classOf(parent), count: kids.length, empty, tracks, firstRow, lastRow, rows: new Set(rects.map((r) => Math.round(r.top / 6))).size, grid: isGrid });
+  }
+  return { balance, cells, scrollBlocked, clip, viewport: { width: vw, height: vh }, docHeight, scrollWidth: document.documentElement.scrollWidth, sections, emptyBlocks, paragraphs, images, rows, fontSizes: [...sizes].sort((a, b) => a - b), h1Count: root.querySelectorAll('h1').length, overflowers };
 };
 
 /* ------------------------------------------------------------------ evaluation (pure) ------------------------------------------------------------------ */
@@ -255,6 +309,8 @@ function evaluateLayout(measure, viewport = 'desktop', { pageName = '', route = 
     if (item.state === 'too-empty') add('layout-density', `On the ${where} "${item.heading || 'a section'}" has little content (${item.chars} characters) in a ${item.height}px tall section. Make it compact (py-8 md:py-10, content-sized) or combine it with the related section next to it.`, { heading: item.heading });
     if (item.state === 'text-heavy') add('layout-density', `On the ${where} "${item.heading || 'a section'}" is a wall of text (${item.chars} characters, no picture). Break it into sub-headed paragraphs, a list or two columns, and add a relevant verified picture or a timeline.`, { heading: item.heading });
   }
+  // Visual quality: balance inside sections, grids, pictures.
+  for (const found of visualQuality.evaluateQuality(measure, viewport, { pageName, route })) issues.push(found);
   return { issues, density };
 }
 
@@ -290,7 +346,7 @@ const fileFor = (files, heading) => {
   if (needle.length < 4) return null;
   return files.find((file) => file.encoding !== 'base64' && typeof file.content === 'string' && /^src\//.test(file.path) && file.content.includes(needle))?.path || null;
 };
-const rank = { 'layout-overflow-x': 0, 'layout-gap': 1, 'layout-empty': 2, 'layout-forced-height': 3 };
+const rank = { 'layout-overflow-x': 0, 'layout-image-broken': 1, 'layout-gap': 2, 'layout-empty': 3, 'layout-empty-cell': 4, 'layout-image-duplicate': 5, 'layout-unbalanced': 6, 'layout-forced-height': 7 };
 
 /**
  * @param render   async (files, { routePath, viewport, inspect, onPage }) => measurement   (inspectRenderedPreview in production)
@@ -303,6 +359,7 @@ async function reviewComposition(files, { routes = [{ path: '/', name: 'Home' }]
   const found = [];
   const metrics = {};
   const shots = [];
+  const perRoute = [];
   let next = 0;
   let failure = null;
   const worker = async () => {
@@ -325,6 +382,7 @@ async function reviewComposition(files, { routes = [{ path: '/', name: 'Home' }]
         metrics[`${route.path}@${viewport.name}`] = { docHeight: measure.docHeight, sections: measure.sections.length, density, blankBands: bands, screenshotBytes: shotBytes };
         if (shotBytes) shots.push({ route: route.path, viewport: viewport.name, bytes: shotBytes });
         found.push(...issues);
+        if (viewport.name === 'desktop') perRoute.push({ route: route.path, pageName: route.name, measure });
       } catch (error) {
         if (signal?.aborted) throw error;
         failure = error; // the preview could not render at all: the build checks report that, not this review
@@ -333,6 +391,7 @@ async function reviewComposition(files, { routes = [{ path: '/', name: 'Home' }]
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, jobs.length)) }, worker));
   if (failure) return { issues: [], blocking: [], metrics, screenshots: shots, skipped: failure.message };
+  found.push(...visualQuality.crossPageImageIssues(perRoute));
   // One issue per kind, route and section: the same defect seen at three widths is reported once, at the worst width.
   const merged = new Map();
   for (const issue of found) {

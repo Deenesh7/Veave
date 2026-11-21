@@ -159,8 +159,14 @@ async function chargeCredits(userId, totalTokens, { projectId = null } = {}) {
 }
 
 // Throws PlanLimitError unless the account can pay `credits` more credits (used before starting a paid AI task that has a fixed price).
-async function assertCanSpendCredits(userId, credits, { projectId = null } = {}) {
+// Estimates are guesses and real usage often runs higher, so an estimated task must fit with a safety buffer on top (default +30%).
+const estimateBuffer = () => { const v = Number.parseFloat(process.env.ESTIMATE_BUFFER_PERCENT); return Number.isFinite(v) && v >= 0 ? v / 100 : 0.3; };
+
+async function assertCanSpendCredits(userId, credits, { projectId = null, estimate = false } = {}) {
   if (!userId || !credits) return;
+  const base = credits;
+  if (estimate) credits = Math.ceil(credits * (1 + estimateBuffer()));
+  const total = credits;
   const fromProject = await projectCredits(projectId);
   if (fromProject >= credits) return;
   await assertCanUseAI(userId, { projectId });
@@ -168,6 +174,10 @@ async function assertCanSpendCredits(userId, credits, { projectId = null } = {})
   const user = await User.findById(userId).select('plan credits subscription creditsExempt').lean();
   if (!user || user.creditsExempt) return;
   const left = user.subscription?.creditsRemaining ?? user.credits ?? limitsFor(resolvePlanName(user.plan)).credits;
+  if (left < credits && estimate) {
+    const available = left + fromProject;
+    throw new PlanLimitError(`This prompt is estimated to use about ${base} credits (about ${total} with a safety buffer, as it can take more tokens than expected), but you only have ${available} left. It would go over your current credit limit, so please upgrade your plan or buy more credits.`);
+  }
   if (left < credits) throw new PlanLimitError(`This needs ${credits} credits and you have ${left}. Buy more credits or upgrade your plan.`);
 }
 

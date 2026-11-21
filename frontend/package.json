@@ -9,7 +9,8 @@
     "validate": "npm run audit:imports && vite build",
     "prebuild": "node scripts/audit-imports.mjs",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test --test-force-exit \"test/*.test.mjs\""
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",

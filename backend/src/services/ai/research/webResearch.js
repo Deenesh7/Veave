@@ -107,28 +107,34 @@ async function searchWeb(query, { env = process.env, signal, providers = PROVIDE
 
 /* ---------------------------------------------------------------- page fetch ---------------------------------------------------------------- */
 
-/** A public page, reduced to what research needs. Public hosts only, redirects re-validated, size and time limited. */
-async function fetchPage(url, { signal } = {}) {
+/** The raw HTML of a public page. Public hosts only, redirects re-validated, size and time limited. */
+async function fetchHtml(url, { signal, timeoutMs = 12000 } = {}) {
   const { validatePublicUrl } = require('../../clone/websiteCaptureService');
   let current = url;
   for (let hop = 0; hop < 4; hop += 1) {
     await validatePublicUrl(current);
-    const response = await fetch(current, { redirect: 'manual', headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml', 'accept-language': 'en' }, signal: timeout(signal, 12000) });
+    const response = await fetch(current, { redirect: 'manual', headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml', 'accept-language': 'en' }, signal: timeout(signal, timeoutMs) });
     if (response.status >= 300 && response.status < 400 && response.headers.get('location')) { current = new URL(response.headers.get('location'), current).href; continue; }
     if (response.status !== 200) throw new Error(`HTTP ${response.status}`);
     if (!/html|xml|text/i.test(response.headers.get('content-type') || 'text/html')) throw new Error('not a web page');
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.length > MAX_PAGE_BYTES) throw new Error('page too large');
-    return parsePage(buffer.toString('utf8'), current);
+    return { html: buffer.toString('utf8'), url: current };
   }
   throw new Error('too many redirects');
 }
 
-function parsePage(html, url) {
+/** A public page, reduced to what research needs. */
+async function fetchPage(url, { signal } = {}) {
+  const { html, url: finalUrl } = await fetchHtml(url, { signal });
+  return parsePage(html, finalUrl);
+}
+
+function parsePage(html, url, { listMin = 40 } = {}) {
   const meta = (name) => (new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]+content=["']([^"']*)["']`, 'i').exec(html) || new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${name}["']`, 'i').exec(html) || [])[1] || '';
   const abs = (value) => { try { return new URL(value, url).href; } catch { return ''; } };
   const body = html.replace(/<(script|style|noscript|svg|nav|footer|aside|form|template)[\s\S]*?<\/\1>/gi, ' ');
-  const blocks = [...body.matchAll(/<(h[1-4]|p|li|blockquote|td|figcaption)\b[^>]*>([\s\S]*?)<\/\1>/gi)].map((m) => ({ tag: m[1].toLowerCase(), text: strip(m[2]) })).filter((item) => item.text.length >= (item.tag.startsWith('h') ? 3 : 40));
+  const blocks = [...body.matchAll(/<(h[1-4]|p|li|blockquote|td|figcaption)\b[^>]*>([\s\S]*?)<\/\1>/gi)].map((m) => ({ tag: m[1].toLowerCase(), text: strip(m[2]) })).filter((item) => item.text.length >= (item.tag.startsWith('h') ? 3 : (item.tag === 'li' || item.tag === 'td' ? listMin : 40)));
   const images = [...html.matchAll(/<img\b[^>]*>/gi)].map((m) => {
     const tag = m[0];
     const attr = (name) => (new RegExp(`\\b${name}=["']([^"']*)["']`, 'i').exec(tag) || [])[1] || '';
@@ -321,4 +327,4 @@ HOW TO USE THEM:
 
 const clearCache = () => cache.clear();
 
-module.exports = { searchWeb, fetchPage, parsePage, parseBraveHtml, researchSubjects, buildResearchBlock, checkFact, excerptFor, carriesAffiliation, affiliationTokens, categoryOf, heuristicFacts, clearCache, PROVIDERS };
+module.exports = { searchWeb, fetchHtml, fetchPage, parsePage, parseBraveHtml, researchSubjects, buildResearchBlock, checkFact, excerptFor, carriesAffiliation, affiliationTokens, categoryOf, heuristicFacts, clearCache, PROVIDERS };

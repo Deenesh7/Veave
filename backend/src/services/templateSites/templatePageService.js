@@ -273,9 +273,100 @@ function extractHeadings(source) {
   return found.slice(0, 50);
 }
 
-/** Complete list of what a page currently shows (all its sections), read from the page's own component file with fallbacks. */
-async function describeSections(site, page) {
-  let found = [];
+const SECTION_ATTRS = '((?:"[^"]*"|\'[^\']*\'|\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\}|[^>"\'{}])*)';
+const NOT_A_SECTION_IMPORT = /\/(?:data|utils?|hooks?|lib|context|store|assets|constants|config|services?)(?:\/|$)|\.(?:css|scss|json|png|jpe?g|svg|webp|gif|avif|js)$/i;
+const SHARED_CHROME = /^(?:Layout|Navbar|Navigation|Nav|NavBar|Header|SiteHeader|Footer|SiteFooter|Outlet|Link|NavLink|Helmet|Seo|SEO|Meta|ScrollToTop|Reveal|Motion|Container|Wrapper)$/;
+
+const wordsOf = (value) => String(value || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/\b\w/g, (c) => c.toUpperCase());
+const plainText = (markup) => String(markup || '').replace(/<[^>]+>/g, ' ').replace(/\{[^}]*\}/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+const attrOf = (attrs, name) => {
+  const m = new RegExp(`\\b${name}=(?:"([^"]+)"|'([^']+)'|\\{\\s*['"\`]([^'"\`]+)['"\`]\\s*\\})`, 'i').exec(attrs || '');
+  return m ? (m[1] || m[2] || m[3]) : null;
+};
+
+/**
+ * The sections of one page, in the order they appear, read from whatever the page's source really contains. Nothing is assumed about
+ * names or templates: a section is an inline <section> block, or a component the page imports from its own project and renders.
+ * Returns [{ id, name, kind, domId, order }] with ids that stay the same while the section stays in the same place
+ * (the element's own id when it has one, otherwise a slug of its name plus a counter for duplicates). Returns [] when the source has
+ * neither, so the caller can say so honestly instead of inventing sections.
+ */
+function extractSections(source, { withRanges = false } = {}) {
+  const text = String(source || '');
+  const found = [];
+
+  // 1. Inline <section> blocks. An outer section ends where its first nested section starts, so nested ones are listed too.
+  const opens = [...text.matchAll(new RegExp(`<(?:section|Section)\\b${SECTION_ATTRS}>`, 'g'))];
+  const ranges = [];
+  opens.forEach((open, i) => {
+    const start = open.index;
+    const nextOpen = i + 1 < opens.length ? opens[i + 1].index : text.length;
+    const closeSection = text.slice(start).search(/<\/(?:section|Section)>/);
+    const end = Math.min(nextOpen, closeSection >= 0 ? start + closeSection + 10 : text.length);
+    const attrs = open[1];
+    const body = text.slice(start, end);
+    let name = attrOf(attrs, 'aria-label') || attrOf(attrs, 'title');
+    if (!name) { const h = /<h([12])[^>]*>([\s\S]*?)<\/h\1>/i.exec(body) || /<h3[^>]*>([\s\S]*?)<\/h3>/i.exec(body); const t = h && plainText(h[2] || h[1]); if (t && t.length <= 120) name = t; }
+    if (!name) { const m = /<(?:SectionHeading|Heading|SectionHeader|PageHeader)[^>]*?\b(?:title|heading)=(?:"([^"]+)"|\{?['"`]([^'"`]+)['"`]\}?)/i.exec(body); if (m) name = m[1] || m[2]; }
+    const domId = attrOf(attrs, 'id');
+    if (!name && domId) name = wordsOf(domId);
+    if (!name) {
+      if (/\b(stat|stats|metrics)\b/i.test(body)) name = 'Key Statistics';
+      else if (/\b(logo|logos|partners|clients)\b/i.test(body)) name = 'Partners & Logos';
+      else if (/\b(faq|questions)\b/i.test(body)) name = 'Frequently Asked Questions';
+      else if (/<form\b/i.test(body)) name = 'Contact Form';
+    }
+    ranges.push([start, end]);
+    found.push({ index: start, end, name: name || null, kind: 'section', domId: domId || null });
+  });
+
+  // 2. Components this page imports from its own project and renders (a page built from section components keeps the sections in
+  // other files). Anything inside an inline section already belongs to that section.
+  const local = new Map(); // local name -> the name it was exported under
+  for (const m of text.matchAll(/import\s+([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\})?\s+from\s+['"](\.{1,2}\/[^'"]+)['"]/g)) if (!NOT_A_SECTION_IMPORT.test(m[2])) local.set(m[1], m[1]);
+  for (const m of text.matchAll(/import\s*\{([^}]+)\}\s*from\s+['"](\.{1,2}\/[^'"]+)['"]/g)) if (!NOT_A_SECTION_IMPORT.test(m[2])) for (const part of m[1].split(',')) { const [original, alias] = part.split(/\s+as\s+/i).map((x) => x.trim()); const name = alias || original; if (/^[A-Z]/.test(name)) local.set(name, original); }
+  for (const m of text.matchAll(/<([A-Z][A-Za-z0-9]*)\b(?:[^>]*?\b(?:title|heading|label)=(?:"([^"]+)"|\{?['"`]([^'"`]+)['"`]\}?))?/g)) {
+    if (!local.has(m[1]) || SHARED_CHROME.test(m[1])) continue;
+    if (ranges.some(([a, b]) => m.index > a && m.index < b)) continue;
+    found.push({ index: m.index, end: null, name: m[2] || m[3] || wordsOf(local.get(m[1])), kind: 'component', domId: null });
+  }
+
+  found.sort((a, b) => a.index - b.index);
+  const seen = new Map();
+  return found.slice(0, 60).map((item, order) => {
+    const name = String(item.name || `Section ${order + 1}`).replace(/\s+/g, ' ').trim().slice(0, 120);
+    const base = (item.domId || name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'section';
+    const count = (seen.get(base) || 0) + 1;
+    seen.set(base, count);
+    return { id: count === 1 ? base : `${base}-${count}`, name, kind: item.kind, domId: item.domId, order, ...(withRanges ? { index: item.index, end: item.end } : {}) };
+  });
+}
+
+/**
+ * The source of every section of a page, as the panel numbers them (the same order as extractSections): [{ number, name, source }].
+ * A section's source runs from where it starts to where the next one starts (the last one to the end of its own block / tag).
+ */
+function sectionBlocks(source) {
+  const text = String(source || '');
+  const list = extractSections(text, { withRanges: true });
+  // Items that start at the same place are the same block of source (the panel numbers each of them).
+  const starts = [...new Set(list.map((item) => item.index))].sort((x, y) => x - y);
+  return starts.map((start, i) => {
+    const items = list.map((item, k) => ({ item, number: k + 1 })).filter((entry) => entry.item.index === start);
+    const inline = items.find((entry) => entry.item.kind === 'section')?.item;
+    const next = starts[i + 1];
+    let end = next ?? inline?.end ?? text.length;
+    if (next === undefined && !inline) { const close = text.indexOf('/>', start); end = close >= 0 ? close + 2 : text.length; }
+    return { numbers: items.map((entry) => entry.number), number: items[0].number, name: (inline || items[0].item).name, source: text.slice(start, end) };
+  });
+}
+
+/**
+ * What a page currently shows, as [{ id, name, kind, domId, order }]. Read from the page's own component file first; when that has no
+ * recognisable structure the plan's description and then the template's own list are used (both are real data, never invented).
+ */
+async function describeSectionItems(site, page) {
+  let items = [];
   try {
     const clean = (p) => String(p || '').replace(/^\/+/, '');
     const targetPath = clean(page.componentPath);
@@ -283,25 +374,38 @@ async function describeSections(site, page) {
     const stored = (project?.files || []).find((f) => clean(f.path) === targetPath || f.path === page.componentPath);
     if (stored) {
       const file = await require('../storage/s3BlobStorage').hydrateFile(stored);
-      found = extractHeadings(String(file.content || ''));
+      const source = String(file.content || '');
+      items = extractSections(source);
+      if (!items.length) items = namesToItems(extractHeadings(source));
     }
-  } catch {}
+  } catch (error) { logger.warn(`Sections of page ${page?._id} could not be read: ${error.message}`); }
 
-  if (!found.length && page?.description) {
-    found = page.description.split(/\s*·\s*/).map((s) => s.trim()).filter(Boolean);
-  }
+  if (!items.length && page?.description) items = namesToItems(page.description.split(/\s*·\s*/).map((s) => s.trim()).filter(Boolean));
 
-  if (!found.length && site?.templateId) {
+  if (!items.length && site?.templateId) {
     try {
       const template = require('../templates/templateService').resolveTemplate(site.templateId, { user: { _id: site.userId } });
       const tPage = template?.pages?.find((p) => p.path === page.route || p.file === page.componentPath);
-      if (Array.isArray(tPage?.sections) && tPage.sections.length) {
-        found = tPage.sections.filter(Boolean);
-      }
-    } catch {}
+      if (Array.isArray(tPage?.sections) && tPage.sections.length) items = namesToItems(tPage.sections.filter(Boolean));
+    } catch (error) { logger.warn(`Template sections for page ${page?._id} could not be read: ${error.message}`); }
   }
-
-  return found;
+  return items;
 }
 
-module.exports = { extractHeadings, describeSections, listPagesFor, addPage, renamePage, deletePage, reorderPages, MAX_PAGES, assertNoRunningJob, changeFiles, undoFiles, bumpSite, reindex };
+function namesToItems(names) {
+  const seen = new Map();
+  return names.map((raw, order) => {
+    const name = String(raw).replace(/\s+/g, ' ').trim().slice(0, 120);
+    const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'section';
+    const count = (seen.get(base) || 0) + 1;
+    seen.set(base, count);
+    return { id: count === 1 ? base : `${base}-${count}`, name, kind: 'heading', domId: null, order };
+  });
+}
+
+/** The same sections, names only (the older shape). */
+async function describeSections(site, page) {
+  return (await describeSectionItems(site, page)).map((item) => item.name);
+}
+
+module.exports = { extractHeadings, extractSections, sectionBlocks, describeSectionItems, describeSections, listPagesFor, addPage, renamePage, deletePage, reorderPages, MAX_PAGES, assertNoRunningJob, changeFiles, undoFiles, bumpSite, reindex };

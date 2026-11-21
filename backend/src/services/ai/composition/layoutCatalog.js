@@ -65,7 +65,13 @@ const REVIEW = {
   cardHeightSpread: 1.7,
   maxFontSizes: 10,
   narrowShare: 0.5,         // text column narrower than this share of the screen, on most sections
-  blocking: ['layout-gap', 'layout-empty', 'layout-overflow-x', 'layout-no-scroll']
+  // Visual quality (content balance inside a section, grids, pictures); each is overridable by an LAYOUT_* environment variable.
+  unbalancedOffset: 0.3,    // content sits this share of the section width off-centre: one side is left empty
+  unbalancedBlocking: 0.4,  // ... and this far off-centre it is a defect, not a style
+  minUnbalancedChars: 350,  // short text is allowed to sit on one side
+  minUnbalancedHeight: 300,
+  minPictureWidth: 140,     // smaller pictures (logos, avatars) are exempt from duplicate checks
+  blocking: ['layout-gap', 'layout-empty', 'layout-overflow-x', 'layout-no-scroll', 'layout-empty-cell', 'layout-image-broken', 'layout-image-duplicate']
 };
 
 const VIEWPORTS = { desktop: { name: 'desktop', width: 1440, height: 900 }, tablet: { name: 'tablet', width: 820, height: 1180 }, mobile: { name: 'mobile', width: 390, height: 844 } };

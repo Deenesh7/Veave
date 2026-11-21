@@ -13,6 +13,7 @@ const versionRestore = require('../services/templateSites/templateVersionRestore
 const versionCompare = require('../services/templateSites/templateVersionCompare');
 const branchService = require('../services/templateSites/templateBranchService');
 const preview = require('../services/preview/previewService');
+const speech = require('../services/templateSites/speechTranscriber');
 const { NotFoundError } = require('../utils/errors');
 
 const site = (doc, pageCount) => ({
@@ -92,14 +93,20 @@ exports.createPage = wrap(async (req, res) => {
 exports.getPage = wrap(async (req, res) => {
   const { site: owner, page: doc } = await siteService.getPage(req.user, req.params.siteId, req.params.pageId);
   await siteService.rememberPage(req.user, owner._id, doc._id);
-  const sections = await pageService.describeSections(owner, doc).catch(() => []);
-  send(res, { page: { ...page(doc), sections } });
+  // Never hide a failure behind an empty list: the panel shows "could not be read" with a retry instead of invented sections.
+  const sectionList = await pageService.describeSectionItems(owner, doc);
+  send(res, { page: { ...page(doc), sections: sectionList.map((item) => item.name), sectionList } });
 });
 
 exports.updatePage = wrap(async (req, res) => {
   const { name, description, route } = req.body || {};
   const result = await pageService.renamePage({ user: req.user, siteId: req.params.siteId, pageId: req.params.pageId, name, description, route });
   send(res, { page: page(result.page) });
+});
+
+exports.editText = wrap(async (req, res) => {
+  const result = await require('../services/templateSites/templateTextEditor').editText({ user: req.user, siteId: req.params.siteId, pageId: req.params.pageId, oldText: req.body?.oldText, newText: req.body?.newText });
+  send(res, result);
 });
 
 exports.deletePage = wrap(async (req, res) => {
@@ -132,6 +139,12 @@ exports.restoreRevision = wrap(async (req, res) => {
 exports.generateSite = wrap(async (req, res) => {
   const doc = await jobs.startCustomize({ user: req.user, siteId: req.params.siteId, brief: req.body?.brief, photos: req.body?.photos, idempotencyKey: req.body?.idempotencyKey });
   send(res, { job: job(doc) }, 202);
+});
+
+exports.transcribeVoice = wrap(async (req, res) => {
+  if (!req.file?.buffer?.length) return res.status(400).json({ success: false, error: { message: 'No audio was received.', statusCode: 400 } });
+  const text = await speech.transcribe({ buffer: req.file.buffer, format: 'wav' });
+  send(res, { text });
 });
 
 exports.uploadPhoto = wrap(async (req, res) => {
@@ -167,7 +180,7 @@ exports.updateImage = wrap(async (req, res) => {
 });
 
 exports.deleteImage = wrap(async (req, res) => {
-  send(res, await assets.removeAsset(req.user, req.params.siteId, req.params.imageId));
+  send(res, await assets.removeAsset(req.user, req.params.siteId, req.params.imageId, { force: String(req.query?.force || '') === 'true' }));
 });
 
 exports.replaceImage = wrap(async (req, res) => {
@@ -189,7 +202,7 @@ exports.previewRevision = wrap(async (req, res) => {
 });
 
 exports.regeneratePage = wrap(async (req, res) => {
-  const doc = await jobs.startRegenerate({ user: req.user, siteId: req.params.siteId, pageId: req.params.pageId, instruction: req.body?.instruction, attachments: req.body?.attachments, idempotencyKey: req.body?.idempotencyKey });
+  const doc = await jobs.startRegenerate({ user: req.user, siteId: req.params.siteId, pageId: req.params.pageId, instruction: req.body?.instruction, attachments: req.body?.attachments, focusSection: req.body?.focusSection, idempotencyKey: req.body?.idempotencyKey });
   send(res, { job: job(doc) }, 202);
 });
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Monitor, Tablet, Smartphone, RefreshCw, Maximize2, Minimize2, History, RotateCcw, X, Palette } from 'lucide-react';
+import { Monitor, Tablet, Smartphone, RefreshCw, Maximize2, Minimize2, History, RotateCcw, X, Palette, Type } from 'lucide-react';
 import { useTemplateStudioStore } from '../../store/templateStudioStore';
 import { templateSiteService, apiMessage } from '../../services/templateSiteService';
 import { ASSET_BASE_PLACEHOLDER } from '../../services/previewService';
@@ -8,6 +8,33 @@ import { PanelHeader, EmptyState, ErrorNote, IconButton, Spinner, Skeleton, Ghos
 
 // Lets the page take theme CSS from the studio while the theme panel is open (the same listener the template preview uses).
 const THEME_LISTENER = `<style id="veave-theme"></style><script>window.addEventListener('message',function(e){var d=e.data;if(d&&d.type==='veave-theme'){document.getElementById('veave-theme').textContent=d.css||'';}});</script>`;
+
+// Click-to-edit text inside the page. A click on text selects it and tells the studio; the studio sends new text back as it is typed.
+const TEXT_EDIT_SCRIPT = `<script>(function(){
+var on=true,sel=null,hov=null,map={},n=0;
+var st=document.createElement('style');st.textContent='[data-studio-hover]{outline:1px dashed #5E7B5F!important;outline-offset:2px;cursor:text!important}[data-studio-sel]{outline:2px solid #5E7B5F!important;outline-offset:2px;background-color:rgba(94,123,95,.08)}';document.head.appendChild(st);
+function own(el){var t='';for(var c=el.firstChild;c;c=c.nextSibling){if(c.nodeType===3)t+=c.nodeValue;}return t;}
+function norm(t){return t.replace(/\s+/g,' ').trim();}
+function skip(el){return !el||/^(SCRIPT|STYLE|SVG|PATH|INPUT|TEXTAREA|SELECT|OPTION|HTML|BODY)$/i.test(el.tagName)||el.id==='root';}
+function at(x,y,target){var node=null;try{if(document.caretRangeFromPoint){var r=document.caretRangeFromPoint(x,y);node=r&&r.startContainer;}else if(document.caretPositionFromPoint){var p=document.caretPositionFromPoint(x,y);node=p&&p.offsetNode;}}catch(e){}
+if(node&&node.nodeType===3&&norm(node.nodeValue)){var rg=document.createRange();rg.selectNodeContents(node);var b=rg.getBoundingClientRect();if(x>=b.left-4&&x<=b.right+4&&y>=b.top-4&&y<=b.bottom+4){var el=node.parentNode;if(!skip(el)&&norm(own(el)))return el;}}
+if(target&&target.nodeType===1&&!skip(target)&&norm(own(target)))return target;return null;}
+function mark(el,attr,val){if(el)el.removeAttribute(attr);if(val)val.setAttribute(attr,'');}
+document.addEventListener('pointerdown',function(){window.parent.postMessage({type:'studio-preview-touch'},'*');},true);
+document.addEventListener('mousemove',function(e){if(!on)return;var el=at(e.clientX,e.clientY,e.target);if(el===hov)return;if(hov)hov.removeAttribute('data-studio-hover');hov=el;if(el&&el!==sel)el.setAttribute('data-studio-hover','');},true);
+document.addEventListener('click',function(e){if(!on)return;var el=at(e.clientX,e.clientY,e.target);if(!el)return;e.preventDefault();e.stopImmediatePropagation();
+if(sel)sel.removeAttribute('data-studio-sel');sel=el;el.removeAttribute('data-studio-hover');el.setAttribute('data-studio-sel','');
+if(!el.__sid){el.__sid='s'+(++n);map[el.__sid]=el;}
+window.parent.postMessage({type:'studio-text-selected',id:el.__sid,text:norm(own(el)),tag:el.tagName.toLowerCase()},'*');},true);
+window.addEventListener('message',function(e){var d=e.data;if(!d)return;
+if(d.type==='studio-text-mode'){on=!!d.enabled;if(!on){if(sel)sel.removeAttribute('data-studio-sel');if(hov)hov.removeAttribute('data-studio-hover');sel=hov=null;}}
+if(d.type==='studio-text-clear'){if(sel)sel.removeAttribute('data-studio-sel');sel=null;}
+if(d.type==='studio-text-set'){var el=map[d.id];if(!el)return;var nodes=[];for(var c=el.firstChild;c;c=c.nextSibling){if(c.nodeType===3)nodes.push(c);}
+var first=null;for(var i=0;i<nodes.length;i++){if(nodes[i].nodeValue.trim()){first=nodes[i];break;}}if(!first)return;
+var all=nodes.map(function(x){return x.nodeValue;}).join('');var lead=(all.match(/^\s*/)||[''])[0],trail=(all.match(/\s*$/)||[''])[0];
+nodes.forEach(function(x){if(x!==first)x.nodeValue='';});first.nodeValue=lead+d.text+trail;}
+});
+})();</script>`;
 
 const DEVICES = [
   { id: 'desktop', label: 'Desktop', icon: Monitor, width: '100%', hint: 'Full width' },
@@ -24,6 +51,24 @@ export default function SitePreviewPanel({ className = '' }) {
   const iframeRef = useRef(null);
   const [full, setFull] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
+  const [textMode, setTextMode] = useState(true); // click text in the page to edit it in the Content column (off: links work as in the real site)
+  const textModeRef = useRef(true);
+  // Touching the preview (the page itself or its toolbar) folds the app's menu sidebar and the Pages column, so the work area gets the room.
+  const foldMenu = useCallback(() => { const store = useTemplateStudioStore.getState(); if (!store.appSidebarHidden) store.setAppSidebarHidden(true); if (!store.pagesCollapsed) store.setPagesCollapsed(true); }, []);
+  const sendTextMode = useCallback(() => { try { iframeRef.current?.contentWindow?.postMessage({ type: 'studio-text-mode', enabled: textModeRef.current }, '*'); } catch { /* the frame may be reloading */ } }, []);
+  useEffect(() => {
+    textModeRef.current = textMode;
+    sendTextMode();
+    if (!textMode) useTemplateStudioStore.getState().setSelectedText(null);
+  }, [textMode, sendTextMode]);
+  // The Content column sends typed text into the page, and clears the highlight when the selection is closed.
+  useEffect(() => {
+    const onSet = (event) => { try { iframeRef.current?.contentWindow?.postMessage({ type: 'studio-text-set', id: event.detail.id, text: event.detail.text }, '*'); } catch { /* ignore */ } };
+    const onClear = () => { try { iframeRef.current?.contentWindow?.postMessage({ type: 'studio-text-clear' }, '*'); } catch { /* ignore */ } };
+    window.addEventListener('studio-text-set', onSet);
+    window.addEventListener('studio-text-clear', onClear);
+    return () => { window.removeEventListener('studio-text-set', onSet); window.removeEventListener('studio-text-clear', onClear); };
+  }, []);
   // While the theme panel is open, the app sidebar and the Pages / Content columns fold away so the preview gets the room; they come back as they were.
   useEffect(() => {
     if (!themeOpen) return undefined;
@@ -104,7 +149,7 @@ export default function SitePreviewPanel({ className = '' }) {
   // Clicking a section in the Content column scrolls the website to that part of the page.
   useEffect(() => {
     const onScroll = (event) => {
-      try { iframeRef.current?.contentWindow?.postMessage({ type: 'preview-scroll-to-section', label: event.detail }, '*'); } catch { /* the frame may be reloading */ }
+      try { iframeRef.current?.contentWindow?.postMessage({ type: 'preview-scroll-to-section', label: event.detail?.name ?? event.detail, domId: event.detail?.domId || null, order: event.detail?.order ?? null }, '*'); } catch { /* the frame may be reloading */ }
     };
     window.addEventListener('studio-scroll-section', onScroll);
     return () => window.removeEventListener('studio-scroll-section', onScroll);
@@ -114,7 +159,9 @@ export default function SitePreviewPanel({ className = '' }) {
   useEffect(() => {
     const onMessage = (event) => {
       if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return;
-      if (event.data?.type === 'preview-rendered') showRoute(routeRef.current);
+      if (event.data?.type === 'preview-rendered') { showRoute(routeRef.current); sendTextMode(); }
+      if (event.data?.type === 'studio-preview-touch') foldMenu();
+      if (event.data?.type === 'studio-text-selected' && revisionPreview?.status !== 'ready') useTemplateStudioStore.getState().setSelectedText({ id: event.data.id, text: String(event.data.text || ''), tag: String(event.data.tag || '') });
       if (event.data?.type === 'preview-route-changed') {
         const route = String(event.data.route || '/').split(/[?#]/)[0].replace(/\/+$/, '') || '/';
         const target = pagesRef.current.find((item) => item.route === route);
@@ -123,7 +170,7 @@ export default function SitePreviewPanel({ className = '' }) {
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [selectPage, showRoute]);
+  }, [selectPage, showRoute, sendTextMode, foldMenu, revisionPreview]);
 
   const width = DEVICES.find((item) => item.id === device)?.width || '100%';
   const regenerating = job && !['completed', 'failed', 'cancelled'].includes(job.status);
@@ -132,13 +179,14 @@ export default function SitePreviewPanel({ className = '' }) {
   const old = revisionPreview?.status === 'ready' ? revisionPreview : null;
   const oldHtml = old ? old.html.split(ASSET_BASE_PLACEHOLDER).join(`${window.location.origin}/api/preview-assets/${old.token}`) : '';
   const raw = old ? oldHtml : state.html;
-  const html = raw && !old ? (raw.includes('</body>') ? raw.replace('</body>', () => `${THEME_LISTENER}</body>`) : raw + THEME_LISTENER) : raw;
+  const injected = THEME_LISTENER + TEXT_EDIT_SCRIPT;
+  const html = raw && !old ? (raw.includes('</body>') ? raw.replace('</body>', () => `${injected}</body>`) : raw + injected) : raw;
   const frameKey = old ? `rev-${old.number}` : `${state.hash}:${manualKey}`;
   const loading = revisionPreview?.status === 'loading' || (!old && site && state.status === 'loading' && !state.html);
   const frameError = revisionPreview?.status === 'error' ? revisionPreview.error : (!old && site && state.status === 'error' ? state.error : null);
 
   return (
-    <section aria-label="Live website preview" className={`${className} min-w-0 flex-1 flex-col bg-[#EFEBE1] ${full ? 'fixed inset-0 z-50 !flex' : ''}`}>
+    <section aria-label="Live website preview" onPointerDownCapture={foldMenu} className={`${className} min-w-0 flex-1 flex-col bg-[#EFEBE1] ${full ? 'fixed inset-0 z-50 !flex' : ''}`}>
       <PanelHeader
         title={full && site ? `${site.name} · Preview` : 'Preview'}
         action={site ? (
@@ -153,6 +201,7 @@ export default function SitePreviewPanel({ className = '' }) {
               ))}
             </div>
             <span className="mx-1 h-4 w-px bg-[#D8D2C3]" aria-hidden="true" />
+            <IconButton label={textMode ? 'Editing text: click any text in the page (click to turn off and browse links)' : 'Click to edit text in the page'} onClick={() => setTextMode((value) => !value)} disabled={Boolean(revisionPreview)} className={textMode ? 'bg-white text-[#5E7B5F] shadow-sm' : ''}><Type className="h-4 w-4" /></IconButton>
             <IconButton label="Change theme" onClick={() => (themeOpen ? closeTheme(false) : setThemeOpen(true))} disabled={Boolean(revisionPreview)} className={themeOpen ? 'bg-white shadow-sm' : ''}><Palette className="h-4 w-4" /></IconButton>
             <IconButton label="Refresh preview" onClick={() => setManualKey((value) => value + 1)} disabled={Boolean(old)}><RefreshCw className={`h-4 w-4 ${state.status === 'loading' ? 'animate-spin' : ''}`} /></IconButton>
             <IconButton label={full ? 'Exit full screen (Esc)' : 'Full screen'} onClick={() => setFull((value) => !value)}>{full ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}</IconButton>
@@ -187,7 +236,7 @@ export default function SitePreviewPanel({ className = '' }) {
             <iframe
               key={frameKey} ref={iframeRef} title={`${site.name} website preview`} srcDoc={html}
               sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
-              onLoad={() => { showRoute(routeRef.current); if (cssRef.current) pushCss(cssRef.current); }} className="h-full w-full border-0 bg-white"
+              onLoad={() => { showRoute(routeRef.current); sendTextMode(); useTemplateStudioStore.getState().setSelectedText(null); if (cssRef.current) pushCss(cssRef.current); }} className="h-full w-full border-0 bg-white"
             />
           </div>
         ) : null}

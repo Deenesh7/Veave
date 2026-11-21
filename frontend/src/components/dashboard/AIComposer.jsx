@@ -30,6 +30,7 @@ import { useProjectStore } from '../../store/projectStore';
 import { useGenerationJobStore } from '../../store/generationJobStore';
 import { MatrixOrb } from '../rare-ui';
 import { WhisperAudioRecorder } from '../../utils/whisperAudioRecorder';
+import { apiErrorMessage } from '../../utils/helpers';
 
 const GENERATION_STEPS = [
   'Analyzing prompt specifications...',
@@ -398,11 +399,7 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
       // Only once the server has accepted the job: a failed start keeps the user's text so nothing is lost.
       if (startedJobId) setPrompt('');
     } catch (err) {
-      setLocalError(
-        err.response?.data?.error ||
-        err.message ||
-        'Failed to start generation. Please try again.'
-      );
+      setLocalError(apiErrorMessage(err, 'Failed to start generation. Please try again.'));
     }
   };
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { X, History } from 'lucide-react';
 import { useTemplateStudioStore } from '../../store/templateStudioStore';
 import PagesPanel from './PagesPanel';
@@ -20,6 +20,21 @@ export default function TemplateStudio() {
     if (!useTemplateStudioStore.getState().sitesLoaded) init();
     return () => stopPolling();
   }, [init, stopPolling]);
+
+  // While the AI is working on the site, the app's menu sidebar folds away so the preview gets the room. It is opened again afterwards,
+  // but only if this closed it: a sidebar the owner closed themselves stays closed.
+  const working = useTemplateStudioStore((state) => Boolean(state.job && !['completed', 'failed', 'cancelled'].includes(state.job.status)));
+  const autoClosed = useRef(false);
+  useEffect(() => {
+    const store = useTemplateStudioStore.getState();
+    if (working) {
+      autoClosed.current = !store.appSidebarHidden;
+      if (autoClosed.current) store.setAppSidebarHidden(true);
+    } else if (autoClosed.current) {
+      store.setAppSidebarHidden(false);
+      autoClosed.current = false;
+    }
+  }, [working]);
 
   const show = (name) => (tab === name ? 'flex' : 'hidden lg:flex');
 

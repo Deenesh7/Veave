@@ -9,6 +9,7 @@ export const templateSiteService = {
   templateSiteHtml: (id, version) => api.get(`/templates/${id}/site-html`, { params: { version }, timeout: 60000 }),
   templateThemeCss: (id, theme, version) => api.post(`/templates/${id}/theme-css`, { theme }, { params: { version } }),
   getTemplate: (id, version) => api.get(`/templates/${id}`, { params: { version } }),
+  transcribeVoice: (wavBlob) => { const form = new FormData(); form.append('audio', wavBlob, 'voice.wav'); return api.post('/template-sites/transcribe', form, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 90000 }); },
   listSites: () => api.get('/template-sites'),
   createSite: (data) => api.post('/template-sites', data),
   getSite: (siteId) => api.get(`/template-sites/${siteId}`),
@@ -55,7 +56,7 @@ export const templateSiteService = {
   },
   listImages: (siteId) => api.get(`/template-sites/${siteId}/images`),
   updateImage: (siteId, imageId, data) => api.patch(`/template-sites/${siteId}/images/${imageId}`, data),
-  deleteImage: (siteId, imageId) => api.delete(`/template-sites/${siteId}/images/${imageId}`),
+  deleteImage: (siteId, imageId, { force = false } = {}) => api.delete(`/template-sites/${siteId}/images/${imageId}`, { params: force ? { force: true } : undefined }),
   replaceImage: (siteId, imageId, file, { onProgress } = {}) => {
     const form = new FormData();
     form.append('photo', file);
@@ -70,6 +71,7 @@ export const templateSiteService = {
   chooseEnhancement: (siteId, imageId, choice) => api.post(`/template-sites/${siteId}/images/${imageId}/enhancement`, { choice }),
   previewRevision: (siteId, pageId, number) => api.get(`/template-sites/${siteId}/pages/${pageId}/revisions/${number}/preview`, { timeout: 120000 }),
   generateSite: (siteId, data) => api.post(`/template-sites/${siteId}/generate`, data),
+  editText: (siteId, pageId, data) => api.post(`/template-sites/${siteId}/pages/${pageId}/text`, data),
   regeneratePage: (siteId, pageId, data) => api.post(`/template-sites/${siteId}/pages/${pageId}/regenerate`, data),
   retryPage: (siteId, pageId) => api.post(`/template-sites/${siteId}/pages/${pageId}/retry`, { idempotencyKey: `retry-${pageId}-${Date.now()}` }),
   getJob: (jobId) => api.get(`/template-jobs/${jobId}`, statusRequest),

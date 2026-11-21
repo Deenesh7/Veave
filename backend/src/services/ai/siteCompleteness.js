@@ -3,7 +3,7 @@
 // a page background that matches it. The build/browser gate cannot see any of this: a single-page, navigation-less,
 // dark stub passes it. Issues are phrased as instructions so they can be handed straight to the repair model.
 const SOURCE = /\.(?:jsx?|tsx?)$/i;
-const { imageConfig } = require('./images/imageConfig');
+const { imageConfig, applyFloor } = require('./images/imageConfig');
 const imageValidation = require('./images/imageValidation');
 const textOf = (file) => (file && file.encoding !== 'base64' && typeof file.content === 'string' ? file.content : '');
 const IMPORT_RE = /import\s+(?:[\w*${},\s]+\s+from\s+)?['"](\.{1,2}\/[^'"]+)['"]/g;
@@ -85,13 +85,15 @@ function luminance(hex) {
  * @param {{prompt?:string, spec?:{pages?:Array}, prototypeBg?:string|null}} context
  * @returns {Array<{category:'completeness', path:string, message:string, kind:string}>}
  */
-function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null, brokenImageLinks = [], entityAssets = [], compositionPlan = null, imageInfo = null, spareImages = [], missingImages = [] } = {}) {
+function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null, brokenImageLinks = [], entityAssets = [], compositionPlan = null, imageInfo = null, spareImages = [], missingImages = [], imageFloor = null } = {}) {
   const issues = [];
   const byPath = new Map(files.map((file) => [file.path, file]));
   const app = byPath.get('src/App.jsx') || byPath.get('src/App.tsx') || byPath.get('src/App.js');
   if (!app) return issues; // the static gate already reports a missing App
   const add = (kind, message, path = app.path) => issues.push({ category: 'completeness', kind, path, message });
-  const singleScreen = SINGLE_SCREEN_REQUEST.test(prompt) && !/\b(website|web ?site|multi[- ]?page)\b/i.test(prompt);
+  // A request for one page (and a plan with exactly one page) is not forced into the multi-page minimums, even though it says "website".
+  const plannedSinglePage = compositionPlan?.pages?.length === 1 && /\b(?:one|single|1)[- ]page\b|\blanding page\b|\bsingle[- ]screen\b/i.test(prompt);
+  const singleScreen = plannedSinglePage || (SINGLE_SCREEN_REQUEST.test(prompt) && !/\b(website|web ?site|multi[- ]?page)\b/i.test(prompt));
 
   const tree = reachable(app, byPath, 5);
   const treeSource = tree.map(textOf).join('\n');
@@ -150,7 +152,7 @@ function checkCompleteness(files, { prompt = '', spec = null, prototypeBg = null
   // 5. Images: a website is not created without them. Links that could not be downloaded count as a failure of their own.
   const imagesExempt = NO_IMAGES_REQUEST.test(prompt) || (NON_VISUAL_APP.test(prompt) && !/\b(website|web ?site)\b/i.test(prompt));
   if (!imagesExempt) {
-    const cfg = imageConfig();
+    const cfg = applyFloor(imageConfig(), { floor: imageFloor });
     const minimumHome = cfg.minHome;
     const minimumSite = singleScreen ? Math.min(cfg.minSite, 3) : cfg.minSite;
     // With the decoded project images (the normal path) only real, distinct, working files count. Without them (older callers)

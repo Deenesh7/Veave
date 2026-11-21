@@ -48,3 +48,11 @@ export function formatTokens(num) {
   if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
   return num.toString();
 }
+
+/** The readable text of an API error: the server may send `error` as a string or as an object like { message, statusCode }. */
+export function apiErrorMessage(err, fallback = 'Something went wrong.') {
+  const raw = err?.response?.data?.error ?? err?.response?.data?.message ?? err?.message;
+  if (typeof raw === 'string' && raw) return raw;
+  if (raw && typeof raw.message === 'string' && raw.message) return raw.message;
+  return fallback;
+}

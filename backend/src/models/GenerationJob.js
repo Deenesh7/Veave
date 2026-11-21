@@ -74,6 +74,13 @@ const generationJobSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  // Deep generation: the persistent plan/progress state (requirements, sitemap, per-section status, generated files) and its small summary.
+  // Requirements extracted from the request and the verified, source-linked knowledge retrieved for them (reused when the job continues).
+  knowledge: { type: mongoose.Schema.Types.Mixed, default: null },
+  // Every picture the job selected or rejected (source, subject, section, hashes, reason): retries never re-select a rejected one.
+  imageRegistry: { type: mongoose.Schema.Types.Mixed, default: null },
+  deepGeneration: { type: mongoose.Schema.Types.Mixed, default: null },
+  deepSummary: { type: mongoose.Schema.Types.Mixed, default: null },
   validation: { type: mongoose.Schema.Types.Mixed, default: null },
   analysis: { type: mongoose.Schema.Types.Mixed, default: null },
   usage: { type: mongoose.Schema.Types.Mixed, default: null },

@@ -152,11 +152,11 @@ function pickMoreRoutes(capture, requestedPaths, { hardCap }) {
  * One "scrape more pages" request against the capture held by a running job: pick the routes, capture exactly those, merge them
  * in and return the new capture. The input capture is never changed, so a failed scrape leaves the plan exactly as it was.
  */
-async function scrapeMore(capture, request, { sourceUrl, signal, captureWebsite, hardCap, merge }) {
+async function scrapeMore(capture, request, { sourceUrl, signal, captureWebsite, hardCap, merge, session = null }) {
   const picked = pickMoreRoutes(capture, request.paths, { hardCap });
   if (picked.error) throw new Error(picked.error);
   const before = capture.pages.filter(isCaptured).length;
-  const extra = await captureWebsite(sourceUrl, { signal, onlyRoutes: picked.routes });
+  const extra = await captureWebsite(sourceUrl, { signal, onlyRoutes: picked.routes, session });
   const next = merge(capture, extra);
   const added = next.pages.filter(isCaptured).length - before;
   if (added <= 0) throw new Error('None of those pages could be captured.');

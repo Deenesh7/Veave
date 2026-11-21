@@ -12,6 +12,8 @@ const templateGenerationJobSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   type: { type: String, enum: ['page-regenerate', 'site-customize'], required: true },
   instruction: { type: String, default: '', maxlength: 4000 },
+  // The section the owner had selected in the Content panel when sending the instruction (a name from the page's own section list).
+  focusSection: { type: String, default: '', maxlength: 120 },
   // Photos the user attached to the instruction: paths of pictures already uploaded to the site (e.g. /assets/images/uploaded-ab12.jpg).
   attachments: { type: [String], default: [] },
   // Per-photo placement the owner chose: [{ path, placement, note }].

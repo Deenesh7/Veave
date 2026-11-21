@@ -112,17 +112,21 @@ RULES:
  * @param {string} p.entityBlock   verified named-entity images (optional)
  * @param {object} p.repair        { diagnostics: string[], candidate: [{path, content}] } when a previous attempt was rejected
  */
-function buildPageMessages({ template, page, otherPages = [], instruction, ownedFiles, sharedFiles = [], entityBlock = '', attachments = [], repair = null, siteContext = null }) {
+function buildPageMessages({ template, page, otherPages = [], instruction, ownedFiles, sharedFiles = [], entityBlock = '', attachments = [], repair = null, siteContext = null, siteWide = false }) {
   const mode = siteContext?.mode === 'website' && siteContext?.plan ? 'website' : 'edit';
-  const system = `${mode === 'website' ? `${TRANSFORM_PREAMBLE}\n\n` : ''}${rulesFor(mode)}
+  const system = `${mode === 'website' ? `${TRANSFORM_PREAMBLE}\n\n` : ''}${siteWide ? SITE_WIDE_RULES : rulesFor(mode)}
 
 DESIGN SYSTEM (${template.name}):
 ${tokenSummary(template)}`;
+  const pictureOnly = require('./templateValidationService').isPictureOnlyEdit(instruction, attachments);
+  const limited = !siteWide && mode === 'edit' && !pictureOnly && require('./templateValidationService').keepRatioFor({ instruction, attachments });
   const parts = [
+    pictureOnly ? 'PICTURE-ONLY CHANGE: the owner only asked for pictures. Do NOT rewrite, shorten, reorder or remove any heading, paragraph, button, card, list item or section, and do not change any existing wording. Return small exact "patch" edits that add or swap <img> elements (or give an existing empty image box its picture). Every word that is on the page now must still be on it afterwards.' : '',
+    limited ? 'TARGETED CHANGE: change ONLY what the instruction mentions. Every other section, heading, paragraph, button, card, list item and image on the page must stay word-for-word as it is now. Return small exact "patch" edits, not a rewritten page. If the instruction names a section or element, touch only that one.' : '',
     siteContext ? websiteBlock({ ...siteContext, page, mode }) : '',
     `PAGE: ${page.name} (route ${page.route}, component ${page.componentPath})${page.description ? `\nPurpose: ${page.description}` : ''}`,
     otherPages.length ? `OTHER PAGES (do not repeat their content; they are not part of this change):\n${otherPages.map((other) => `- ${other.name} (${other.route})${other.description ? `: ${other.description}` : ''}`).join('\n')}` : '',
-    `FILES YOU MAY CHANGE:\n${ownedFiles.map((file) => fence(file.path, file.content)).join('\n\n')}`,
+    `${siteWide ? 'FILES YOU MAY CHANGE (this instruction is about the whole website, so shared components, shared data, src/data/site.js and index.html are included)' : 'FILES YOU MAY CHANGE'}:\n${ownedFiles.map((file) => fence(file.path, file.content)).join('\n\n')}`,
     sharedFiles.length ? `READ-ONLY CONTEXT (shared components you may use; do not change them):\n${sharedFiles.map((file) => fence(file.path, file.content, SHARED_SOURCE_LIMIT)).join('\n\n')}` : '',
     attachments.length ? photoBlock(attachments) : '',
     entityBlock ? `${entityBlock}` : '',
@@ -145,4 +149,17 @@ function rulesFor(mode) {
   return RULES.replace(/^1\. .*$/m, WEBSITE_RULE_1).replace(/^6\. .*$/m, WEBSITE_RULE_6);
 }
 
-module.exports = { buildPageMessages, RULES, rulesFor };
+/** The instruction is about the whole website: shared parts may change, so the brand and content are consistent everywhere. */
+const SITE_WIDE_RULES = `You change an existing React + Vite + Tailwind website. The user's instruction is about the WHOLE website (or about a shared part such as the menu, footer, logo or a shared component), so it must be applied in every place it appears.
+
+RULES:
+1. Carry out the instruction fully and literally. If it says to remove something (for example rentals, a section, a tab, a brand name), remove it from every file you may change: page text, shared components, menus, footer, data files, site name, tagline, contact details, page title and descriptions, and the logic that supported it (tabs, filters, links). Leave no word of the removed subject behind, and no link that points to something that no longer exists.
+2. If it gives a new subject or brand, rewrite the old subject everywhere (logo text, site data in src/data/site.js, navigation labels, footer, calls to action, index.html title and description) with content for the new subject. Menu links must lead to real routes or to existing on-page sections (use ids and /#id links).
+3. You may change ONLY the files listed under "FILES YOU MAY CHANGE", and create NEW files under src/components/ or src/data/. Do not touch src/App.jsx, src/main.jsx, src/index.css, package.json, the config files or the other pages' component files. Keep every route working.
+4. Keep every default export and name. Keep every import valid: import only files that exist or that you create, and only packages already used in the project. Remove imports you no longer use.
+5. Keep the design system (semantic colours, fonts, Section / SectionHeading / Container) and a layout that works from 375px to 1440px.
+6. Images: use only the photos the user uploaded, verified image URLs given below, or images already in the project. Never invent image links.
+7. Prefer small exact "patch" edits (a unique search block copied from the code shown); return a complete file with "modify" when you rewrite it substantially.
+8. Never invent facts: no statistics, rankings, fees, dates, phone numbers, emails, names of people. Use general wording or a clear placeholder instead.`;
+
+module.exports = { buildPageMessages, RULES, rulesFor, SITE_WIDE_RULES };

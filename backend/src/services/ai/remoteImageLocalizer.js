@@ -91,13 +91,30 @@ async function downloadPublicImage(url, { signal } = {}) {
   throw new Error('too many redirects');
 }
 
+/** The alt text and nearby words of the <img> that uses `url`, so the picture can be judged against the place it was put. */
+function contextAround(files, url) {
+  for (const file of files) {
+    const text = String(file.content || '');
+    const at = text.indexOf(url);
+    if (at < 0) continue;
+    const tagStart = text.lastIndexOf('<', at);
+    const tagEnd = text.indexOf('>', at);
+    const tag = tagStart >= 0 && tagEnd > at ? text.slice(tagStart, tagEnd + 1) : '';
+    const alt = (/\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*["'`]([^"'`]*)["'`]\s*\})/.exec(tag) || []).slice(1).find(Boolean) || '';
+    const before = text.slice(Math.max(0, at - 900), tagStart >= 0 ? tagStart : at);
+    const words = [...before.matchAll(/>([^<>{}]{12,200})</g)].map((match) => match[1].replace(/\s+/g, ' ').trim()).slice(-3).join(' ');
+    return { alt: alt.trim(), nearby: words.slice(0, 300), file: file.path };
+  }
+  return { alt: '', nearby: '' };
+}
+
 /**
  * @param beforeFiles  the saved project (URLs it already uses are left alone)
  * @param files        the project after the edit was applied
  * @param changedPaths text files the edit changed
  * @returns {{files, added, replaced, failed}}  `replaced` are rewritten files; `added` the downloaded image files
  */
-async function localizeIntroducedRemoteImages({ beforeFiles = [], files = [], changedPaths = [], download = downloadPublicImage, signal, skipFailed = false } = {}) {
+async function localizeIntroducedRemoteImages({ beforeFiles = [], files = [], changedPaths = [], download = downloadPublicImage, signal, skipFailed = false, gate = null } = {}) {
   const existingText = beforeFiles.filter((file) => file && file.encoding !== 'base64').map((file) => String(file.content || '')).join('\n');
   const changed = files.filter((file) => file && file.encoding !== 'base64' && changedPaths.includes(file.path));
   const introduced = new Set();
@@ -121,6 +138,11 @@ async function localizeIntroducedRemoteImages({ beforeFiles = [], files = [], ch
         const body = await download(url, { signal });
         const image = sniffImage(body);
         if (!image) throw new Error('the file is not a supported image');
+        // An optional relevance check: a link the model wrote is not trusted just because it is a real image.
+        if (gate) {
+          const verdict = await gate({ url, body, context: contextAround(changed, url) });
+          if (verdict && verdict.ok === false) { const error = new Error(`the image was judged unrelated to where it was placed (${verdict.reason || 'it does not match'})`); error.unrelated = true; throw error; }
+        }
         const hash = createHash('sha256').update(body).digest('hex').slice(0, 10);
         const filePath = `public/assets/images/added-${hash}.${image.extension}`;
         localPathByUrl.set(url, `/${filePath.slice('public/'.length)}`);
@@ -131,10 +153,10 @@ async function localizeIntroducedRemoteImages({ beforeFiles = [], files = [], ch
       } catch (error) {
         lastError = error;
         // A missing page or a non-image answer will not change on a retry; a network hiccup might.
-        if (/HTTP 4\d\d|not a supported image|larger than/.test(String(error?.message))) break;
+        if (error?.unrelated || /HTTP 4\d\d|not a supported image|larger than/.test(String(error?.message))) break;
       }
     }
-    failed.push({ url, reason: String(lastError?.message || lastError).slice(0, 160) });
+    failed.push({ url, reason: String(lastError?.message || lastError).slice(0, 160), ...(lastError?.unrelated ? { unrelated: true } : {}) });
   };
   const queue = urls.slice(0, MAX_IMAGES_PER_EDIT);
   await Promise.all(Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, queue.length) }, async () => {
@@ -176,4 +198,4 @@ async function localizeIntroducedRemoteImages({ beforeFiles = [], files = [], ch
   return { files: [...next, ...added], added, replaced, failed, skipped };
 }
 
-module.exports = { primeImageCache, findRemoteImageUrls, localizeIntroducedRemoteImages, downloadPublicImage, sniffImage };
+module.exports = { contextAround, primeImageCache, findRemoteImageUrls, localizeIntroducedRemoteImages, downloadPublicImage, sniffImage };

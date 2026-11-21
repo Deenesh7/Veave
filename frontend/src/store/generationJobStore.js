@@ -1,6 +1,7 @@
 ﻿import { create } from 'zustand';
 import { useBillingStore } from './billingStore';
 import { aiCreationService } from '../services/aiCreationService';
+import { apiErrorMessage } from '../utils/helpers';
 
 const ACTIVE_JOB_KEY = 'veave_active_job_id';
 const ACTIVE_JOB_META_KEY = 'veave_active_job_meta';
@@ -33,6 +34,7 @@ export const FAILURE_TITLES = {
   AI_RESPONSE_INVALID: 'The AI response could not be applied',
   IMAGE_CHECK_FAILED: 'Images could not be verified',
   PAGE_CHECK_FAILED: 'Pages were not distinct',
+  COVERAGE_CHECK_FAILED: 'Some requested topics were not covered',
   REPAIR_EXHAUSTED: 'Automatic repair could not fix the site',
   // Template workspace jobs
   PAGE_VALIDATION_FAILED: 'The new version did not pass the checks',
@@ -260,7 +262,7 @@ export const useGenerationJobStore = create((set, get) => ({
       get().stopPolling();
       localStorage.removeItem(ACTIVE_JOB_KEY);
       localStorage.removeItem(ACTIVE_JOB_META_KEY);
-      const error = err.response?.data?.error || err.message || 'Failed to start generation.';
+      const error = apiErrorMessage(err, 'Failed to start generation.');
       set({
         activeJobId: null,
         jobStatus: 'failed',

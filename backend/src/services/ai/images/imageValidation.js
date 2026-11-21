@@ -121,18 +121,63 @@ const PAGE_INSPECTION = async () => {
   await Promise.all(imgs.map(async (img) => {
     try { img.loading = 'eager'; if (!img.complete || !img.naturalWidth) await Promise.race([img.decode().catch(() => {}), new Promise((resolve) => setTimeout(resolve, 4000))]); } catch { /* reported below */ }
   }));
+  const alphaOf = (color) => { const m = /rgba?\(([^)]+)\)/.exec(color || ''); if (!m) return 0; const parts = m[1].split(/[ ,\/]+/).filter(Boolean).map(Number); return parts.length >= 4 ? parts[3] : (parts.length >= 3 ? 1 : 0); };
+  const darkOf = (color) => { const m = /rgba?\(([^)]+)\)/.exec(color || ''); if (!m) return false; const [r, g, b] = m[1].split(/[ ,\/]+/).filter(Boolean).map(Number); return (0.299 * r + 0.587 * g + 0.114 * b) < 90; };
+  // The strongest dark layer drawn over a picture (an absolutely positioned element that covers most of it), so a blanket overlay can be told from a light scrim.
+  const overlayOver = (img, rect) => {
+    let strongest = 0;
+    for (let node = img.parentElement, depth = 0; node && depth < 3; node = node.parentElement, depth += 1) {
+      for (const el of node.querySelectorAll('*')) {
+        if (el === img || el.contains(img) || el.tagName === 'IMG') continue;
+        const st = getComputedStyle(el);
+        if (st.position !== 'absolute' && st.position !== 'fixed') continue;
+        const box = el.getBoundingClientRect();
+        const cover = Math.max(0, Math.min(box.right, rect.right) - Math.max(box.left, rect.left)) * Math.max(0, Math.min(box.bottom, rect.bottom) - Math.max(box.top, rect.top)) / Math.max(1, rect.width * rect.height);
+        if (cover < 0.8 || !darkOf(st.backgroundColor)) continue;
+        strongest = Math.max(strongest, alphaOf(st.backgroundColor) * (Number(st.opacity) || 1));
+      }
+    }
+    return Number(strongest.toFixed(2));
+  };
   return {
     viewport: window.innerWidth,
+    innerHeight: window.innerHeight,
     scrollWidth: document.documentElement.scrollWidth,
     images: imgs.map((img) => {
       const rect = img.getBoundingClientRect();
       const style = getComputedStyle(img);
-      return { src: img.currentSrc || img.src, alt: img.getAttribute('alt'), naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, width: Math.round(rect.width), height: Math.round(rect.height), complete: img.complete, hidden: style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.width === 0 };
+      return { src: img.currentSrc || img.src, alt: img.getAttribute('alt'), naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, width: Math.round(rect.width), height: Math.round(rect.height), top: Math.round(rect.top + window.scrollY), fit: style.objectFit, complete: img.complete, hidden: style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.width === 0, overlay: rect.width * rect.height > 40000 ? overlayOver(img, rect) : 0 };
     })
   };
 };
 
 const pathOf = (src) => { try { return decodeURIComponent(new URL(src, 'http://preview.local').pathname); } catch { return String(src || ''); } };
+
+/** The first-screen picture of a page: wide and near the top. */
+const isHeroImage = (image, page) => image.width >= page.viewport * 0.6 && image.top < (page.innerHeight || 900) * 1.1;
+
+/**
+ * Checks that depend on how a picture is DISPLAYED, not only that it loaded: a stretched picture, a blanket dark overlay on the
+ * hero, and a hero cropped to a sliver. Runs at every measured viewport (desktop, tablet, mobile).
+ */
+function displayIssues(page, { route, label, sourceOf }) {
+  const issues = [];
+  for (const image of page.images || []) {
+    if (image.hidden || !image.naturalWidth || !image.naturalHeight || image.width < 80) continue;
+    const local = pathOf(image.src);
+    const shown = image.width / Math.max(1, image.height);
+    const natural = image.naturalWidth / image.naturalHeight;
+    const where = sourceOf(image.src) || 'src/App.jsx';
+    if ((image.fit === 'fill' || !image.fit) && Math.abs(shown / natural - 1) > 0.08) issues.push({ category: 'completeness', kind: 'image-layout', path: where, route, message: `On ${route} (${label}) the image ${local} is stretched (shown ${image.width}x${image.height}, the photograph is ${image.naturalWidth}x${image.naturalHeight}). Use object-cover (or object-contain) inside a fixed-aspect frame so it is cropped, never distorted.` });
+    if (isHeroImage(image, page)) {
+      if (image.overlay > 0.6) issues.push({ category: 'completeness', kind: 'image-overlay', path: where, route, message: `On ${route} (${label}) the hero photograph ${local} is covered by a heavy dark overlay (about ${Math.round(image.overlay * 100)}% opacity), which hides the picture. Use the lightest scrim that keeps the text readable (about bg-black/20 to bg-black/40), or none when the photograph has a calm area for text.` });
+      if (image.height < Math.min(180, page.viewport * 0.25)) issues.push({ category: 'completeness', kind: 'image-layout', path: where, route, message: `On ${route} (${label}) the hero photograph ${local} is cropped to a ${image.width}x${image.height} sliver. Give the hero frame a taller aspect ratio or minimum height at this screen size.` });
+    }
+  }
+  return issues;
+}
+
+const VIEWPORTS = [{ label: 'tablet', viewport: { width: 820, height: 1180 } }, { label: 'mobile', viewport: { width: 390, height: 844 } }];
 
 /**
  * Opens every route in the headless browser and checks the images that render.
@@ -164,6 +209,17 @@ async function renderedImageReport(files, { routes = ['/'], render, signal, cfg 
       if (image.width >= 120 && image.height >= 80 && !String(image.alt || '').trim()) issues.push({ category: 'completeness', kind: 'image-alt', path: sourcesByImage(image.src) || 'src/App.jsx', route, message: `On ${route} the image ${local} has no alt text. Give it a meaningful alt describing the picture.` });
       if (image.width > page.viewport + 2) issues.push({ category: 'completeness', kind: 'image-layout', path: sourcesByImage(image.src) || 'src/App.jsx', route, message: `On ${route} the image ${local} is wider than the screen. Put it in a fixed-aspect frame with w-full max-w-full object-cover.` });
     }
+  }
+  // How the first-screen pictures are displayed: at desktop for every route, and at tablet and mobile widths for the home page.
+  for (const { route, page } of results) issues.push(...displayIssues(page, { route, label: 'desktop', sourceOf: sourcesByImage }));
+  for (const { label, viewport } of VIEWPORTS) {
+    try {
+      const page = await render(files, { routePath: '/', inspect: PAGE_INSPECTION, viewport });
+      if (page && Array.isArray(page.images)) {
+        issues.push(...displayIssues(page, { route: '/', label, sourceOf: sourcesByImage }));
+        if (page.scrollWidth > page.viewport + 2) issues.push({ category: 'completeness', kind: 'image-layout', path: 'src/App.jsx', route: '/', message: `On / (${label}) the page scrolls sideways (${page.scrollWidth}px wide on a ${page.viewport}px screen); check that images and their frames use w-full max-w-full.` });
+      }
+    } catch (error) { if (signal?.aborted) throw error; /* a responsive check that cannot run is not a site defect */ }
   }
   const dedupe = (set) => { // count each picture once even if it is stored under two names
     if (!info) return set.size;
