@@ -148,8 +148,13 @@ const REWRITE_WORDS = /\b(rewrite|re-?write|redo|redesign|rebuild|recreate|revam
  * edit keeps most of the page (it may change what it names, not the rest); a selected section leaves the other sections alone.
  * A rewrite, a website-wide change or a change of subject is allowed to replace the content.
  */
+/** "Remove this section", "delete the tabs", "get rid of the footer links": the owner wants something gone, so the page legitimately loses words. */
+const REMOVE_WORDS = /\b(remove|delete|get rid of|take out|take away|drop|eliminate|erase|hide)\b/i;
+const wantsRemoval = (instruction) => REMOVE_WORDS.test(ownerWords(instruction));
+
 function keepRatioFor({ instruction, attachments = [], siteWide = false, rewrite = false }) {
   if (siteWide || rewrite || REWRITE_WORDS.test(ownerWords(instruction))) return null;
+  if (wantsRemoval(instruction)) return 0.25; // only a guard against emptying the page; the minimum-words check still applies
   if (isPictureOnlyEdit(instruction, attachments)) return 0.9;
   return /The owner ticked only the section/.test(String(instruction || '')) || selectedSectionNumbers(instruction).length ? 0.8 : 0.7;
 }
@@ -201,6 +206,21 @@ function checkCandidate({ baseline, candidate, scope, page, pages, template, cha
   // ai: an AI answer box must really call the assistant
   if (wantsAiAnswers(instruction) && !callsAssistant(candidate)) {
     problems.push(issue('ai', 'The page was asked to show AI-generated content, but nothing calls the website assistant, so the box would only show fixed text.', { path: page.componentPath, route: page.route, cause: 'The AI content was written into the page instead of being asked for.', action: 'Make the box call window.VEAVE_AI.ask(question, { topic }) (it returns a Promise of a plain-text answer): open the pop-up at once with a loading line, put the answer in it when the Promise resolves, and show a short written fallback if it fails. Do not write the answer text into the page.' }));
+  }
+  // removal: a section the owner asked to remove must really be gone (not just emptied), and nothing may still link to it
+  const tickedForRemoval = selectedSectionNumbers(instruction);
+  if (tickedForRemoval.length && wantsRemoval(instruction)) {
+    const before = (baseline.find((file) => file.path === page.componentPath) || {}).content;
+    const afterSource = (candidate.find((file) => file.path === page.componentPath) || {}).content || '';
+    const squash = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const blocks = before ? require('./templatePageService').sectionBlocks(before) : [];
+    const stillThere = blocks.filter((block) => block.numbers.some((n) => tickedForRemoval.includes(n)) && block.source.length > 40 && squash(afterSource).includes(squash(block.source)));
+    if (stillThere.length) problems.push(issue('preserve', `Section ${stillThere.map((block) => `${String(block.number).padStart(2, '0')} "${block.name}"`).join(', ')} was asked to be removed but is still on the page.`, { path: page.componentPath, route: page.route, cause: 'The section was kept or only partly changed.', action: 'Delete the whole section from the page (its complete element, not just its text), together with imports, data and links that only it used.' }));
+    // links to ids that only the removed sections had
+    const idsBefore = new Set([...(before || '').matchAll(/\bid=["']([\w-]+)["']/g)].map((m) => m[1]));
+    const idsAfter = new Set([...afterSource.matchAll(/\bid=["']([\w-]+)["']/g)].map((m) => m[1]));
+    const dangling = [...new Set([...candidate.filter((file) => /^src\/.*\.(jsx?|tsx?)$/.test(file.path) && typeof file.content === 'string').flatMap((file) => [...file.content.matchAll(/["'`]\/?#([\w-]+)["'`]/g)].map((m) => m[1]))])].filter((id) => idsBefore.has(id) && !idsAfter.has(id));
+    if (dangling.length) problems.push(issue('preserve', `A link still points to the removed section (#${dangling.slice(0, 3).join(', #')}).`, { path: page.componentPath, route: page.route, cause: 'A menu, button or card still links to a section that no longer exists.', action: 'Remove those links or point them to a section that exists.' }));
   }
   // preserve: ticked sections only
   const ticked = selectedSectionNumbers(instruction);
@@ -355,4 +375,4 @@ function finalSiteChecks(files, pages) {
   return found;
 }
 
-module.exports = { finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, issue, sha, MIN_PAGE_WORDS };
+module.exports = { wantsRemoval, finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, issue, sha, MIN_PAGE_WORDS };

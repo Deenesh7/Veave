@@ -149,6 +149,7 @@ export default function SectionEditModal({ payload, onClose }) {
               placeholder="Tell the AI what to change in this section only…" className={`block w-full resize-y rounded-md border-0 bg-transparent px-3 py-2 text-sm leading-relaxed ${ink} placeholder:text-xs placeholder:text-[#A59E90] focus:outline-none focus:ring-0`} />
             <div className="flex items-center justify-between px-2.5 pb-2">
               <span className="flex items-center gap-2">
+                <button type="button" disabled={saving || running} onClick={() => setPrompt('Remove this section completely from the page, including anything that only it used and any link or button that points to it. Do not change any other section.')} className="inline-flex items-center gap-1 rounded-full border border-[#E2DCCF] bg-white px-2.5 py-0.5 text-[11px] font-medium text-[#5C564B] hover:bg-[#EFEBE1] disabled:opacity-50"><X className="h-3 w-3" />Remove this section</button>
                 <button type="button" disabled={saving || running} onClick={() => setPrompt(PRODUCTION_PRESET)} className="inline-flex items-center gap-1 rounded-full border border-[#CFE0CF] bg-[#E8F0E8] px-2.5 py-0.5 text-[11px] font-medium text-[#3F5E41] hover:bg-[#DCE9DC] disabled:opacity-50"><Sparkles className="h-3 w-3" />{PRODUCTION_PRESET_LABEL}</button>
                 <span className={`text-[11px] ${muted}`}>{prompt.length}/{MAX_TEXT}</span>
               </span>
