@@ -26,16 +26,6 @@ const STAGES = [
   { id: 'published', label: 'Published' }
 ];
 
-// An on/off switch. Each publishing method has its own, and they never affect each other.
-function Toggle({ checked, onChange, disabled = false, label }) {
-  return (
-    <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${checked ? 'bg-emerald-500' : 'bg-zinc-300'}`}>
-      <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
-    </button>
-  );
-}
-
 // What the owner chose in this window is kept per project, so closing and reopening it (or a refresh) does not lose it.
 const prefsKey = (projectId) => `veave_publish_prefs_${projectId}`;
 const readPrefs = (projectId) => { try { return JSON.parse(localStorage.getItem(prefsKey(projectId)) || 'null'); } catch { return null; } };
@@ -54,11 +44,12 @@ export function PublishPanel({ project, onPublishUpdate, defaultOwnDomain = fals
   const [copied, setCopied] = useState(false);
   const [confirmUnpublish, setConfirmUnpublish] = useState(false);
   // The Veave address is set up and kept by the backend; this window only handles the custom domain.
-  const [customOn, setCustomOn] = useState(Boolean(defaultOwnDomain));
   const [ownDomain, setOwnDomain] = useState('');
   const [domainState, setDomainState] = useState(null);   // the custom-domain workflow, reported by the domain section
   const [hydrated, setHydrated] = useState(false);
   const [ownWww, setOwnWww] = useState(true);
+  // A domain typed into the box means "publish on my domain too"; an empty box means the Veave address only.
+  const customOn = ownDomain.trim().length > 0;
   const [dnsMode, setDnsMode] = useState('manual');
   const [dnsAccounts, setDnsAccounts] = useState([]);
   const [domainSupport, setDomainSupport] = useState({ available: true, reason: '' });
@@ -79,12 +70,12 @@ export function PublishPanel({ project, onPublishUpdate, defaultOwnDomain = fals
       } else if (draft) {
       }
       if (connection?.domain) {
-        setCustomOn(true); setOwnDomain(connection.apex && connection.kind === 'apex' ? connection.apex : connection.domain);
+        setOwnDomain(connection.apex && connection.kind === 'apex' ? connection.apex : connection.domain);
         setOwnWww(connection.includeWww !== false);
         const preference = connection.dns?.preference;
         setDnsMode(preference && preference !== 'auto' ? preference : (connection.dns?.mode === 'automatic' && connection.dns?.provider ? connection.dns.provider : 'manual'));
       } else if (!site && draft) {
-        setCustomOn(Boolean(draft.customOn)); setOwnDomain(draft.ownDomain || ''); setOwnWww(draft.ownWww !== false); if (draft.dnsMode) setDnsMode(draft.dnsMode);
+        setOwnDomain(draft.ownDomain || ''); setOwnWww(draft.ownWww !== false); if (draft.dnsMode) setDnsMode(draft.dnsMode);
       }
       setHydrated(true);
     })();
@@ -94,8 +85,8 @@ export function PublishPanel({ project, onPublishUpdate, defaultOwnDomain = fals
   // Remember the choices as they are made.
   useEffect(() => {
     if (!projectId || !hydrated) return;
-    writePrefs(projectId, { customOn, ownDomain, ownWww, dnsMode });
-  }, [projectId, hydrated, customOn, ownDomain, ownWww, dnsMode]);
+    writePrefs(projectId, { ownDomain, ownWww, dnsMode });
+  }, [projectId, hydrated, ownDomain, ownWww, dnsMode]);
 
   useEffect(() => {
     if (!canUseHosting) return;
@@ -207,26 +198,22 @@ export function PublishPanel({ project, onPublishUpdate, defaultOwnDomain = fals
 
       {/* The two ways to publish: independent switches */}
       <div className="space-y-3" aria-label="Custom domain">
-        <section className={`rounded-xl border p-3 space-y-2 ${customOn ? 'border-[#DDE2E5] bg-zinc-50/70' : 'border-[#E8EAEC] bg-white'}`}>
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <h3 className="text-xs font-semibold text-zinc-800 flex items-center gap-1.5"><Globe className="w-3.5 h-3.5 text-zinc-600" /> Custom domain</h3>
-              <p className="text-[11px] text-zinc-500">Your own domain, for example smc.saveetha.com. Veave verifies it, sets up DNS and turns on HTTPS.</p>
-            </div>
-            <Toggle checked={customOn} onChange={setCustomOn} disabled={isPublishing || (!domainSupport.available && !customOn)} label="Publish on my own domain" />
+        <section className="rounded-xl border border-[#DDE2E5] bg-zinc-50/70 p-3 space-y-2">
+          <div className="min-w-0">
+            <h3 className="text-xs font-semibold text-zinc-800 flex items-center gap-1.5"><Globe className="w-3.5 h-3.5 text-zinc-600" /> Custom domain</h3>
+            <p className="text-[11px] text-zinc-500">Type your own domain, for example smc.saveetha.com. Veave verifies it, sets up DNS and turns on HTTPS. Leave it empty to publish without one.</p>
           </div>
           {!domainSupport.available && <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900" role="status">{domainSupport.reason}</p>}
+          <input value={ownDomain} onChange={(event) => setOwnDomain(event.target.value)} disabled={isPublishing || !domainSupport.available} spellCheck={false} autoComplete="off" placeholder="smc.saveetha.com"
+            className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-mono outline-none focus:border-zinc-900 disabled:opacity-60 disabled:cursor-not-allowed" aria-label="Your domain" />
           {customOn && domainSupport.available && (
             <div className="space-y-2">
-              <input value={ownDomain} onChange={(event) => setOwnDomain(event.target.value)} disabled={isPublishing} spellCheck={false} placeholder="smc.saveetha.com"
-                className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-mono outline-none focus:border-zinc-900" aria-label="Your domain" />
               <label className="flex items-center gap-2 text-[11px] text-zinc-600 cursor-pointer"><input type="checkbox" checked={ownWww} onChange={(event) => setOwnWww(event.target.checked)} disabled={isPublishing} /> Also connect www (root domains only)</label>
               <DnsSetupPicker value={dnsMode} onChange={setDnsMode} onAccounts={setDnsAccounts} disabled={isPublishing} />
               <p className="text-[11px] text-zinc-500">You never enter server addresses. Veave shows each step as it is confirmed; the domain counts as published only after DNS and HTTPS both work.</p>
             </div>
           )}
         </section>
-
       </div>
 
       {/* Stage progress */}
