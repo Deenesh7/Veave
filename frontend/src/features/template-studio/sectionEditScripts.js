@@ -52,6 +52,26 @@ export function penScript() {
   window.addEventListener('message', function (e) {
     var d = e.data;
     if (d && d.type === 'studio-section-pen') { enabled = !!d.enabled; place(); }
+    if (d && d.type === 'studio-section-get') {
+      // The studio's page prompt asks for what one section shows right now, so the AI gets the same context as the section pop-up.
+      var list = document.querySelectorAll('section');
+      var found = d.domId ? document.getElementById(d.domId) : null;
+      if (!found || !found.closest('section')) {
+        found = null;
+        var want = norm(d.name).toLowerCase();
+        Array.prototype.forEach.call(list, function (sec) {
+          var h = sec.querySelector('h1,h2,h3,h4');
+          if (!found && want && ((h && norm(h.textContent).toLowerCase() === want) || norm(sec.getAttribute('aria-label')).toLowerCase() === want)) found = sec;
+        });
+      } else { found = found.closest('section'); }
+      var out = '';
+      if (found) {
+        var clone = found.cloneNode(true);
+        Array.prototype.forEach.call(clone.querySelectorAll('script,[data-studio-pen]'), function (n) { n.remove(); });
+        out = clone.outerHTML;
+      }
+      window.parent.postMessage({ type: 'studio-section-html', key: d.key, html: out }, '*');
+    }
   });
 }
 

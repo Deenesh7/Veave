@@ -6,6 +6,7 @@ import { FAILURE_TITLES } from '../../store/generationJobStore';
 import { PanelHeader, EmptyState, IconButton, PrimaryButton, GhostButton, Spinner, Skeleton, inputClass, ink, muted, line } from './ui';
 import ImageLibrary from './ImageLibrary';
 import VoiceInputButton from './VoiceInputButton';
+import { sectionOutline } from './sectionOutline';
 import { pagePhotos, numberPrefix, expandSectionNumbers } from './panelLogic';
 
 const STEP = { queued: 'Waiting to start', processing: 'Writing the page', validating: 'Building the site and testing every page', repairing: 'Fixing a problem the checks found', committing: 'Saving the new version', completed: 'Saved', failed: 'Failed', cancelled: 'Cancelled' };
@@ -140,7 +141,35 @@ export default function ContentEditorPanel({ className = '' }) {
     // Text picked in the preview: the instruction (for example "make this a link to the Contact page") applies to exactly that text.
     const picked = useTemplateStudioStore.getState().selectedText;
     const instructionText = picked ? `${sent.instruction}\n\nThis applies to the text "${picked.saved || picked.text}" (${picked.tag || 'text'} element) on this page. If asked to link it, wrap exactly that text in an <a>/router link to the route of the page named in the instruction (use the site's existing page routes, or the given URL), keeping its look.` : sent.instruction;
-    if (await regenerate(instructionText, attachmentsNow(), sent.focus)) { clearSelection(); setChecked([]); }
+    // The same context the section pop-up gives: the page, its sections, and what the chosen sections show right now (read from the preview).
+    const withContext = await addPageContext(instructionText);
+    if (await regenerate(withContext, attachmentsNow(), sent.focus)) { clearSelection(); setChecked([]); }
+  };
+
+  const readSectionHtml = (section) => new Promise((resolve) => {
+    const key = `${Date.now()}-${Math.random()}`;
+    const done = (html) => { window.removeEventListener('studio-section-html', on); clearTimeout(timer); resolve(html); };
+    const on = (event) => { if (event.detail?.key === key) done(event.detail.html || ''); };
+    const timer = setTimeout(() => done(''), 1500);
+    window.addEventListener('studio-section-html', on);
+    window.dispatchEvent(new CustomEvent('studio-get-section', { detail: { key, domId: section.domId || '', name: section.name || '' } }));
+  });
+
+  const addPageContext = async (base) => {
+    try {
+      const list = sections.slice(0, 24).map((item, index) => `${String(index + 1).padStart(2, '0')} ${String(item.name).replace(/"/g, "'").slice(0, 70)}`).join('; ');
+      let out = `${base}\n\nPAGE CONTEXT: this is the "${page?.name || 'page'}" page (route ${page?.route || '/'}).${list ? ` Its sections, in order: ${list}.` : ''}`;
+      for (const n of checkedNumbers.slice(0, 3)) {
+        const section = sections[n - 1];
+        if (!section) continue;
+        const html = await readSectionHtml(section);
+        const room = MAX_TEXT - out.length - 120;
+        if (!html || room < 300) continue;
+        const outline = sectionOutline(html, [], Math.min(1500, room));
+        if (outline) out += `\n\nSECTION ${String(n).padStart(2, '0')} CONTENT (what the visitor sees in "${String(section.name).replace(/"/g, "'").slice(0, 70)}" right now; for reference, change only what the instruction asks):\n${outline}`;
+      }
+      return out.slice(0, MAX_TEXT);
+    } catch { return base; }
   };
 
   const saveName = async () => {

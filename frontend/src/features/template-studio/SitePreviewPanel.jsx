@@ -99,6 +99,11 @@ export default function SitePreviewPanel({ className = '' }) {
   const focusRef = useRef([]);
   const sendFocus = useCallback(() => { try { iframeRef.current?.contentWindow?.postMessage({ type: 'studio-focus-sections', sections: focusRef.current }, '*'); } catch { /* the frame may be reloading */ } }, []);
   useEffect(() => {
+    const onGet = (event) => { try { iframeRef.current?.contentWindow?.postMessage({ type: 'studio-section-get', ...event.detail }, '*'); } catch { /* the frame may be reloading */ } };
+    window.addEventListener('studio-get-section', onGet);
+    return () => window.removeEventListener('studio-get-section', onGet);
+  }, []);
+  useEffect(() => {
     const onFocus = (event) => { focusRef.current = event.detail?.sections || []; sendFocus(); };
     window.addEventListener('studio-focus-sections', onFocus);
     return () => window.removeEventListener('studio-focus-sections', onFocus);
@@ -214,6 +219,7 @@ export default function SitePreviewPanel({ className = '' }) {
         const siteKey = useTemplateStudioStore.getState().activeSiteId;
         if (siteKey) writeUi({ scroll: { ...(readUi().scroll || {}), [`${siteKey}:${routeRef.current}`]: scrollRef.current } });
       }
+      if (event.data?.type === 'studio-section-html') window.dispatchEvent(new CustomEvent('studio-section-html', { detail: { key: event.data.key, html: String(event.data.html || '') } }));
       if (event.data?.type === 'studio-text-deselected') useTemplateStudioStore.getState().setSelectedText(null);
       if (event.data?.type === 'studio-section-edit' && revisionPreview?.status !== 'ready') setSectionEdit({ name: String(event.data.name || ''), domId: String(event.data.domId || ''), index: event.data.index, html: String(event.data.html || ''), head: String(event.data.head || ''), htmlClass: String(event.data.htmlClass || ''), bodyClass: String(event.data.bodyClass || '') });
       if (event.data?.type === 'studio-text-selected' && revisionPreview?.status !== 'ready') useTemplateStudioStore.getState().setSelectedText({ id: event.data.id, text: String(event.data.text || ''), tag: String(event.data.tag || '') });
