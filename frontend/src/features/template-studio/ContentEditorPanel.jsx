@@ -64,6 +64,14 @@ export default function ContentEditorPanel({ className = '' }) {
   const [showAllSections, setShowAllSections] = useState(false);
   useEffect(() => { setShowAllSections(false); }, [activePageId]);
   const checkedNumbers = (activePageId && picked[activePageId]) || [];
+
+  // The ticked sections are told to the preview, which dims every other section so the chosen ones are easy to see.
+  const focusKey = checkedNumbers.map((n) => sections[n - 1]?.id).filter(Boolean).join('|');
+  useEffect(() => {
+    const chosenSections = checkedNumbers.map((n) => sections[n - 1]).filter(Boolean).map((item) => ({ name: item.name, domId: item.domId || null }));
+    window.dispatchEvent(new CustomEvent('studio-focus-sections', { detail: { sections: chosenSections } }));
+  }, [focusKey, activePageId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { window.dispatchEvent(new CustomEvent('studio-focus-sections', { detail: { sections: [] } })); }, []);
   const selectedIndex = Math.max(-1, ...checkedNumbers.map((n) => n - 1));
   const expanded = showAllSections || selectedIndex >= SECTIONS_SHOWN;
   const visibleSections = expanded ? sections : sections.slice(0, SECTIONS_SHOWN);

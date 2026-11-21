@@ -208,6 +208,9 @@ async function runDeployment({ deploymentId, signal, deps = defaultDeps }) {
       await log(`SEO step skipped: ${seoError.message}`, 'warn');
     }
 
+    // 2c. The assistant helper (window.VEAVE_AI) that pages of a generated website may call. Never blocks a publish.
+    try { built.files = require('../siteAi/siteAiRuntime').injectIntoFiles(built.files, String(siteBefore.projectId)); } catch (aiError) { await log(`Assistant helper skipped: ${aiError.message}`, 'warn'); }
+
     // 3. Uploading: write into the artifact store, then sanity-check the candidate before it can go live.
     await stage('uploading');
     signal?.throwIfAborted();

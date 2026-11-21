@@ -54,6 +54,8 @@ app.use(require('compression')({
   threshold: 1024,
   filter: (req, res) => !String(res.getHeader('Content-Type') || '').includes('text/event-stream') && require('compression').filter(req, res)
 }));
+// The assistant on generated websites: public, called from other origins, with its own CORS and limits.
+app.use('/api/site-ai', require('./routes/siteAi'));
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors(corsOptions));
 app.use('/api', require('./middleware/originGuard'));
