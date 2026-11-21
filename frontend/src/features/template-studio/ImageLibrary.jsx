@@ -108,9 +108,9 @@ function EnhancementBlock({ siteId, image, onCompare }) {
       ) : null}
 
       {failed ? (
-        <div className="mt-1.5 rounded-md border border-[#D9B8B0] bg-[#F7E9E5] p-2" role="alert">
-          <p className="text-xs font-medium text-[#7A3A2E]">{e.status === 'skipped' ? 'Enhancement skipped' : 'Enhancement failed'}</p>
-          {e.error ? <p className="mt-0.5 text-[11px] leading-snug text-[#7A3A2E]">{e.error}</p> : null}
+        <div className="mt-1.5 rounded-md border border-[#E2DCCF] bg-[#FBF9F4] p-2" role="alert">
+          <p className="text-xs font-medium text-[#5C564B]">{e.status === 'skipped' ? 'Enhancement skipped' : 'Enhancement did not finish'}</p>
+          {e.error ? <p className="mt-0.5 text-[11px] leading-snug text-[#5C564B]">{e.error}</p> : null}
           <p className={`mt-0.5 text-[11px] ${muted}`}>Your original photo is kept and still works on the page. No credits were used.</p>
           {e.errorCode !== 'PROVIDER_CREDITS' && e.errorCode !== 'PROVIDER_AUTH' ? (
             <button type="button" disabled={starting} onClick={() => enhanceImage(image.id)} className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-[#CFC8B6] bg-white px-2 py-1 text-[11px] hover:bg-[#EFEBE1] disabled:opacity-50">
@@ -166,11 +166,11 @@ export default function ImageLibrary({ disabled = false }) {
       {queue.length ? (
         <ul className="mt-3 space-y-2" aria-label="Uploads">
           {queue.map((item) => (
-            <li key={item.id} className={`flex items-center gap-3 rounded-md border p-2 ${item.status === 'error' ? 'border-[#D9B8B0] bg-[#F7E9E5]' : `${line} bg-white`}`}>
+            <li key={item.id} className={`flex items-center gap-3 rounded-md border p-2 ${item.status === 'error' ? 'border-[#E2DCCF] bg-[#FBF9F4]' : `${line} bg-white`}`}>
               <span className={`h-10 w-10 shrink-0 overflow-hidden rounded border ${line} bg-[#EFEBE1]`}>{item.preview ? <img src={item.preview} alt="" className="h-full w-full object-cover" /> : <AlertCircle className="m-2.5 h-5 w-5 text-[#A4493A]" />}</span>
               <div className="min-w-0 flex-1">
                 <p className={`truncate text-xs font-medium ${ink}`}>{item.name}</p>
-                {item.status === 'error' ? <p className="text-[11px] text-[#7A3A2E]">{item.error}</p> : (
+                {item.status === 'error' ? <p className="text-[11px] text-[#5C564B]">{item.error}</p> : (
                   <>
                     <p className={`text-[11px] ${muted}`}>{formatBytes(item.size)} · {item.status === 'queued' ? 'Waiting' : item.status === 'uploading' ? (item.progress >= 1 ? 'Saving…' : `Uploading image ${Math.round(item.progress * 100)}%`) : item.reused ? 'Already in the library' : 'Uploaded'}</p>
                     {item.status === 'uploading' ? <div className="mt-1 h-1 overflow-hidden rounded bg-[#E9E4D7]"><div className="h-full bg-[#5E7B5F] transition-all" style={{ width: `${Math.max(4, item.progress * 100)}%` }} /></div> : null}
@@ -179,7 +179,7 @@ export default function ImageLibrary({ disabled = false }) {
               </div>
               {item.status === 'uploading' ? <Spinner className="h-4 w-4 text-[#5E7B5F]" /> : null}
               {item.status === 'done' ? <Check className="h-4 w-4 text-[#5E7B5F]" /> : null}
-              {item.duplicate && images.some((image) => image.id === item.imageId) ? <button type="button" onClick={() => setViewing(images.find((image) => image.id === item.imageId))} className="shrink-0 rounded border border-[#D9B8B0] bg-white px-1.5 py-0.5 text-[11px] font-medium text-[#7A3A2E] hover:bg-[#FBF3F0]">View</button> : null}
+              {item.duplicate && images.some((image) => image.id === item.imageId) ? <button type="button" onClick={() => setViewing(images.find((image) => image.id === item.imageId))} className="shrink-0 rounded border border-[#D9B8B0] bg-white px-1.5 py-0.5 text-[11px] font-medium text-[#5C564B] hover:bg-[#FBF3F0]">View</button> : null}
               {isRetryable(item) ? <IconButton label="Try again" onClick={() => retryUpload(item.id)}><RotateCcw className="h-3.5 w-3.5" /></IconButton> : null}
               {item.status !== 'uploading' ? <IconButton label="Dismiss" onClick={() => dismissUpload(item.id)}><X className="h-3.5 w-3.5" /></IconButton> : null}
             </li>
@@ -191,7 +191,7 @@ export default function ImageLibrary({ disabled = false }) {
       <div className="mt-4 space-y-2">
         <h5 className={`text-[11px] font-medium uppercase tracking-wider ${muted}`}>Photos for this page <span className="normal-case tracking-normal" aria-live="polite" aria-label={`${photoCount} of ${photoMax} photos`}>{photoCount}/{photoMax}</span></h5>
         {!imagesLoaded && !images.length ? <p className={`text-[11px] ${muted}`}>Loading your photos…</p> : null}
-        {imagesError ? <p role="alert" className="text-[11px] text-[#7A3A2E]">{imagesError} <button type="button" onClick={loadImages} className="underline">Try again</button></p> : null}
+        {imagesError ? <p role="alert" className="text-[11px] text-[#5C564B]">{imagesError} <button type="button" onClick={loadImages} className="underline">Try again</button></p> : null}
         {imagesLoaded && !chosenIds.length && !imagesError ? <p className={`text-[11px] ${muted}`}>No photos chosen for this page yet. Upload one above{libraryRest.length ? ' or add one from your library below' : ''}.</p> : null}
         {photoMissing > 0 ? <p className={`text-[11px] ${muted}`}>{photoMissing} chosen photo{photoMissing === 1 ? ' is' : 's are'} no longer in the library and will not be sent.</p> : null}
           <ul className="space-y-2">

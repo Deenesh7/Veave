@@ -69,7 +69,7 @@ function WebsiteDetail({ summary, onClose }) {
         <p className={`mt-1 text-xs ${muted}`}>Version {summary.number} · {when(summary.createdAt)} · {summary.createdBy || 'Veave'}</p>
         {summary.description ? <p className={`mt-2 text-sm leading-relaxed ${ink}`}>{summary.description}</p> : null}
       </div>
-      {error ? <p role="alert" className="text-xs text-[#7A3A2E]">{error}</p> : null}
+      {error ? <p role="alert" className="text-xs text-[#5C564B]">{error}</p> : null}
       {!detail && !error ? <Skeleton className="h-24" /> : null}
       {detail ? (
         <>
@@ -113,7 +113,7 @@ function WebsiteDetail({ summary, onClose }) {
         <GhostButton onClick={() => setConfirm('delete')} disabled={summary.isCurrent || summary.protected || working} className="!text-[#A4493A]"><Trash2 className="h-3.5 w-3.5" />Delete</GhostButton>
       </div>
       {checking && checking !== 'running' ? (
-        <p role="status" className={`rounded-md border p-2 text-xs ${checking.ok ? 'border-[#B8CBB9] bg-[#E8F0E8] text-[#33503A]' : 'border-[#D9B8B0] bg-[#F7E9E5] text-[#7A3A2E]'}`}>
+        <p role="status" className={`rounded-md border p-2 text-xs ${checking.ok ? 'border-[#B8CBB9] bg-[#E8F0E8] text-[#33503A]' : 'border-[#E2DCCF] bg-[#FBF9F4] text-[#5C564B]'}`}>
           {checking.ok ? <><Check className="mr-1 inline h-3 w-3" />All {checking.checkedFiles} files are stored and match this version.</> : <>This version has problems: {checking.problems.slice(0, 3).join(' ')}</>}
         </p>
       ) : null}
@@ -219,7 +219,7 @@ export default function VersionHistory() {
               <BranchPanel />
               <div className={`max-h-[52vh] overflow-y-auto rounded-md border ${line} bg-white`}>
                 {loading && !loaded ? <div className="space-y-2 p-3"><Skeleton className="h-14" /><Skeleton className="h-14" /><Skeleton className="h-14" /></div> : null}
-                {error ? <p role="alert" className="p-3 text-xs text-[#7A3A2E]">{error}</p> : null}
+                {error ? <p role="alert" className="p-3 text-xs text-[#5C564B]">{error}</p> : null}
                 {loaded && !entries.length ? <p className={`p-6 text-center text-sm ${muted}`}>Nothing here yet. Saved versions and page revisions appear in this list.</p> : null}
                 <ul>
                   {entries.map((entry) => (

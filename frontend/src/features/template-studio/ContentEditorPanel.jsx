@@ -7,6 +7,7 @@ import { PanelHeader, EmptyState, IconButton, PrimaryButton, GhostButton, Spinne
 import ImageLibrary from './ImageLibrary';
 import VoiceInputButton from './VoiceInputButton';
 import { sectionOutline } from './sectionOutline';
+import { calmMessage } from '../../services/templateSiteService';
 import { pagePhotos, numberPrefix, expandSectionNumbers } from './panelLogic';
 
 const STEP = { queued: 'Waiting to start', processing: 'Writing the page', validating: 'Building the site and testing every page', repairing: 'Fixing a problem the checks found', committing: 'Saving the new version', completed: 'Saved', failed: 'Failed', cancelled: 'Cancelled' };
@@ -233,7 +234,7 @@ export default function ContentEditorPanel({ className = '' }) {
                   onChange={(event) => editSelectedText(event.target.value)} onBlur={saveSelectedText} maxLength={2000}
                   className={`${inputClass} resize-y px-3 py-2 text-sm leading-relaxed`}
                 />
-                {selectedText.status === 'error' && selectedText.error ? <p role="alert" className="mt-1.5 rounded-md border border-[#D9B8B0] bg-[#F7E9E5] p-2 text-[11px] text-[#7A3A2E]">{selectedText.error}</p> : <p className={`mt-1.5 text-[11px] ${muted}`}>The page changes as you type and the change is saved to the site.</p>}
+                {selectedText.status === 'error' && selectedText.error ? <p role="alert" className="mt-1.5 rounded-md border border-[#E2DCCF] bg-[#FBF9F4] p-2 text-[11px] text-[#5C564B]">{selectedText.error}</p> : <p className={`mt-1.5 text-[11px] ${muted}`}>The page changes as you type and the change is saved to the site.</p>}
               </div>
             ) : (
               <p className={`rounded-md border border-dashed ${line} p-3 text-center text-xs ${muted}`}>Click any text in the preview to edit it here.</p>
@@ -261,7 +262,7 @@ export default function ContentEditorPanel({ className = '' }) {
                 <Skeleton className="h-8 w-full" />
               </div>
             ) : sectionsFailed ? (
-              <div role="alert" className="rounded-md border border-[#D9B8B0] bg-[#F7E9E5] p-3 text-xs text-[#7A3A2E]">
+              <div role="alert" className="rounded-md border border-[#E2DCCF] bg-[#FBF9F4] p-3 text-xs text-[#5C564B]">
                 <p>{sectionsError[activePageId]}</p>
                 <button type="button" onClick={() => loadSections(activePageId)} className="mt-1.5 font-medium underline underline-offset-2">Try again</button>
               </div>
@@ -345,7 +346,7 @@ export default function ContentEditorPanel({ className = '' }) {
 
           {job && mine ? (
             <div className="px-5 py-4" role="status" aria-live="polite">
-              <div className={`rounded-md border p-3 ${job.status === 'failed' ? 'border-[#D9B8B0] bg-[#F7E9E5]' : job.status === 'completed' ? 'border-[#B8CBB9] bg-[#E8F0E8]' : `${line} bg-white`}`}>
+              <div className={`rounded-md border p-3 ${job.status === 'failed' ? 'border-[#E2DCCF] bg-[#FBF9F4]' : job.status === 'completed' ? 'border-[#B8CBB9] bg-[#E8F0E8]' : `${line} bg-white`}`}>
                 <div className="flex items-center justify-between gap-2">
                   <p className={`text-sm font-medium ${ink}`}>{running ? (job.type === 'site-customize' ? (job.stepName || STEP[job.status]) : STEP[job.status] || job.stepName) : job.status === 'completed' ? (job.type === 'site-customize' ? 'The website was generated' : 'The page was regenerated and saved') : job.status === 'cancelled' ? 'Cancelled. Nothing was changed.' : (FAILURE_TITLES[job.errorCode] || 'The page was not changed')}</p>
                   {running && job.status !== 'committing' ? <GhostButton onClick={cancelJob} className="!px-2 !py-1"><X className="h-3 w-3" />Cancel</GhostButton> : null}
@@ -357,9 +358,8 @@ export default function ContentEditorPanel({ className = '' }) {
                   </>
                 ) : null}
                 {job.status === 'failed' ? (
-                  <div className="mt-2 text-xs text-[#7A3A2E]">
-                    <p className="break-words">{job.error}</p>
-                    {job.result?.issues?.length ? <ul className="mt-1.5 list-disc space-y-0.5 pl-4">{job.result.issues.slice(0, 4).map((issue, index) => <li key={index}>{issue.message}</li>)}</ul> : null}
+                  <div className="mt-2 text-xs">
+                    <p className={`break-words ${ink}`}>{calmMessage(job.error, 'This change could not be finished this time.')}</p>
                     <p className={`mt-1.5 ${muted}`}>The previous version of the page is still in place, and your photos are safe in the library.</p>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {lastRequest && lastRequest.pageId === page.id ? <PrimaryButton className="!px-3 !py-1.5 text-xs" disabled={busy.regenerate} onClick={() => regenerate(lastRequest.instruction, lastRequest.attachments, lastRequest.focusSection)}><RotateCcw className="h-3 w-3" />Try again</PrimaryButton> : null}

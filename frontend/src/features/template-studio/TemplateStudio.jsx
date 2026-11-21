@@ -72,7 +72,7 @@ export default function TemplateStudio() {
 
       {toast ? (
         <div role="status" aria-live="polite" className="pointer-events-none fixed inset-x-0 bottom-5 z-[60] flex justify-center px-4">
-          <div className={`pointer-events-auto flex max-w-md items-start gap-3 rounded-md border px-4 py-3 text-sm shadow-lg ${toast.type === 'error' ? 'border-[#D9B8B0] bg-[#F7E9E5] text-[#7A3A2E]' : toast.type === 'success' ? 'border-[#B8CBB9] bg-[#E8F0E8] text-[#33503A]' : `${line} bg-[#FBF9F4] ${ink}`}`}>
+          <div className={`pointer-events-auto flex max-w-md items-start gap-3 rounded-md border px-4 py-3 text-sm shadow-lg ${toast.type === 'error' ? 'border-[#E2DCCF] bg-[#FBF9F4] text-[#2B2823]' : toast.type === 'success' ? 'border-[#B8CBB9] bg-[#E8F0E8] text-[#33503A]' : `${line} bg-[#FBF9F4] ${ink}`}`}>
             <span className="min-w-0 break-words">{toast.message}</span>
             <button type="button" onClick={dismissToast} aria-label="Dismiss" className="shrink-0 opacity-60 hover:opacity-100"><X className="h-4 w-4" /></button>
           </div>

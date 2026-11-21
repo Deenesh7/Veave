@@ -55,7 +55,7 @@ export function EmptyState({ title, children }) {
 
 export function ErrorNote({ children, onRetry }) {
   return (
-    <div role="alert" className="m-4 rounded-md border border-[#D9B8B0] bg-[#F7E9E5] p-3 text-xs text-[#7A3A2E]">
+    <div role="alert" className="m-4 rounded-md border border-[#E2DCCF] bg-[#FBF9F4] p-3 text-xs text-[#5C564B]">
       <p>{children}</p>
       {onRetry ? <button type="button" onClick={onRetry} className="mt-2 font-medium underline">Try again</button> : null}
     </div>

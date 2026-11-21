@@ -1,6 +1,6 @@
 import { collaborationService } from '../services/collaborationService';
 import { create } from 'zustand';
-import { templateSiteService, apiMessage } from '../services/templateSiteService';
+import { templateSiteService, apiMessage, calmMessage } from '../services/templateSiteService';
 import { validatePhotoFile, isNetworkFailure, normalizeSections } from '../features/template-studio/panelLogic';
 import { useBillingStore } from './billingStore';
 
@@ -152,7 +152,7 @@ export const useTemplateStudioStore = create((set, get) => ({
 
   flash: (type, message) => {
     clearTimeout(toastTimer);
-    set({ toast: { type, message } });
+    set({ toast: { type, message: type === 'error' ? calmMessage(message) : message } });
     toastTimer = setTimeout(() => set({ toast: null }), type === 'error' ? 7000 : 3500);
   },
   dismissToast: () => { clearTimeout(toastTimer); set({ toast: null }); },

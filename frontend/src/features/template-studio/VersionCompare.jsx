@@ -39,7 +39,7 @@ export default function VersionCompare() {
   return (
     <Modal open onClose={close} title={state.mode === 'page' ? 'Changes to this page' : 'Compare versions'} size="xl">
       {state.status === 'loading' ? <div className="space-y-3"><Skeleton className="h-8 w-1/2" /><Skeleton className="h-24" /><Skeleton className="h-24" /></div> : null}
-      {state.status === 'error' ? <p role="alert" className="rounded-md border border-[#D9B8B0] bg-[#F7E9E5] p-3 text-sm text-[#7A3A2E]">{state.error}</p> : null}
+      {state.status === 'error' ? <p role="alert" className="rounded-md border border-[#E2DCCF] bg-[#FBF9F4] p-3 text-sm text-[#7A3A2E]">{state.error}</p> : null}
 
       {state.status === 'ready' && state.mode === 'page' ? (
         <div className="space-y-3">

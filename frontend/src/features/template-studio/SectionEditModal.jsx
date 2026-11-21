@@ -132,7 +132,7 @@ export default function SectionEditModal({ payload, onClose }) {
             </ul>
           ) : null}
           {problems.length ? (
-            <div role="alert" className="space-y-1 rounded-md border border-[#D9B8B0] bg-[#F7E9E5] p-2.5 text-xs text-[#7A3A2E]">
+            <div role="alert" className="space-y-1 rounded-md border border-[#E2DCCF] bg-[#FBF9F4] p-2.5 text-xs text-[#5C564B]">
               {problems.map((item) => <p key={item.text}><b>“{item.text.slice(0, 40)}”</b>: {item.reason}</p>)}
               <p>Describe those changes in the instruction below and the AI will make them in this section.</p>
             </div>

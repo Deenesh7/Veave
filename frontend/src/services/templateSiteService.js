@@ -84,10 +84,18 @@ export const templateSiteService = {
 };
 
 /** The message the API gave for a failed call, in plain words. */
-export function apiMessage(error, fallback = 'Something went wrong. Please try again.') {
+// Messages that read like a log (file paths, error codes, build or validation output, HTTP failures) are never shown to the owner.
+const TECHNICAL = /\b(E[A-Z]{3,8}|AxiosError|TypeError|SyntaxError|ReferenceError|ValidationError|ECONN\w*|ETIMEDOUT|status code \d+|Network Error|stack|undefined|null|vite|rollup|esbuild|babel|docker|mongo\w*|openrouter|validation|build (?:failed|error)|diagnostic|opendir|permission denied)\b|\bsrc\/|\.jsx?\b|\bat \S+:\d+/i;
+export function calmMessage(text, fallback = 'That did not go through this time. Please try again in a moment.') {
+  const value = String(text || '').trim();
+  if (!value || value.length > 240 || TECHNICAL.test(value)) return fallback;
+  return value;
+}
+
+export function apiMessage(error, fallback = 'That did not go through this time. Please try again in a moment.') {
   const data = error?.response?.data?.error;
-  if (typeof data === 'string') return data;
-  return data?.message || error?.message || fallback;
+  const raw = typeof data === 'string' ? data : (data?.message || error?.message || '');
+  return calmMessage(raw, fallback);
 }
 
 export default templateSiteService;
