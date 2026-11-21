@@ -46,6 +46,13 @@ function wantsSiteWide(instruction, files = []) {
       if (shared.some((file) => pattern.test(file.content))) return true;
     }
   }
+  // The section's own words are written in a shared component (for example the tabs and search box of the hero): the behaviour the owner
+  // asks for lives in that component, so the AI must be allowed to change it. Two or more of the section's texts must be found there.
+  const phrases = [...new Set((String(instruction || '').match(/"([^"\n]{10,120})"/g) || []).map((item) => item.slice(1, -1).trim()))];
+  if (phrases.length >= 2) {
+    const components = files.filter((file) => /^src\/components\/[^/]+\.jsx?$/.test(file.path) && typeof file.content === 'string');
+    if (components.some((file) => phrases.filter((phrase) => file.content.includes(phrase)).length >= 2)) return true;
+  }
   const squashed = text.toLowerCase().replace(/[^a-z0-9]+/g, '');
   return files.some((file) => /^src\/components\/[A-Za-z0-9]+\.jsx?$/.test(file.path) && (() => {
     const name = file.path.split('/').pop().replace(/\.jsx?$/, '').toLowerCase();
