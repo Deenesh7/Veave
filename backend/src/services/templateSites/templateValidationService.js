@@ -170,8 +170,24 @@ function untouchedSectionProblem({ baselineSource, candidateSource, numbers, pag
   return issue('preserve', `Section${changed.length > 1 ? 's' : ''} ${names} ${changed.length > 1 ? 'were' : 'was'} changed, but the owner selected only section${numbers.length > 1 ? 's' : ''} ${numbers.map((n) => String(n).padStart(2, '0')).join(', ')}.`, { path: page.componentPath, route: page.route, cause: 'Sections that were not ticked must stay exactly as they are.', action: `Start again from the ORIGINAL page code. Change ONLY section${numbers.length > 1 ? 's' : ''} ${numbers.map((n) => String(n).padStart(2, '0')).join(', ')}; copy every other section character for character (same JSX, same text, same images).` });
 }
 
+/**
+ * Does the owner want the website itself to answer visitors with AI ("open a popup where AI generates content", "ask AI box")?
+ * Then the page must call the platform's assistant (window.VEAVE_AI); a fixed written popup is not what was asked for.
+ */
+function wantsAiAnswers(instruction) {
+  const text = String(instruction || '');
+  if (/\b(images?|photos?|pictures?|logo|illustrations?|background)\b/i.test(text)) return false;
+  // AI + something that is produced for a visitor + a place where the visitor meets it (a pop-up, a box, a button, a question).
+  return /\b(ai|a\.i\.|artificial intelligence|chat ?bot|assistant|gpt|llm)\b/i.test(text) && /\b(generate[sd]?|generating|answers?|replies|reply|respond|responds?|response|explain|ask|content|tell)\b/i.test(text) && /\b(pop-?up|poopup|pop ?up|box|modal|dialog|chat|chatbot|assistant|ask|visitors?|click(?:ed|s)?|button|tab|typed?|question|questions)\b/i.test(text);
+}
+const callsAssistant = (files) => files.some((file) => typeof file.content === 'string' && /window\.VEAVE_AI\b|VEAVE_AI\.ask/.test(file.content) && /^src\//.test(file.path));
+
 function checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments = [], instruction = '', siteWide = false, rewrite = false }) {
   const problems = [];
+  // ai: an AI answer box must really call the assistant
+  if (wantsAiAnswers(instruction) && !callsAssistant(candidate)) {
+    problems.push(issue('ai', 'The page was asked to show AI-generated content, but nothing calls the website assistant, so the box would only show fixed text.', { path: page.componentPath, route: page.route, cause: 'The AI content was written into the page instead of being asked for.', action: 'Make the box call window.VEAVE_AI.ask(question, { topic }) (it returns a Promise of a plain-text answer): open the pop-up at once with a loading line, put the answer in it when the Promise resolves, and show a short written fallback if it fails. Do not write the answer text into the page.' }));
+  }
   // preserve: ticked sections only
   const ticked = selectedSectionNumbers(instruction);
   if (ticked.length) {
@@ -325,4 +341,4 @@ function finalSiteChecks(files, pages) {
   return found;
 }
 
-module.exports = { finalSiteChecks, pageScope, wantsSiteWide, filterOperations, checkCandidate, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, issue, sha, MIN_PAGE_WORDS };
+module.exports = { finalSiteChecks, pageScope, wantsSiteWide, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, issue, sha, MIN_PAGE_WORDS };
