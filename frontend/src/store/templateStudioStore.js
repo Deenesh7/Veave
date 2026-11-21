@@ -111,8 +111,8 @@ export const useTemplateStudioStore = create((set, get) => ({
       if (now && now.id === current.id) set({ selectedText: { ...now, status: 'error', error: apiMessage(error, 'The text could not be saved.') } });
     }
   },
-  appSidebarHidden: false,
-  setAppSidebarHidden: (value) => set({ appSidebarHidden: value }),
+  appSidebarHidden: readUi().appSidebarHidden === true, // remembered across a refresh
+  setAppSidebarHidden: (value) => { writeUi({ appSidebarHidden: Boolean(value) }); set({ appSidebarHidden: value }); },
   sites: [],
   sitesLoaded: false,
   sitesError: null,

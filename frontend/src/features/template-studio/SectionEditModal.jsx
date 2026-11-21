@@ -6,6 +6,7 @@ import { templateSiteService, apiMessage } from '../../services/templateSiteServ
 import { PrimaryButton, GhostButton, Spinner, ink, muted, line } from './ui';
 import VoiceInputButton from './VoiceInputButton';
 import { sectionEditScript } from './sectionEditScripts';
+import { PRODUCTION_PRESET, PRODUCTION_PRESET_LABEL } from './promptPresets';
 
 const MAX_TEXT = 4000;
 const esc = (value) => String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -177,13 +178,16 @@ export default function SectionEditModal({ payload, onClose }) {
             <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={MAX_TEXT} rows={3} disabled={saving || running} aria-label="AI instruction for this section"
               placeholder="Tell the AI what to change in this section only…" className={`block w-full resize-y rounded-md border-0 bg-transparent px-3 py-2 text-sm leading-relaxed ${ink} placeholder:text-xs placeholder:text-[#A59E90] focus:outline-none focus:ring-0`} />
             <div className="flex items-center justify-between px-2.5 pb-2">
-              <span className={`text-[11px] ${muted}`}>{prompt.length}/{MAX_TEXT}</span>
+              <span className="flex items-center gap-2">
+                <button type="button" disabled={saving || running} onClick={() => setPrompt(PRODUCTION_PRESET)} className="inline-flex items-center gap-1 rounded-full border border-[#CFE0CF] bg-[#E8F0E8] px-2.5 py-0.5 text-[11px] font-medium text-[#3F5E41] hover:bg-[#DCE9DC] disabled:opacity-50"><Sparkles className="h-3 w-3" />{PRODUCTION_PRESET_LABEL}</button>
+                <span className={`text-[11px] ${muted}`}>{prompt.length}/{MAX_TEXT}</span>
+              </span>
               <VoiceInputButton disabled={saving || running} onText={(text) => setPrompt((value) => `${value}${value && !/\s$/.test(value) ? ' ' : ''}${text}`.slice(0, MAX_TEXT))} />
             </div>
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-col gap-2">
             <p className={`text-[11px] leading-relaxed ${muted}`}>{running ? 'A page is being generated. Wait for it to finish.' : 'Typed text is saved first. The AI then gets the content of this section together with your instruction and changes only this section; every other section stays exactly as it is.'}</p>
-            <div className="flex gap-2">
+            <div className="flex justify-end gap-2">
               <GhostButton onClick={onClose} disabled={saving}>Cancel</GhostButton>
               <PrimaryButton onClick={save} disabled={!canSave}>{saving ? <Spinner /> : <Sparkles className="h-4 w-4" />}{prompt.trim() ? (changed.length ? 'Save and apply AI' : 'Apply with AI') : 'Save text'}</PrimaryButton>
             </div>

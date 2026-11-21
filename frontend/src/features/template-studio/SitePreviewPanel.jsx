@@ -26,7 +26,7 @@ function at(x,y,target){var node=null;try{if(document.caretRangeFromPoint){var r
 if(node&&node.nodeType===3&&norm(node.nodeValue)){var rg=document.createRange();rg.selectNodeContents(node);var b=rg.getBoundingClientRect();if(x>=b.left-4&&x<=b.right+4&&y>=b.top-4&&y<=b.bottom+4){var el=node.parentNode;if(!skip(el)&&norm(own(el)))return el;}}
 if(target&&target.nodeType===1&&!skip(target)&&norm(own(target)))return target;return null;}
 function mark(el,attr,val){if(el)el.removeAttribute(attr);if(val)val.setAttribute(attr,'');}
-document.addEventListener('pointerdown',function(){window.parent.postMessage({type:'studio-preview-touch'},'*');},true);
+document.addEventListener('pointerdown',function(e){if(e.target&&e.target.closest&&e.target.closest('#studio-pen'))return;window.parent.postMessage({type:'studio-preview-touch'},'*');},true);
 document.addEventListener('mousemove',function(e){if(!on)return;var el=at(e.clientX,e.clientY,e.target);if(el===hov)return;if(hov)hov.removeAttribute('data-studio-hover');hov=el;if(el&&el!==sel)el.setAttribute('data-studio-hover','');},true);
 var LIVE='button,a,summary,select,input,textarea,[role="tab"],[role="button"],[role="switch"],label';
 document.addEventListener('click',function(e){if(!on)return;if(e.ctrlKey||e.metaKey)return;if(e.target&&e.target.closest&&e.target.closest(LIVE))return;var el=at(e.clientX,e.clientY,e.target);if(!el){if(sel){sel.removeAttribute('data-studio-sel');sel=null;clearSoft();window.parent.postMessage({type:'studio-text-deselected'},'*');}return;}e.preventDefault();e.stopImmediatePropagation();
@@ -94,8 +94,6 @@ export default function SitePreviewPanel({ className = '' }) {
   const [textMode, setTextModeState] = useState(() => readUi().textMode !== false);
   const setTextMode = (next) => setTextModeState((value) => { const resolved = typeof next === 'function' ? next(value) : next; writeUi({ textMode: resolved }); return resolved; }); // click text in the page to edit it in the Content column (off: links work as in the real site)
   const textModeRef = useRef(readUi().textMode !== false);
-  // Touching the preview (the page itself or its toolbar) folds the app's menu sidebar and the Pages column, so the work area gets the room.
-  const foldMenu = useCallback(() => { const store = useTemplateStudioStore.getState(); if (!store.appSidebarHidden) store.setAppSidebarHidden(true); if (!store.pagesCollapsed) store.setPagesCollapsed(true); }, []);
   const [sectionEdit, setSectionEdit] = useState(null); // the section opened with its pen: { name, domId, html, head, ... }
   const scrollRef = useRef(0); // where the visitor was in the page, kept across reloads (a saved change reloads the preview)
   const focusRef = useRef([]);
@@ -211,7 +209,6 @@ export default function SitePreviewPanel({ className = '' }) {
     const onMessage = (event) => {
       if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return;
       if (event.data?.type === 'preview-rendered') { showRoute(routeRef.current); sendTextMode(); }
-      if (event.data?.type === 'studio-preview-touch') foldMenu();
       if (event.data?.type === 'studio-scroll') {
         scrollRef.current = Number(event.data.y) || 0;
         const siteKey = useTemplateStudioStore.getState().activeSiteId;
@@ -228,7 +225,7 @@ export default function SitePreviewPanel({ className = '' }) {
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [selectPage, showRoute, sendTextMode, foldMenu, revisionPreview]);
+  }, [selectPage, showRoute, sendTextMode, revisionPreview]);
 
   const width = DEVICES.find((item) => item.id === device)?.width || '100%';
   const regenerating = job && !['completed', 'failed', 'cancelled'].includes(job.status);
@@ -245,7 +242,7 @@ export default function SitePreviewPanel({ className = '' }) {
   const frameError = revisionPreview?.status === 'error' ? revisionPreview.error : (!old && site && state.status === 'error' ? state.error : null);
 
   return (
-    <section aria-label="Live website preview" onPointerDownCapture={foldMenu} className={`${className} min-w-0 flex-1 flex-col bg-[#EFEBE1] ${full ? 'fixed inset-0 z-50 !flex' : ''}`}>
+    <section aria-label="Live website preview" className={`${className} min-w-0 flex-1 flex-col bg-[#EFEBE1] ${full ? 'fixed inset-0 z-50 !flex' : ''}`}>
       <PanelHeader
         title={full && site ? `${site.name} · Preview` : 'Preview'}
         action={site ? (

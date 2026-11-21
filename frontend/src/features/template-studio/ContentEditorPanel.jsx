@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ImagePlus, Sparkles, X, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Pencil, Check, RotateCcw, LayoutList, ArrowRight, Type, Loader2 } from 'lucide-react';
+import { PRODUCTION_PRESET, PRODUCTION_PRESET_LABEL } from './promptPresets';
 import { useTemplateStudioStore, CONTENT_MIN, CONTENT_MAX, readUi, writeUi } from '../../store/templateStudioStore';
 import { FAILURE_TITLES } from '../../store/generationJobStore';
 import { PanelHeader, EmptyState, IconButton, PrimaryButton, GhostButton, Spinner, Skeleton, inputClass, ink, muted, line } from './ui';
@@ -104,8 +105,8 @@ export default function ContentEditorPanel({ className = '' }) {
     }
   };
 
-  // Touching anything in the Content column folds the app's menu sidebar (the far-left Template Studio menu), so the work area gets the room.
-  const foldMenu = () => { const store = useTemplateStudioStore.getState(); if (!store.appSidebarHidden) store.setAppSidebarHidden(true); };
+  // Touching anything in the Content column folds the app's menu sidebar and the Pages column (Content / Preview then share 30 / 70), so the work area gets the room.
+  const foldMenu = () => { const store = useTemplateStudioStore.getState(); if (!store.appSidebarHidden) store.setAppSidebarHidden(true); if (!store.pagesCollapsed) store.setPagesCollapsed(true); };
 
   const selectedText = useTemplateStudioStore((state) => state.selectedText);
   const editSelectedText = useTemplateStudioStore((state) => state.editSelectedText);
@@ -121,7 +122,25 @@ export default function ContentEditorPanel({ className = '' }) {
     if (!canSend) return;
     // The text stays in place until the page is saved, so a failed run can be sent again with one click.
     const sent = expandSectionNumbers(`${numberPrefix(checkedNumbers)}${instruction.trim()}`, sections);
-    if (await regenerate(sent.instruction, attachmentsNow(), sent.focus)) { clearSelection(); setChecked([]); }
+    const text = instruction.trim();
+    // "Add a page ..." makes a new page first, then the AI fills it with what was asked for.
+    if (/^\s*(?:please\s+)?(?:add|create|make|build)\s+(?:me\s+)?(?:a|an|one|another|the)?\s*(?:new\s+)?(?:\w+\s+)?page\b/i.test(text)) {
+      const named = text.match(/\b(?:called|named|titled)\s+["“']?([^"”',.\n]{2,40}?)["”']?(?:\s+(?:with|and|that|which|for|page)\b|[,.\n]|$)/i)
+        || text.match(/\b(?:add|create|make|build)\s+(?:me\s+)?(?:a|an|one|another)?\s*(?:new\s+)?([a-z][\w &-]{1,30}?)\s+page\b/i);
+      let pageName = (named?.[1] || '').trim();
+      if (!pageName || /^(new|a|an|one|another|the|more)$/i.test(pageName)) pageName = 'New Page';
+      pageName = pageName.replace(/\b\w/g, (c) => c.toUpperCase());
+      const fromPage = activePageId;
+      if (await store.addPage({ name: pageName, description: text.slice(0, 500) })) {
+        if (fromPage) setDraft(fromPage, '');
+        if (await regenerate(`Build this new page. ${sent.instruction}`, attachmentsNow(), '')) { clearSelection(); setChecked([]); }
+      }
+      return;
+    }
+    // Text picked in the preview: the instruction (for example "make this a link to the Contact page") applies to exactly that text.
+    const picked = useTemplateStudioStore.getState().selectedText;
+    const instructionText = picked ? `${sent.instruction}\n\nThis applies to the text "${picked.saved || picked.text}" (${picked.tag || 'text'} element) on this page. If asked to link it, wrap exactly that text in an <a>/router link to the route of the page named in the instruction (use the site's existing page routes, or the given URL), keeping its look.` : sent.instruction;
+    if (await regenerate(instructionText, attachmentsNow(), sent.focus)) { clearSelection(); setChecked([]); }
   };
 
   const saveName = async () => {
@@ -271,7 +290,8 @@ export default function ContentEditorPanel({ className = '' }) {
                 <textarea id="page-instruction" aria-label="Instruction for this page" value={instruction} onChange={(event) => setDraft(page.id, event.target.value)} maxLength={MAX_TEXT} rows={4} disabled={running}
                   placeholder={checkedNumbers.length ? 'What should change in the selected sections?' : 'Tell the AI what to change on this page…'}
                   className={`block min-h-[6rem] w-full resize-y rounded-md border-0 bg-transparent px-3 py-2 text-sm leading-relaxed ${ink} placeholder:text-xs placeholder:text-[#A59E90] focus:outline-none focus:ring-0`} />
-                <div className="flex justify-end px-2 pb-2">
+                <div className="flex items-center justify-between gap-2 px-2 pb-2">
+                  <button type="button" disabled={running} onClick={() => setDraft(page.id, PRODUCTION_PRESET)} className="inline-flex items-center gap-1 rounded-full border border-[#CFE0CF] bg-[#E8F0E8] px-2.5 py-0.5 text-[11px] font-medium text-[#3F5E41] hover:bg-[#DCE9DC] disabled:opacity-50"><Sparkles className="h-3 w-3" />{PRODUCTION_PRESET_LABEL}</button>
                   <VoiceInputButton disabled={running} onText={(text) => setDraft(page.id, `${instruction}${instruction && !/\s$/.test(instruction) ? ' ' : ''}${text}`.slice(0, MAX_TEXT))} />
                 </div>
               </div>
