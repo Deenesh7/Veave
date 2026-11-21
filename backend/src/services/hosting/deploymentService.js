@@ -271,6 +271,12 @@ async function runDeployment({ deploymentId, signal, deps = defaultDeps }) {
       if (wasNeverPublished) {
         // Release the reserved address so a failed first publish does not squat on it.
         await PublishedSite.deleteOne({ _id: siteBefore._id, activeVersion: null });
+        // A domain request that was waiting for this first publish can no longer finish. It was never verified, so it holds no
+        // claim: take it away, and the owner can publish again with the domain from a clean start.
+        await require('../../models/DomainConnection').updateMany(
+          { projectId: siteBefore.projectId, live: true, claimed: false },
+          { $set: { live: false, status: 'removed', removedAt: new Date(), nextRunAt: null, leaseUntil: null }, $push: { history: { at: new Date(), stage: 'validating_request', level: 'warn', message: 'Removed: publishing the website failed before the domain could be connected.' } } }
+        ).catch(() => {});
         await storage.removeSite(siteBefore._id).catch(() => {});
         invalidateSite(deployment.slug);
       } else {

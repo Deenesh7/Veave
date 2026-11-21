@@ -111,6 +111,8 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
     const available = await docker(['image', 'inspect', image], { signal });
     if (available.code !== 0) throw new Error(`Validation worker unavailable. Start Docker Desktop and run npm run runner:build in backend.\n${available.output}`);
     directory = await fs.mkdtemp(path.join(os.tmpdir(), 'veave-validation-'));
+    // mkdtemp makes the folder private (0700). The worker container runs as another user (pwuser) and must be able to read it.
+    await fs.chmod(directory, 0o755);
     const dirs = new Set(files.map((file) => path.dirname(path.join(directory, file.path))));
     await Promise.all([...dirs].map((dir) => fs.mkdir(dir, { recursive: true, mode: 0o755 })));
     for (let index = 0; index < files.length; index += 64) {
@@ -123,6 +125,7 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
     if (visualReference) {
       const decoded = decodeVisualReference(visualReference);
       referenceDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'veave-reference-'));
+      await fs.chmod(referenceDirectory, 0o755);
       await fs.writeFile(path.join(referenceDirectory, 'reference-image'), decoded.buffer, { mode: 0o444 });
     }
     const created = await docker(['volume', 'create', volume], { signal });
