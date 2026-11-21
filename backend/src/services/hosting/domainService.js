@@ -10,9 +10,17 @@ const connectDomain = (projectId, userId, domain, options = {}) => connections.c
 const verifyDomain = (projectId, userId) => connections.verifyNow({ projectId, userId });
 const removeDomain = (projectId, userId) => connections.disconnect({ projectId, userId });
 
-// Caddy's on-demand TLS "ask": only issue certificates for hostnames with a verified, routed, published connection.
+// Caddy's on-demand TLS "ask": only issue certificates for hostnames with a verified, routed, published connection, or for the
+// Veave address (<slug>.<base domain>) of a site that is published with that address switched on.
 async function isIssuableDomain(input) {
   if (await connections.isIssuableHostname(input)) return true;
+  const { baseDomain } = require('./config').hostingConfig();
+  const host = String(input || '').trim().toLowerCase().replace(/\.$/, '');
+  if (baseDomain && host.endsWith(`.${baseDomain}`)) {
+    const slug = host.slice(0, -(baseDomain.length + 1));
+    if (!slug || slug.includes('.') || require('./slug').validateSlug(slug)) return false;
+    return Boolean(await PublishedSite.exists({ slug, status: 'published', subdomainEnabled: { $ne: false } }));
+  }
   // Sites connected before the workflow existed (no DomainConnection) keep working until they are reconnected.
   const parsed = normalizeHostname(input);
   if (!parsed.ok) return false;

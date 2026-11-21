@@ -90,7 +90,13 @@ function ingressHost(site, config = hostingConfig()) {
   return site && site.subdomainEnabled === false ? null : siteHost(site.slug, config);
 }
 
-/** A host name another computer could actually reach (never localhost-style names). */
-const isPublicHost = (host) => customDomainSupport({ baseDomain: String(host || '').toLowerCase().replace(/^[^.]+\./, '') || 'x' }).available && String(host || '').includes('.');
+/** A host name another computer could actually reach (never localhost-style names, IP addresses or single labels). */
+function isPublicHost(host) {
+  if (process.env.DOMAIN_ALLOW_LOCAL === 'true') return String(host || '').includes('.');
+  const name = String(host || '').toLowerCase().replace(/\.$/, '');
+  const labels = name.split('.');
+  const reserved = ['localhost', 'local', 'internal', 'test', 'invalid', 'example', 'lan', 'home', 'corp', 'localdomain'];
+  return labels.length >= 2 && !reserved.includes(labels.at(-1)) && !/^\d+(\.\d+){3}$/.test(name);
+}
 
 module.exports = { hostingConfig, domainConfig, siteHost, siteUrl, customDomainSupport, isPublicHost, ingressHost, PRODUCTION_DOMAIN };

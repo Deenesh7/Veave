@@ -1,0 +1,39 @@
+# Production Caddy for the Docker Compose setup (Caddy and the backend share the "veave-network" network).
+#
+#   veave.net            -> the Veave app (the frontend container proxies /api to the backend)
+#   <slug>.veave.net     -> published sites (certificate issued on first visit; needs a "*" DNS record for veave.net)
+#   any custom domain    -> published sites; a certificate is issued only after the backend says the domain is verified
+#
+# Replace PASTE_CADDY_ASK_TOKEN_HERE with the same value as CADDY_ASK_TOKEN in backend/.env. Mount this file as
+# /etc/caddy/Caddyfile in compose.yaml. Keep the veave-caddy-data volume: it holds the certificates.
+
+{
+	email admin@veave.net
+	on_demand_tls {
+		ask http://veave-backend:5001/api/hosting/domain-ask?token=PASTE_CADDY_ASK_TOKEN_HERE
+	}
+}
+
+veave.net {
+	encode zstd gzip
+	reverse_proxy veave-frontend:80
+}
+
+# Everything else that arrives over HTTPS: published sites on <slug>.veave.net and customers' own domains.
+https:// {
+	tls {
+		on_demand
+	}
+	encode zstd gzip
+	# The app's API and the database explorer are never reachable from a published site's address.
+	@internal path /api/* /db /db/*
+	respond @internal 404
+	reverse_proxy veave-backend:5001
+}
+
+# Plain HTTP for those hosts: send visitors to HTTPS (certificate challenges are answered by Caddy before routes run).
+http:// {
+	@internal path /api/* /db /db/*
+	respond @internal 404
+	redir https://{host}{uri} permanent
+}
