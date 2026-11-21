@@ -33,7 +33,7 @@ const issue = (stage, message, { path = null, route = null, cause = '', action =
  */
 const SITE_WIDE_WORDS = /\b(nav(?:bar|igation)?|menu|header|footer|logo|brand(?:ing)?|re-?brand|site[ -]?name|site[ -]?wide|whole (?:web)?site|entire (?:web)?site|all (?:the )?pages|every page|other pages|across (?:the )?(?:web)?site|throughout|everywhere|all references|favicon|page title|tagline)\b/i;
 function wantsSiteWide(instruction, files = []) {
-  const text = String(instruction || '');
+  const text = ownerWords(instruction);
   if (SITE_WIDE_WORDS.test(text)) return true;
   // "remove/replace/rename X" where X also lives in the shared parts of the site (menu, footer, shared components, site data).
   if (/\b(remove|delete|get rid of|replace|rename|drop|eliminate|references?)\b/i.test(text)) {
@@ -131,7 +131,7 @@ function pageWords(files, componentPath) {
 const PICTURE_WORDS = /\b(images?|photos?|pictures?|photographs?|gallery|banner|logo)s?\b/i;
 const TEXT_CHANGE_WORDS = /\b(rewrite|re-?write|remove|delete|replace the (?:text|heading|content|copy)|(?:change|edit|update|shorten|lengthen|translate) the (?:text|heading|title|content|copy|wording)|text|heading|title|content|copy|wording|about|instead|for (?:a|an|the|my) |turn|convert|transform|redesign|rebuild|new section)\b/i;
 function isPictureOnlyEdit(instruction, attachments = []) {
-  const text = String(instruction || '');
+  const text = ownerWords(instruction);
   if (TEXT_CHANGE_WORDS.test(text.replace(/\b(image|photo|picture)s? (?:and|or) (?:text|content)\b/gi, ''))) return false;
   return PICTURE_WORDS.test(text) || (attachments.length > 0 && text.split(/\s+/).length <= 30);
 }
@@ -142,10 +142,17 @@ const REWRITE_WORDS = /\b(rewrite|re-?write|redo|redesign|rebuild|recreate|revam
  * A rewrite, a website-wide change or a change of subject is allowed to replace the content.
  */
 function keepRatioFor({ instruction, attachments = [], siteWide = false, rewrite = false }) {
-  if (siteWide || rewrite || REWRITE_WORDS.test(String(instruction || ''))) return null;
+  if (siteWide || rewrite || REWRITE_WORDS.test(ownerWords(instruction))) return null;
   if (isPictureOnlyEdit(instruction, attachments)) return 0.9;
   return /The owner ticked only the section/.test(String(instruction || '')) || selectedSectionNumbers(instruction).length ? 0.8 : 0.7;
 }
+
+/**
+ * The part of an instruction the owner actually asked for. The section popup adds reference material after it (what the section shows
+ * now, what was typed by hand); those words describe the page, so they must never decide what kind of change this is.
+ */
+const CONTEXT_MARK = /\n\n(?:SECTION CONTENT|\(The owner already typed)/;
+const ownerWords = (instruction) => { const text = String(instruction || ''); const at = text.search(CONTEXT_MARK); return at >= 0 ? text.slice(0, at) : text; };
 
 /** The section numbers the owner ticked: the panel sends 'In section 02 ("Name"), section 05 ("Name"): ...'. */
 function selectedSectionNumbers(instruction) {
@@ -175,7 +182,7 @@ function untouchedSectionProblem({ baselineSource, candidateSource, numbers, pag
  * Then the page must call the platform's assistant (window.VEAVE_AI); a fixed written popup is not what was asked for.
  */
 function wantsAiAnswers(instruction) {
-  const text = String(instruction || '');
+  const text = ownerWords(instruction);
   if (/\b(images?|photos?|pictures?|logo|illustrations?|background)\b/i.test(text)) return false;
   // AI + something that is produced for a visitor + a place where the visitor meets it (a pop-up, a box, a button, a question).
   return /\b(ai|a\.i\.|artificial intelligence|chat ?bot|assistant|gpt|llm)\b/i.test(text) && /\b(generate[sd]?|generating|answers?|replies|reply|respond|responds?|response|explain|ask|content|tell)\b/i.test(text) && /\b(pop-?up|poopup|pop ?up|box|modal|dialog|chat|chatbot|assistant|ask|visitors?|click(?:ed|s)?|button|tab|typed?|question|questions)\b/i.test(text);
@@ -341,4 +348,4 @@ function finalSiteChecks(files, pages) {
   return found;
 }
 
-module.exports = { finalSiteChecks, pageScope, wantsSiteWide, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, issue, sha, MIN_PAGE_WORDS };
+module.exports = { finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, issue, sha, MIN_PAGE_WORDS };

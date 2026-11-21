@@ -355,7 +355,7 @@ class TemplateJobManager {
    * in website mode (replace the old subject, semantic checks on). Returns true when it did so.
    */
   async adaptToCategory({ job, site, pages, files, template, page, signal }) {
-    if (job.rewrite || !intent.mayChangeCategory(job.instruction) || !planner.isEnabled(this.deps)) return false;
+    if (job.rewrite || !intent.mayChangeCategory(require('./templateValidationService').ownerWords(job.instruction)) || !planner.isEnabled(this.deps)) return false;
     await this.progress(job.jobId, 'processing', 'Understanding the website you want', { progress: 5 });
     const brief = site.brief && site.brief !== job.instruction ? `${job.instruction}\n\n(An earlier description of this website, which the instruction above overrides where they differ: ${site.brief})` : job.instruction;
     const created = await planner.createPlan({ template, pages, files, brief, ownerName: planner.ownerNameFor(site.name, template), deps: this.deps, signal });

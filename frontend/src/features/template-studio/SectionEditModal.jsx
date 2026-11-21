@@ -12,6 +12,37 @@ const esc = (value) => String(value || '').replace(/&/g, '&amp;').replace(/"/g, 
 const norm = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const pad = (n) => String(n).padStart(2, '0');
 
+// What the section shows, as plain lines (headings, texts, buttons, pictures, form fields), with the owner's typed changes applied.
+// It goes to the AI with the instruction, so the AI starts from exactly what the owner is looking at.
+function sectionOutline(html, edits, limit = 1800) {
+  let doc;
+  try { doc = new DOMParser().parseFromString(`<div id="r">${html}</div>`, 'text/html'); } catch { return ''; }
+  const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const typed = new Map(edits.map((item) => [item.old, item.next]));
+  const kind = (tag) => (/^h[1-6]$/.test(tag) ? 'Heading' : tag === 'button' || tag === 'a' ? 'Button or link' : tag === 'li' ? 'List item' : tag === 'label' ? 'Label' : 'Text');
+  const lines = [];
+  const seen = new Set();
+  for (const el of doc.querySelectorAll('#r *')) {
+    const tag = el.tagName.toLowerCase();
+    if (/^(script|style|svg|path|noscript|option)$/.test(tag)) continue;
+    if (tag === 'img') { const alt = norm(el.getAttribute('alt')); if (alt) lines.push(`- Picture: ${alt.slice(0, 90)}`); continue; }
+    if (tag === 'input' || tag === 'textarea') { const hint = norm(el.getAttribute('placeholder') || el.getAttribute('aria-label')); if (hint) lines.push(`- Input field: ${hint.slice(0, 80)}`); continue; }
+    if (tag === 'select') { lines.push(`- Dropdown: ${[...el.querySelectorAll('option')].map((option) => norm(option.textContent)).filter(Boolean).slice(0, 6).join(' / ').slice(0, 120)}`); continue; }
+    let own = '';
+    for (const node of el.childNodes) if (node.nodeType === 3) own += node.nodeValue;
+    own = norm(own);
+    if (own.length < 2) continue;
+    const text = typed.get(own) ?? own;
+    const key = `${tag}:${text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lines.push(`- ${kind(tag)}: "${text.slice(0, 220)}"${typed.has(own) ? ' (typed by the owner)' : ''}`);
+  }
+  let out = '';
+  for (const line of lines) { if (out.length + line.length + 1 > limit) { out += '\n- …'; break; } out += `${out ? '\n' : ''}${line}`; }
+  return out;
+}
+
 // The page of the popup: the real styles of the website and only this section, with its text editable in place.
 function buildDocument(payload) {
   return `<!doctype html><html class="${esc(payload.htmlClass)}"><head><meta charset="utf-8">${payload.head}
@@ -91,7 +122,10 @@ export default function SectionEditModal({ payload, onClose }) {
     if (text) {
       const lead = match ? `In section ${pad(match.number)} ("${String(title).replace(/"/g, "'")}"): ` : `In the section "${String(title).replace(/"/g, "'")}": `;
       const notes = saved.length ? `\n\n(The owner already typed these changes into this section by hand. Keep them exactly as written: ${saved.map((item) => `"${item.old}" became "${item.next}"`).join('; ')}.)` : '';
-      const instruction = `${lead}${text}${notes}`.slice(0, MAX_TEXT);
+      const head = `${lead}${text}${notes}`.slice(0, MAX_TEXT - 300);
+      const outline = sectionOutline(payload.html, saved, Math.max(0, Math.min(1800, MAX_TEXT - head.length - 200)));
+      const context = outline ? `\n\nSECTION CONTENT (what the visitor sees in this section right now, with the typed changes applied; for reference, change only what the instruction asks):\n${outline}` : '';
+      const instruction = `${head}${context}`.slice(0, MAX_TEXT);
       started = await regenerate(instruction, [], title);
     }
     setSaving(false);
@@ -148,7 +182,7 @@ export default function SectionEditModal({ payload, onClose }) {
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className={`text-[11px] leading-relaxed ${muted}`}>{running ? 'A page is being generated. Wait for it to finish.' : 'Typed text is saved first. The AI then changes only this section; every other section stays exactly as it is.'}</p>
+            <p className={`text-[11px] leading-relaxed ${muted}`}>{running ? 'A page is being generated. Wait for it to finish.' : 'Typed text is saved first. The AI then gets the content of this section together with your instruction and changes only this section; every other section stays exactly as it is.'}</p>
             <div className="flex gap-2">
               <GhostButton onClick={onClose} disabled={saving}>Cancel</GhostButton>
               <PrimaryButton onClick={save} disabled={!canSave}>{saving ? <Spinner /> : <Sparkles className="h-4 w-4" />}{prompt.trim() ? (changed.length ? 'Save and apply AI' : 'Apply with AI') : 'Save text'}</PrimaryButton>

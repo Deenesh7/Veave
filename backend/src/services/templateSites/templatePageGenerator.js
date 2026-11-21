@@ -123,7 +123,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
 
   let usage = null;
   let entity = null;
-  try { entity = await discoverImages?.(text, { signal }); } catch (error) { if (signal?.aborted) throw error; logger.warn(`Image search for the page instruction was skipped: ${error.message}`); }
+  try { entity = await discoverImages?.(validation.ownerWords(text), { signal }); } catch (error) { if (signal?.aborted) throw error; logger.warn(`Image search for the page instruction was skipped: ${error.message}`); }
 
   const promptFor = (repair, current = files) => buildPageMessages({
     template, page, otherPages, instruction: text, ownedFiles: scope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
