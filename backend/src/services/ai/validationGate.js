@@ -47,8 +47,14 @@ function normalizeStatus(status) {
   }
 }
 
+// Errors that come from the machine running the build (file permissions, disk, memory, Docker), never from the generated code.
+// Rewriting source files cannot fix them, so they are treated as infrastructure and never sent to the AI for "repair".
+const ENVIRONMENT_ERROR = /\b(EACCES|EPERM|ENOSPC|ENOMEM|EMFILE|ENFILE|EROFS|EAI_AGAIN|ECONNREFUSED|ECONNRESET)\b|permission denied|no space left on device|Cannot connect to the Docker daemon|opendir '\/input'/i;
+const isEnvironmentError = (diagnostics = []) => diagnostics.some((item) => ENVIRONMENT_ERROR.test(String(item?.message || '')));
+
 function classifyDiagnostics(diagnostics = [], outcome = {}) {
   if (diagnostics.some((item) => item.timedOut || item.category === 'timeout')) return FAILURE_KIND.TIMEOUT;
+  if (isEnvironmentError(diagnostics)) return FAILURE_KIND.INFRASTRUCTURE;
   if (diagnostics.some((item) => INFRASTRUCTURE_CATEGORIES.has(item.category))) return FAILURE_KIND.INFRASTRUCTURE;
   if (diagnostics.some((item) => POLICY_CATEGORIES.has(item.category))) return FAILURE_KIND.POLICY;
   if (outcome.blocked) return FAILURE_KIND.INFRASTRUCTURE;
@@ -244,7 +250,7 @@ async function validateAndRepair(initialFiles, { repair, run = executeProject, o
       return { files, report, artifacts: outcome.artifacts || [] };
     }
     const kind = classifyDiagnostics(diagnostics, outcome || {});
-    if (outcome?.blocked || diagnostics.some((item) => ['path', 'external-blocked'].includes(item.category))) {
+    if (outcome?.blocked || kind === FAILURE_KIND.INFRASTRUCTURE || diagnostics.some((item) => ['path', 'external-blocked'].includes(item.category))) {
       throw stop('blocked', kind === FAILURE_KIND.TIMEOUT
         ? 'Validation timed out; the environment needs attention and the source code was not rewritten.'
         : 'Execution environment or dependency policy requires attention; source code was not rewritten.', kind);

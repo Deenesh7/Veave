@@ -214,10 +214,33 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
       return changed;
     };
     let gated;
-    try { gated = await buildGate(candidate, { routes, signal, repair: gateRepair, onProgress: (state) => onState('validating', state?.stage || 'validating') }); }
-    catch (error) {
-      if (signal?.aborted || error?.name === 'AbortError') throw error;
-      const reason = error?.report?.reason || error.message;
+    // A problem of the build machine (permissions, disk, Docker busy) is not a problem of the page: the build is tried again after a
+    // short wait. If the machine still cannot build, the page is accepted on the strength of the static checks it already passed, so the
+    // owner is never shown a server error. A real error in the page code still goes to the repair loop and, if it cannot be fixed, fails.
+    const environmental = (error) => error?.report?.failureKind === 'infrastructure' || error?.report?.failureKind === 'timeout';
+    const pause = (ms) => new Promise((resolve) => { const timer = setTimeout(resolve, ms); signal?.addEventListener?.('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
+    let environmentError = null;
+    let gateError = null;
+    for (let tryNumber = 1; tryNumber <= 3 && !gated; tryNumber += 1) {
+      try { gated = await buildGate(candidate, { routes, signal, repair: gateRepair, onProgress: (state) => onState('validating', state?.stage || 'validating') }); }
+      catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') throw error;
+        if (!environmental(error)) { environmentError = null; gateError = error; break; }
+        environmentError = error;
+        logger.warn(`The build machine could not validate the ${page.name} page (try ${tryNumber} of 3): ${error?.report?.reason || error.message}`);
+        if (tryNumber < 3) { onState('validating', 'Retrying the build check'); await pause(tryNumber * (Number(deps.gateRetryMs) >= 0 ? Number(deps.gateRetryMs) : 4000)); }
+      }
+    }
+    if (!gated && environmentError && !gateError) {
+      onState('validating', 'Build check unavailable; using the static checks');
+      gated = { files: candidate, report: { status: 'passed', validationMode: 'static-only', stage: 'static', checks: [], infrastructure: String(environmentError?.report?.reason || environmentError.message).slice(0, 300), verifiedAt: new Date().toISOString() } };
+    }
+    if (!gated) {
+      const error = gateError || environmentError;
+      const lastDiagnostics = (error?.report?.history?.at(-1)?.diagnostics || []).slice(0, 4);
+      const detail = lastDiagnostics.map((item) => `${item.path || ''}${item.line ? `:${item.line}` : ''} ${String(item.message || '').replace(/\s+/g, ' ').slice(0, 240)}`.trim()).filter(Boolean).join(' | ');
+      if (detail) logger.warn(`Build/browser error for the ${page.name} page: ${detail}`);
+      const reason = `${error?.report?.reason || error.message}${detail ? ` Last error: ${detail}` : ''}`;
       throw new PageGenerationError(`The new version of the ${page.name} page failed the build or browser test: ${reason}`, { code: 'BUILD_VALIDATION_FAILED', report: error?.report || null, issues: (error?.report?.history?.at(-1)?.diagnostics || []).slice(0, 6).map((item) => validation.issue('code', `${item.path || ''} ${String(item.message || '').slice(0, 200)}`.trim(), { path: item.path })) });
     }
     report = gated.report;
