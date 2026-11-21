@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ImagePlus, Sparkles, X, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Pencil, Check, RotateCcw, LayoutList, ArrowRight, Type, Loader2 } from 'lucide-react';
-import { useTemplateStudioStore, CONTENT_MIN, CONTENT_MAX } from '../../store/templateStudioStore';
+import { useTemplateStudioStore, CONTENT_MIN, CONTENT_MAX, readUi, writeUi } from '../../store/templateStudioStore';
 import { FAILURE_TITLES } from '../../store/generationJobStore';
 import { PanelHeader, EmptyState, IconButton, PrimaryButton, GhostButton, Spinner, Skeleton, inputClass, ink, muted, line } from './ui';
 import ImageLibrary from './ImageLibrary';
@@ -30,6 +30,19 @@ export default function ContentEditorPanel({ className = '' }) {
   const [renaming, setRenaming] = useState(null);   // the new name while editing
   const [resizing, setResizing] = useState(false);
   const [picked, setPicked] = useState({}); // the ticked section numbers, per page; they are shown as chips, never typed into the prompt
+  // The ticks are kept per website, so a refresh of the page does not lose them.
+  const siteKey = site?.id || null;
+  const pickedFor = useRef(null);
+  useEffect(() => {
+    if (!siteKey || pickedFor.current === siteKey) return;
+    pickedFor.current = siteKey;
+    setPicked(readUi().picked?.[siteKey] || {});
+  }, [siteKey]);
+  useEffect(() => {
+    if (!siteKey || pickedFor.current !== siteKey) return;
+    const clean = Object.fromEntries(Object.entries(picked).filter(([, numbers]) => Array.isArray(numbers) && numbers.length));
+    writeUi({ picked: { ...(readUi().picked || {}), [siteKey]: clean } });
+  }, [picked, siteKey]);
   const panel = useRef(null);
 
   const currentPageIndex = pages.findIndex((item) => item.id === activePageId);

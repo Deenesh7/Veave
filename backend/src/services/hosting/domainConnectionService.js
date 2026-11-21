@@ -4,7 +4,7 @@ const DomainConnection = require('../../models/DomainConnection');
 const PublishedSite = require('../../models/PublishedSite');
 const Project = require('../../models/Project');
 const { AppError, NotFoundError, ValidationError } = require('../../utils/errors');
-const { hostingConfig, domainConfig } = require('./config');
+const { hostingConfig, domainConfig, customDomainSupport } = require('./config');
 const { normalizeHostname, classifyHostname, servedHostnames } = require('./domainValidation');
 const verification = require('./domainVerification');
 const planner = require('./dnsPlanner');
@@ -19,25 +19,73 @@ const kick = (connectionId, deps) => (process.env.DOMAIN_ORCHESTRATOR_AUTORUN ==
   ? Promise.resolve(null) : orchestrator.runNow(connectionId, deps || {}).catch(() => null));
 const LIVE = { live: true };
 
+/** This server must have a public address: a customer's DNS record can never point at localhost. */
+function assertSupported() {
+  const support = customDomainSupport();
+  if (!support.available) throw conflict(support.reason);
+}
+
+// auto: use a connected DNS account when the domain's DNS lives there, else manual. cloudflare / godaddy: that account only. manual: never.
+const DNS_MODES = ['auto', 'manual', 'cloudflare', 'godaddy'];
+function normalizeDnsMode(value) {
+  const mode = String(value || 'auto').toLowerCase();
+  if (!DNS_MODES.includes(mode)) throw new ValidationError(`Choose a DNS option: ${DNS_MODES.join(', ')}.`);
+  return mode;
+}
+
 const STEPS = [
   { key: 'validating_request', label: 'Validating domain' },
   { key: 'pending_verification', label: 'Verifying ownership' },
   { key: 'configuring_dns', label: 'Configuring DNS' },
+  { key: 'dns_pending', label: 'DNS propagation' },
   { key: 'deploying', label: 'Publishing website' },
   { key: 'configuring_routing', label: 'Routing your domain' },
   { key: 'ssl_pending', label: 'Configuring HTTPS' },
   { key: 'checking_health', label: 'Checking website availability' }
 ];
 // Where each stage sits in the user-facing step list.
-const STEP_OF = { validating_request: 0, pending_verification: 1, verified: 1, configuring_dns: 2, dns_pending: 2, deploying: 3, configuring_routing: 4, ssl_pending: 5, checking_health: 6, active: 7 };
+const STEP_OF = { validating_request: 0, pending_verification: 1, verified: 1, configuring_dns: 2, dns_pending: 3, deploying: 4, configuring_routing: 5, ssl_pending: 6, checking_health: 7, active: 8 };
+
+// One honest sentence per step: what the backend has actually confirmed, or what it is waiting for right now.
+function stepDetail(connection, key, state) {
+  const dns = connection.dns || {};
+  const automatic = dns.mode === 'automatic';
+  const where = dns.provider && dns.provider !== 'unknown' ? dns.provider : 'your DNS provider';
+  if (state === 'pending') return null;
+  switch (key) {
+    case 'validating_request': return state === 'done' ? 'The domain name is valid.' : null;
+    case 'pending_verification':
+      if (state === 'done') return 'The ownership TXT record was found in public DNS.';
+      return automatic ? `Veave wrote the TXT record at ${where}; waiting for it to appear in public DNS.` : 'Waiting for you to add the TXT record at your DNS provider.';
+    case 'configuring_dns':
+      if (state === 'done') return automatic ? `Records were set at ${where} and read back to confirm.` : 'You added the records.';
+      if (automatic) return `Veave is changing the records at ${where}.`;
+      return (dns.checks || []).find((check) => !check.ok && check.problem)?.problem || 'Add the records shown below at your DNS provider.';
+    case 'dns_pending': {
+      const bad = (dns.checks || []).filter((check) => !check.ok).map((check) => check.problem).filter(Boolean);
+      if (state === 'done') return 'Public DNS now points the domain at Veave.';
+      return bad.length ? bad[0] : 'Checking public DNS resolvers. This can take from minutes to a few hours.';
+    }
+    case 'deploying': return state === 'done' ? 'The website is built and ready to serve.' : 'Waiting for the website build.';
+    case 'configuring_routing': return state === 'done' ? 'This domain serves your website (checked against the published files).' : 'Checking that the server answers for this domain.';
+    case 'ssl_pending':
+      if (state === 'done') return connection.ssl?.expiresAt ? `HTTPS certificate valid until ${new Date(connection.ssl.expiresAt).toISOString().slice(0, 10)}.` : 'HTTPS is active.';
+      return connection.ssl?.error ? `Not ready yet: ${connection.ssl.error}` : 'Requesting a certificate. Needs the DNS above to be live.';
+    case 'checking_health': return state === 'done' ? 'The live site answered over HTTPS with the right content.' : (connection.health?.checks?.failures || [])[0] || 'Checking the live website from outside.';
+    default: return null;
+  }
+}
 
 function progressSteps(connection) {
   const current = connection.stage === 'failed' ? STEP_OF[connection.failure?.stage] ?? 0 : STEP_OF[connection.stage] ?? 0;
-  return STEPS.map((step, index) => ({
-    key: step.key, label: step.label,
-    state: connection.stage === 'active' || index < current ? 'done'
-      : index === current ? (connection.stage === 'failed' ? 'failed' : connection.status === 'action_required' ? 'action_required' : 'running') : 'pending'
-  }));
+  // Manual DNS: the records have not been seen yet, so the "Configuring DNS" step is the one waiting for the owner, not a finished one.
+  const waitingForOwner = connection.stage === 'dns_pending' && connection.dns?.mode !== 'automatic' && connection.status === 'action_required';
+  return STEPS.map((step, index) => {
+    let state = connection.stage === 'active' || index < current ? 'done'
+      : index === current ? (connection.stage === 'failed' ? 'failed' : connection.status === 'action_required' ? 'action_required' : 'running') : 'pending';
+    if (waitingForOwner) state = index < 2 ? 'done' : index === 2 ? 'action_required' : 'pending';
+    return { key: step.key, label: step.label, state, detail: stepDetail(connection, step.key, state) };
+  });
 }
 
 function headline(connection) {
@@ -60,8 +108,15 @@ function publicView(connection) {
     url: doc.stage === 'active' || doc.ssl?.status === 'active' ? `https://${(doc.canonical === 'www' && doc.includeWww ? `www.${doc.apex}` : doc.kind === 'apex' ? doc.apex : doc.hostname)}/` : null,
     action: doc.actionRequired ? { type: doc.actionRequired.type, message: doc.actionRequired.message, records: doc.actionRequired.records || [], conflicts: doc.actionRequired.conflicts || [], observed: doc.actionRequired.observed || null } : null,
     verification: { method: doc.verification?.method, expiresAt: doc.verification?.expiresAt, verifiedAt: doc.verification?.verifiedAt, attempts: doc.verification?.attempts },
-    dns: { provider: doc.dns?.provider, mode: doc.dns?.mode, checks: (doc.dns?.checks || []).map(({ hostname, ok, problem }) => ({ hostname, ok, problem })), conflicts: doc.dns?.conflicts || null, appliedAt: doc.dns?.appliedAt, resolvedAt: doc.dns?.resolvedAt },
+    dns: { provider: doc.dns?.provider, mode: doc.dns?.mode, preference: doc.dns?.preference || 'auto', checks: (doc.dns?.checks || []).map(({ hostname, ok, problem }) => ({ hostname, ok, problem })), conflicts: doc.dns?.conflicts || null, appliedAt: doc.dns?.appliedAt, resolvedAt: doc.dns?.resolvedAt },
     ssl: { status: doc.ssl?.status, issuer: doc.ssl?.issuer, expiresAt: doc.ssl?.expiresAt, error: doc.ssl?.error },
+    // DNS and HTTPS for every address on its own. An address is "served" only when both are confirmed for that address.
+    hostStatus: (doc.hostnames || []).map((hostname) => {
+      const host = (doc.hosts && doc.hosts[hostname]) || {};
+      const dnsOk = host.dns?.ok === true;
+      const sslActive = host.ssl?.status === 'active';
+      return { hostname, dns: { ok: dnsOk, checked: Boolean(host.dns), problem: host.dns?.problem || null }, ssl: { status: host.ssl?.status || 'none', issuer: host.ssl?.issuer || null, expiresAt: host.ssl?.expiresAt || null, error: host.ssl?.error || null }, served: doc.stage === 'active' && dnsOk && sslActive };
+    }),
     health: { ok: Boolean(doc.health?.ok), checkedAt: doc.health?.checkedAt, lastSuccessAt: doc.health?.lastSuccessAt, problems: doc.health?.checks?.failures || [] },
     failure: doc.failure ? { stage: doc.failure.stage, message: doc.failure.message, recoverable: doc.failure.recoverable } : null,
     lastError: doc.lastError || null,
@@ -106,6 +161,7 @@ async function check(userId, hostnameInput, { providers = require('./dnsProvider
  */
 /** Everything that can reject a domain request, with no side effects (used to fail BEFORE a publish is started). */
 async function assertConnectable({ projectId, userId, hostname: input, move = false }) {
+  assertSupported();
   await ownedProject(projectId, userId);
   const parsed = normalizeHostname(input);
   if (!parsed.ok) throw new ValidationError(parsed.error);
@@ -120,8 +176,10 @@ async function assertConnectable({ projectId, userId, hostname: input, move = fa
   return target;
 }
 
-async function connect({ projectId, userId, hostname: input, includeWww = true, canonical = 'none', confirmReplace = false, move = false, deps = null }) {
+async function connect({ projectId, userId, hostname: input, includeWww = true, canonical = 'none', confirmReplace = false, move = false, dnsMode = 'auto', deps = null }) {
+  assertSupported();
   await ownedProject(projectId, userId);
+  const preference = normalizeDnsMode(dnsMode);
   const parsed = normalizeHostname(input);
   if (!parsed.ok) throw new ValidationError(parsed.error);
   const target = classifyHostname(parsed.hostname);
@@ -146,6 +204,7 @@ async function connect({ projectId, userId, hostname: input, includeWww = true, 
     if (existing.hostname === target.hostname) {
       existing.includeWww = wantWww; existing.canonical = effectiveCanonical; existing.hostnames = hostnames;
       if (confirmReplace) existing.dns.confirmReplace = true;
+      if (existing.dns.preference !== preference) { existing.dns.preference = preference; existing.dns.authorized = false; existing.dns.provider = null; existing.dns.txtWritten = false; existing.markModified('dns'); }
       if (existing.status !== 'removed' && existing.stage !== 'failed') { existing.nextRunAt = new Date(); await existing.save(); kick(existing._id, deps); return publicView(await DomainConnection.findById(existing._id)); }
       await existing.save();
       return retry({ projectId, userId, deps });
@@ -157,7 +216,7 @@ async function connect({ projectId, userId, hostname: input, includeWww = true, 
     userId, projectId, siteId: site._id, hostname: target.hostname, apex: target.apex, kind: target.kind,
     includeWww: wantWww, canonical: effectiveCanonical, hostnames,
     verification: { method: 'dns-txt', nonce: verification.newNonce(), expiresAt: new Date(Date.now() + domainConfig().verifyTtlMs) },
-    dns: { confirmReplace: Boolean(confirmReplace) },
+    dns: { confirmReplace: Boolean(confirmReplace), preference },
     history: [{ at: new Date(), stage: 'validating_request', level: 'info', message: `Connecting ${target.hostname}` }]
   });
   try { await connection.save(); }
@@ -249,14 +308,9 @@ async function disconnect({ projectId, userId, deps = null }) {
   const connection = await currentConnection(projectId);
   if (!connection) return { domain: null };
   await orchestrator.releaseRouting(connection).catch(() => {});
-  if (connection.dns.txtWritten) {
-    try {
-      const providers = deps?.providers || require('./dnsProviders');
-      const access = await providers.resolveAdapter(connection.apex, { provider: { id: connection.dns.provider, found: true, label: connection.dns.provider }, adapters: deps?.adapters || null });
-      const record = verification.challengeRecord(connection);
-      if (access.adapter) await access.adapter.deleteRecord(connection.apex, { type: 'TXT', name: record.name });
-    } catch { /* leaving a harmless TXT record behind is better than failing the disconnect */ }
-  }
+  // Take back the DNS records Veave itself wrote (only those, and only if they still hold what Veave wrote).
+  const rolledBack = await orchestrator.rollbackDns(connection, { ...orchestrator.defaultDeps(), ...(deps || {}) }).catch(() => ({ removed: [], kept: [] }));
+  if (rolledBack.removed.length) connection.history.push({ at: new Date(), stage: connection.stage, level: 'info', message: `Removed ${rolledBack.removed.length} DNS record(s) that Veave created.` });
   connection.live = false; connection.claimed = false; connection.status = 'removed'; connection.removedAt = new Date(); connection.nextRunAt = null; connection.leaseUntil = null;
   connection.history.push({ at: new Date(), stage: connection.stage, level: 'info', message: 'Disconnected' });
   await connection.save();

@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, History } from 'lucide-react';
-import { useTemplateStudioStore } from '../../store/templateStudioStore';
+import { X, History, Globe } from 'lucide-react';
+import { useTemplateStudioStore, readUi, writeUi } from '../../store/templateStudioStore';
 import PagesPanel from './PagesPanel';
 import ContentEditorPanel from './ContentEditorPanel';
 import SitePreviewPanel from './SitePreviewPanel';
 import VersionHistory from './VersionHistory';
 import VersionCompare from './VersionCompare';
+import PublishModal from './PublishModal';
 import { ink, muted, line } from './ui';
 
 const TABS = [['pages', 'Pages'], ['content', 'Content'], ['preview', 'Preview']];
@@ -14,7 +15,9 @@ const TABS = [['pages', 'Pages'], ['content', 'Content'], ['preview', 'Preview']
 export default function TemplateStudio() {
   const { init, toast, dismissToast, site, stopPolling } = useTemplateStudioStore();
   const openVersions = useTemplateStudioStore((state) => state.openVersions);
-  const [tab, setTab] = useState('preview');
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [tab, setTabState] = useState(() => (TABS.some(([id]) => id === readUi().tab) ? readUi().tab : 'preview'));
+  const setTab = (id) => { writeUi({ tab: id }); setTabState(id); };
 
   useEffect(() => {
     if (!useTemplateStudioStore.getState().sitesLoaded) init();
@@ -47,6 +50,7 @@ export default function TemplateStudio() {
         <div className="flex items-center gap-3">
           {site?.branchOf ? <span className={`hidden items-center gap-1 rounded-full border ${line} bg-[#F3EFE5] px-2.5 py-0.5 text-[11px] sm:flex`}>Branch · {site.branchOf.name}</span> : null}
           {site ? <button type="button" onClick={openVersions} className={`inline-flex items-center gap-1.5 rounded-md border ${line} bg-white px-2.5 py-1 text-xs ${ink} transition hover:bg-[#EFEBE1]`}><History className="h-3.5 w-3.5" />Version history</button> : null}
+          {site ? <button type="button" onClick={() => setPublishOpen(true)} className="inline-flex items-center gap-1.5 rounded-md bg-[#5E7B5F] px-3 py-1 text-xs font-medium text-white transition hover:bg-[#4F6A50] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#5E7B5F] focus-visible:ring-offset-1"><Globe className="h-3.5 w-3.5" />Publish</button> : null}
           {!site ? <span className={`hidden shrink-0 text-xs sm:block ${muted}`}>Pick a site from the sidebar</span> : null}
         </div>
       </header>
@@ -74,6 +78,7 @@ export default function TemplateStudio() {
           </div>
         </div>
       ) : null}
+      {publishOpen && site ? <PublishModal site={site} working={working} onClose={() => setPublishOpen(false)} /> : null}
     </div>
   );
 }

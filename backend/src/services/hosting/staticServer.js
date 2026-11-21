@@ -7,6 +7,12 @@ const { validateSlug } = require('./slug');
 const { versionDir, SAFE_VERSION } = require('./storage');
 const { resolveInside } = require('./safePath');
 
+const crypto = require('node:crypto');
+// Lets the publish step check the files of a site whose Veave address is switched off. Derived from a server secret, so only this
+// server (not a visitor) can produce it.
+const INTERNAL_CHECK_HEADER = 'x-veave-internal-check';
+const internalCheckToken = () => crypto.createHash('sha256').update(`internal-check:${process.env.JWT_SECRET || process.env.DOMAIN_VERIFY_SECRET || 'dev'}`).digest('hex');
+
 const TTL_MS = 5000;
 const cache = new Map();
 const MAX_CACHE_ENTRIES = 2000;
@@ -29,7 +35,7 @@ function invalidateSite(slug, customDomain) {
 async function lookupSite(slug) {
   const hit = cache.get(slug);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.site;
-  const site = await PublishedSite.findOne({ slug }).select('slug status activeVersion').lean();
+  const site = await PublishedSite.findOne({ slug }).select('slug status activeVersion subdomainEnabled').lean();
   remember(slug, { site, at: Date.now() });
   return site;
 }
@@ -106,6 +112,10 @@ async function serveHostedSite(req, res, next) {
     if (!site || site.status !== 'published' || !SAFE_VERSION.test(String(site.activeVersion))) {
       return res.status(404).type('text/plain').send('This site is not published.');
     }
+    // The Veave address is one of two independent ways to publish. When it is off, only a custom domain serves the site.
+    if (!isCustomHost && site.subdomainEnabled === false && req.headers[INTERNAL_CHECK_HEADER] !== internalCheckToken()) {
+      return res.status(404).type('text/plain').send('This site is not published.');
+    }
     const root = versionDir(site._id, site.activeVersion);
     let requested;
     try { requested = decodeURIComponent(req.path); } catch { return res.status(400).type('text/plain').send('Bad request'); }
@@ -141,4 +151,4 @@ async function serveHostedSite(req, res, next) {
   }
 }
 
-module.exports = { serveHostedSite, invalidateSite, slugFromHost, cacheControlFor };
+module.exports = { serveHostedSite, invalidateSite, slugFromHost, cacheControlFor, lookupSiteByDomain, INTERNAL_CHECK_HEADER, internalCheckToken };

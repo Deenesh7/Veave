@@ -9,6 +9,7 @@ const deploymentSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   slug: { type: String, required: true },
   version: { type: String, required: true },
+  subdomainEnabled: { type: Boolean, default: true },
   status: { type: String, enum: ['running', 'succeeded', 'failed'], default: 'running' },
   stage: { type: String, enum: STAGES, default: 'preparing' },
   error: { type: mongoose.Schema.Types.Mixed, default: null },

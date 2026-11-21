@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Globe, Loader2, CheckCircle2, AlertTriangle, Copy, Check, RotateCw, Circle } from 'lucide-react';
 import { hostingService, hostingErrorMessage } from '../../services/hostingService';
 import Dropdown from '../../components/ui/Dropdown';
+import DnsSetupPicker from './DnsSetupPicker';
 
 // Unwraps either axios responses ({data:{success,data}}) or already-unwrapped api helpers.
 const payload = (response) => response?.data?.data ?? response?.data ?? response;
@@ -20,12 +21,15 @@ function StepIcon({ state }) {
  * Connects a custom domain. Everything shown here is the real state of the server-side workflow (verification, DNS,
  * deployment, HTTPS, live checks); success is only displayed once the backend's outside-in checks have passed.
  */
-export function DomainSection({ projectId }) {
+export function DomainSection({ projectId, hideConnectForm = false, onChange = null }) {
   const [state, setState] = useState({ domain: null });
   const [input, setInput] = useState('');
   const [includeWww, setIncludeWww] = useState(true);
   const [canonical, setCanonical] = useState('none');
   const [preflight, setPreflight] = useState(null);
+  const [dnsMode, setDnsMode] = useState('manual');
+  const [accounts, setAccounts] = useState([]);
+  const [support, setSupport] = useState({ available: true, reason: '' });
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
@@ -40,17 +44,22 @@ export function DomainSection({ projectId }) {
     } catch { return null; }
   }, [projectId]);
 
+  useEffect(() => { onChange?.(state); }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { alive.current = true; return () => { alive.current = false; clearTimeout(timer.current); }; }, []);
   useEffect(() => { if (projectId) load(); }, [projectId, load]);
+  useEffect(() => {
+    hostingService.getConfig().then((res) => { const info = payload(res)?.customDomains; if (info) setSupport({ available: Boolean(info.available), reason: info.reason || '' }); }).catch(() => {});
+  }, []);
 
   // Follow the workflow while it is running; check slowly once it is live.
   useEffect(() => {
     clearTimeout(timer.current);
+    if (!state.domain && hideConnectForm) { timer.current = setTimeout(load, POLL_MS); return () => clearTimeout(timer.current); } // the connection appears once publishing starts
     if (!state.domain || state.state === 'failed') return undefined;
     const delay = state.stage === 'active' ? SLOW_POLL_MS : POLL_MS;
     timer.current = setTimeout(load, delay);
     return () => clearTimeout(timer.current);
-  }, [state, load]);
+  }, [state, load, hideConnectForm]);
 
   const run = async (name, fn) => {
     setBusy(name); setError('');
@@ -58,13 +67,14 @@ export function DomainSection({ projectId }) {
   };
 
   const preCheck = () => run('check', async () => setPreflight(payload(await hostingService.checkDomainName(input))));
-  const connect = () => run('connect', async () => { setState(payload(await hostingService.connectDomain(projectId, input, { includeWww, canonical: includeWww ? canonical : 'none' })) || { domain: null }); setPreflight(null); });
+  const connect = () => run('connect', async () => { setState(payload(await hostingService.connectDomain(projectId, input, { includeWww, canonical: includeWww ? canonical : 'none', dnsMode })) || { domain: null }); setPreflight(null); });
   const checkAgain = () => run('verify', async () => setState(payload(await hostingService.verifyDomain(projectId))));
   const retry = () => run('retry', async () => setState(payload(await hostingService.retryDomain(projectId))));
   const confirm = () => run('confirm', async () => setState(payload(await hostingService.confirmDomainReplace(projectId))));
   const remove = () => run('remove', async () => { await hostingService.removeDomain(projectId); setState({ domain: null }); setInput(''); setPreflight(null); });
   const copy = (key, value) => { navigator.clipboard?.writeText(value); setCopied(key); setTimeout(() => setCopied(''), 1500); };
 
+  const autoReady = dnsMode === 'manual' || accounts.some((account) => account.provider === dnsMode && account.connected);
   const live = state.stage === 'active';
   const failed = state.state === 'failed';
   const needsAction = state.state === 'action_required';
@@ -75,7 +85,8 @@ export function DomainSection({ projectId }) {
         <Globe className="w-3.5 h-3.5" /> Custom domain
       </div>
 
-      {!state.domain && (
+      {!state.domain && hideConnectForm && <p className="text-[11px] text-zinc-500">Press Publish above. The domain steps appear here as soon as publishing starts.</p>}
+      {!state.domain && !hideConnectForm && (
         <>
           <p className="text-[11px] text-zinc-500">Enter a domain you own. Veave verifies it, sets up DNS where it can, publishes your site and turns on HTTPS.</p>
           <div className="flex gap-2">
@@ -84,10 +95,13 @@ export function DomainSection({ projectId }) {
             <button type="button" onClick={preCheck} disabled={!input || !!busy} className="px-3 py-1.5 rounded-lg border border-zinc-200 text-xs font-semibold hover:bg-zinc-50 disabled:opacity-50 cursor-pointer">
               {busy === 'check' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Check'}
             </button>
-            <button type="button" onClick={connect} disabled={!input || !!busy} className="px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-semibold hover:bg-black disabled:opacity-50 cursor-pointer">
+            <button type="button" onClick={connect} disabled={!input || !!busy || !autoReady || !support.available} className="px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-semibold hover:bg-black disabled:opacity-50 cursor-pointer">
               {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Connect'}
             </button>
           </div>
+          {!support.available && <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900" role="status">{support.reason}</p>}
+          <DnsSetupPicker value={dnsMode} onChange={setDnsMode} onAccounts={setAccounts} disabled={!!busy} />
+          {!autoReady && <p className="text-[11px] text-amber-700">Connect your {dnsMode === 'godaddy' ? 'GoDaddy' : 'Cloudflare'} account above first, or choose Manual.</p>}
           <label className="flex items-center gap-2 text-[11px] text-zinc-600 cursor-pointer">
             <input type="checkbox" checked={includeWww} onChange={(e) => setIncludeWww(e.target.checked)} /> Also connect www
             {includeWww && (
@@ -120,25 +134,48 @@ export function DomainSection({ projectId }) {
 
           <ol className="space-y-1">
             {(state.steps || []).map((step) => (
-              <li key={step.key} className={`flex items-center gap-2 text-[11px] ${step.state === 'pending' ? 'text-zinc-400' : 'text-zinc-700'}`}>
-                <StepIcon state={step.state} /> {step.label}
+              <li key={step.key} className={`text-[11px] ${step.state === 'pending' ? 'text-zinc-400' : 'text-zinc-700'}`}>
+                <span className="flex items-center gap-2"><StepIcon state={step.state} /> {step.label}</span>
+                {step.detail && step.state !== 'pending' && <span className={`ml-5 block ${step.state === 'failed' ? 'text-rose-700' : step.state === 'action_required' ? 'text-amber-700' : 'text-zinc-500'}`}>{step.detail}</span>}
               </li>
             ))}
           </ol>
+
+          {state.hostStatus?.length > 0 && (
+            <ul className="space-y-1" aria-label="Status of each address">
+              {state.hostStatus.map((host) => (
+                <li key={host.hostname} className="rounded-lg border border-zinc-200 bg-zinc-50/70 px-2.5 py-1.5 text-[11px]">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono font-semibold text-zinc-800 truncate">{host.hostname}</span>
+                    <span className={`font-semibold ${host.served ? 'text-emerald-700' : 'text-zinc-500'}`}>{host.served ? 'Published' : 'Not published yet'}</span>
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap gap-x-3 text-zinc-600">
+                    <span>DNS: {host.dns.ok ? <b className="text-emerald-700">confirmed</b> : host.dns.checked ? <b className="text-amber-700">not pointing at Veave yet</b> : 'waiting'}</span>
+                    <span>HTTPS: {host.ssl.status === 'active' ? <b className="text-emerald-700">active{host.ssl.expiresAt ? ` until ${new Date(host.ssl.expiresAt).toISOString().slice(0, 10)}` : ''}</b> : host.ssl.error ? <b className="text-amber-700">{host.ssl.error}</b> : 'waiting'}</span>
+                  </div>
+                  {!host.dns.ok && host.dns.problem && <p className="mt-0.5 text-amber-700">{host.dns.problem}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
 
           {needsAction && state.action && (
             <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-2.5 space-y-1.5">
               <p className="text-[11px] text-amber-900">{state.action.message}</p>
               {state.action.records?.length > 0 && (
                 <table className="w-full text-[11px] font-mono">
-                  <thead><tr className="text-zinc-400 text-left"><th className="pr-2">Type</th><th className="pr-2">Name</th><th>Value</th><th /></tr></thead>
+                  <thead><tr className="text-zinc-400 text-left"><th className="pr-2">Type</th><th className="pr-2">Name</th><th className="pr-2">Value</th><th className="pr-2">TTL</th><th /></tr></thead>
                   <tbody>
                     {state.action.records.map((r) => (
                       <tr key={`${r.type}-${r.name}`} className="align-top">
                         <td className="pr-2 py-0.5 font-bold">{r.type}</td>
                         <td className="pr-2 py-0.5">{r.name}</td>
-                        <td className="py-0.5 break-all">{r.data}</td>
-                        <td className="py-0.5 pl-1">
+                        <td className="pr-2 py-0.5 break-all">{r.data}</td>
+                        <td className="pr-2 py-0.5">{r.ttl || 600}</td>
+                        <td className="py-0.5 pl-1 whitespace-nowrap">
+                          <button type="button" onClick={() => copy(`${r.type}-${r.name}-name`, r.name)} className="text-zinc-400 hover:text-zinc-800 cursor-pointer mr-1" title="Copy name">
+                            {copied === `${r.type}-${r.name}-name` ? <Check className="w-3 h-3 text-emerald-600" /> : <span className="text-[9px] font-sans font-semibold">name</span>}
+                          </button>
                           <button type="button" onClick={() => copy(`${r.type}-${r.name}`, r.data)} className="text-zinc-400 hover:text-zinc-800 cursor-pointer" title="Copy value">
                             {copied === `${r.type}-${r.name}` ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
                           </button>

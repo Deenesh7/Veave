@@ -44,6 +44,8 @@ const domainConnectionSchema = new mongoose.Schema({
     provider: { type: String, default: null },          // detected from the NS records, e.g. cloudflare, unknown
     authorized: { type: Boolean, default: false },      // can Veave change this zone itself?
     mode: { type: String, enum: ['automatic', 'manual', null], default: null },
+    preference: { type: String, enum: ['auto', 'manual', 'cloudflare', 'godaddy'], default: 'auto' }, // what the owner chose in the publish window
+    created: { type: mongoose.Schema.Types.Mixed, default: null },                     // records Veave itself wrote (undone on disconnect, only if unchanged)
     confirmReplace: { type: Boolean, default: false },  // the user agreed to replace conflicting A/AAAA/CNAME records
     plan: { type: mongoose.Schema.Types.Mixed, default: null },
     conflicts: { type: mongoose.Schema.Types.Mixed, default: null },
@@ -59,6 +61,8 @@ const domainConnectionSchema = new mongoose.Schema({
     readyAt: { type: Date, default: null }
   },
   routing: { activatedAt: { type: Date, default: null } },
+  // DNS and HTTPS are tracked for each hostname on its own: { 'example.com': { dns: { ok, problem, checkedAt }, ssl: { status, issuer, expiresAt, error } } }
+  hosts: { type: mongoose.Schema.Types.Mixed, default: {} },
   ssl: {
     status: { type: String, enum: ['none', 'pending', 'active', 'failed'], default: 'none' },
     issuer: { type: String, default: null },

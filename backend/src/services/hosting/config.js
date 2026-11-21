@@ -55,6 +55,9 @@ function domainConfig() {
     // Where customers' domains must point. Nothing is hardcoded: both come from the deployment's environment.
     ipv4: String(process.env.PUBLISH_SERVER_IP || '').trim() || null,
     ipv6: String(process.env.PUBLISH_SERVER_IPV6 || '').trim() || null,
+    // A neutral name customers' CNAME records may point at (for example edge.veave.net -> this server). Without it a CNAME points
+    // at the site's own Veave address, which only exists while the Veave subdomain is switched on.
+    cnameTarget: String(process.env.PUBLISH_CNAME_TARGET || '').trim().toLowerCase() || null,
     verifyTtlMs: hours('DOMAIN_VERIFY_TTL_HOURS', 168) * 3600 * 1000,         // how long a challenge stays valid
     dnsWaitMs: hours('DOMAIN_DNS_WAIT_HOURS', 72) * 3600 * 1000,              // propagation allowance
     healthIntervalMs: hours('DOMAIN_HEALTH_INTERVAL_HOURS', 6) * 3600 * 1000, // re-check of live domains
@@ -67,4 +70,27 @@ function domainConfig() {
   };
 }
 
-module.exports = { hostingConfig, domainConfig, siteHost, siteUrl, PRODUCTION_DOMAIN };
+/**
+ * Can customers connect their own domain on this server? Only when published sites live under a real public domain: a customer's
+ * DNS record can never point at "localhost" or any other name that exists only on one machine. (Tests may allow it explicitly.)
+ */
+function customDomainSupport(config = hostingConfig()) {
+  if (process.env.DOMAIN_ALLOW_LOCAL === 'true') return { available: true, reason: null };
+  const base = config.baseDomain;
+  const reserved = ['localhost', 'local', 'internal', 'test', 'invalid', 'example', 'lan', 'home', 'corp', 'localdomain'];
+  const publicName = base.includes('.') && !reserved.includes(base.split('.').at(-1)) && !/^\d+(\.\d+){3}$/.test(base);
+  return publicName ? { available: true, reason: null }
+    : { available: false, reason: 'Custom domains can only be connected on the live Veave server. This local copy has no public address, so a domain could never point at it. Publish here with the free address, then connect your domain from the live app.' };
+}
+
+/** The host a customer's CNAME should point at, or null when there is none (then the records use the server's IP address). */
+function ingressHost(site, config = hostingConfig()) {
+  const configured = domainConfig().cnameTarget;
+  if (configured) return configured;
+  return site && site.subdomainEnabled === false ? null : siteHost(site.slug, config);
+}
+
+/** A host name another computer could actually reach (never localhost-style names). */
+const isPublicHost = (host) => customDomainSupport({ baseDomain: String(host || '').toLowerCase().replace(/^[^.]+\./, '') || 'x' }).available && String(host || '').includes('.');
+
+module.exports = { hostingConfig, domainConfig, siteHost, siteUrl, customDomainSupport, isPublicHost, ingressHost, PRODUCTION_DOMAIN };

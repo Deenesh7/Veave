@@ -37,7 +37,9 @@ function toPublicSite(site) {
     id: String(site._id),
     projectId: String(site.projectId),
     slug: site.slug,
-    url: siteUrl(site.slug),
+    url: site.subdomainEnabled === false ? null : siteUrl(site.slug),
+    subdomainUrl: siteUrl(site.slug),
+    subdomainEnabled: site.subdomainEnabled !== false,
     status: site.status,
     activeVersion: site.activeVersion,
     firstPublishedAt: site.firstPublishedAt,
@@ -53,7 +55,8 @@ function toPublicDeployment(deployment) {
     id: doc.deploymentId,
     projectId: String(doc.projectId),
     slug: doc.slug,
-    url: siteUrl(doc.slug),
+    url: doc.subdomainEnabled === false ? null : siteUrl(doc.slug),
+    subdomainEnabled: doc.subdomainEnabled !== false,
     version: doc.version,
     status: doc.status,
     stage: doc.stage,
@@ -128,7 +131,7 @@ async function acquireLock(siteId) {
   return site;
 }
 
-async function startPublish({ projectId, userId, slug: requestedSlug, deps = defaultDeps }) {
+async function startPublish({ projectId, userId, slug: requestedSlug, subdomainEnabled = undefined, deps = defaultDeps }) {
   const project = await loadOwnedProject(projectId, userId);
   let site = await PublishedSite.findOne({ projectId: project._id, userId });
   let slug;
@@ -142,7 +145,7 @@ async function startPublish({ projectId, userId, slug: requestedSlug, deps = def
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
         await assertSlugAvailable(slug);
-        site = await PublishedSite.create({ projectId: project._id, userId, slug });
+        site = await PublishedSite.create({ projectId: project._id, userId, slug, ...(typeof subdomainEnabled === 'boolean' ? { subdomainEnabled } : {}) });
         break;
       } catch (error) {
         const duplicate = error.code === 11000 || (error instanceof AppError && error.statusCode === 409);
@@ -155,11 +158,12 @@ async function startPublish({ projectId, userId, slug: requestedSlug, deps = def
   }
 
   site = await acquireLock(site._id);
+  const subdomainOn = typeof subdomainEnabled === 'boolean' ? subdomainEnabled : site.subdomainEnabled !== false;
   const version = `v${Date.now().toString(36)}${randomBytes(3).toString('hex')}`;
   const deployment = await Deployment.create({
     deploymentId: randomBytes(10).toString('hex'),
-    siteId: site._id, projectId: project._id, userId, slug, version,
-    logs: [{ at: new Date(), level: 'info', message: `Publishing to ${siteHost(slug)}` }]
+    siteId: site._id, projectId: project._id, userId, slug, version, subdomainEnabled: subdomainOn,
+    logs: [{ at: new Date(), level: 'info', message: subdomainOn ? `Publishing to ${siteHost(slug)}` : 'Publishing for a custom domain only (the Veave address is off).' }]
   });
   const controller = new AbortController();
   inFlight.set(deployment.deploymentId, controller);
@@ -226,7 +230,7 @@ async function runDeployment({ deploymentId, signal, deps = defaultDeps }) {
     const now = new Date();
     try {
       await PublishedSite.updateOne({ _id: siteBefore._id }, { $set: {
-        slug: deployment.slug, status: 'published', activeVersion: deployment.version,
+        slug: deployment.slug, subdomainEnabled: deployment.subdomainEnabled !== false, status: 'published', activeVersion: deployment.version,
         previousVersion: siteBefore.activeVersion || siteBefore.previousVersion || null,
         activeDeploymentId: deploymentId, lastPublishedAt: now,
         firstPublishedAt: siteBefore.firstPublishedAt || now, unpublishedAt: null
@@ -242,8 +246,8 @@ async function runDeployment({ deploymentId, signal, deps = defaultDeps }) {
     // 5. Verifying
     await stage('verifying');
     await deps.verifyLive({ slug: deployment.slug, config });
-    await log('Live check passed: home page and client-side routes respond.');
-    if (config.verifyPublicUrl) {
+    await log(deployment.subdomainEnabled === false ? 'Files check passed: home page and client-side routes respond (the Veave address is off; a custom domain serves the site).' : 'Live check passed: home page and client-side routes respond.');
+    if (config.verifyPublicUrl && deployment.subdomainEnabled !== false) {
       const publicCheck = await deps.verifyPublic({ slug: deployment.slug, config });
       await Deployment.updateOne({ deploymentId }, { $set: { publicCheck } });
       await log(publicCheck.ok
@@ -287,7 +291,7 @@ async function runDeployment({ deploymentId, signal, deps = defaultDeps }) {
 async function rollbackSite(before, attemptedSlug) {
   const hadLive = Boolean(before.activeVersion) && before.status === 'published';
   await PublishedSite.updateOne({ _id: before._id }, { $set: {
-    slug: before.slug, status: hadLive ? 'published' : 'unpublished', activeVersion: before.activeVersion || null,
+    slug: before.slug, subdomainEnabled: before.subdomainEnabled !== false, status: hadLive ? 'published' : 'unpublished', activeVersion: before.activeVersion || null,
     previousVersion: before.previousVersion || null, activeDeploymentId: before.activeDeploymentId || null,
     lastPublishedAt: before.lastPublishedAt || null, firstPublishedAt: before.firstPublishedAt || null,
     unpublishedAt: before.unpublishedAt || null
@@ -331,11 +335,12 @@ function request(url, { headers = {}, timeout = 8000 } = {}) {
 async function verifyLive({ slug, config = hostingConfig() }) {
   const host = siteHost(slug, config) + (config.publicPort ? `:${config.publicPort}` : '');
   const base = config.verifyOrigin.replace(/\/$/, '');
-  const home = await request(`${base}/`, { headers: { Host: host, Accept: 'text/html' } }).catch((error) => {
+  const internal = { [require('./staticServer').INTERNAL_CHECK_HEADER]: require('./staticServer').internalCheckToken() };
+  const home = await request(`${base}/`, { headers: { Host: host, Accept: 'text/html', ...internal } }).catch((error) => {
     throw new AppError(`Live check could not reach the server: ${error.message}`, 502);
   });
   if (home.status !== 200 || !/<html|<!doctype/i.test(home.body)) throw new AppError(`Live check failed: home page returned HTTP ${home.status}.`, 502);
-  const route = await request(`${base}/__veave_route_check__/nested`, { headers: { Host: host, Accept: 'text/html' } });
+  const route = await request(`${base}/__veave_route_check__/nested`, { headers: { Host: host, Accept: 'text/html', ...internal } });
   if (route.status !== 200 || !/<html|<!doctype/i.test(route.body)) {
     throw new AppError(`Live check failed: nested routes return HTTP ${route.status} instead of the app (SPA fallback).`, 502);
   }

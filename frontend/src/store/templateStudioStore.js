@@ -53,6 +53,11 @@ const sectionTickets = new Map();  // the newest request number per page; older 
 let sectionTicket = 0;
 let watching = false;
 
+// How the owner arranged the workspace (folded columns, preview device, ticked sections, scroll): kept across a page refresh.
+const UI_KEY = 'veave_template_studio_ui';
+export const readUi = () => { try { return JSON.parse(localStorage.getItem(UI_KEY) || '{}') || {}; } catch { return {}; } };
+export const writeUi = (patch) => { try { localStorage.setItem(UI_KEY, JSON.stringify({ ...readUi(), ...patch })); } catch { /* storage may be unavailable */ } };
+
 const COLLAPSE_KEY = 'veave_template_studio_sites_collapsed';
 const initialCollapsed = () => {
   try { const saved = localStorage.getItem(COLLAPSE_KEY); if (saved !== null) return saved === '1'; } catch { /* ignore */ }
@@ -68,10 +73,10 @@ export const useTemplateStudioStore = create((set, get) => ({
   setGroupLink: (groupLink) => set({ groupLink }),
   sitesCollapsed: initialCollapsed(),
   setSitesCollapsed: (value) => { try { localStorage.setItem(COLLAPSE_KEY, value ? '1' : '0'); } catch { /* ignore */ } set({ sitesCollapsed: value }); },
-  pagesCollapsed: false,
-  setPagesCollapsed: (value) => set({ pagesCollapsed: value }),
-  contentCollapsed: false,
-  setContentCollapsed: (value) => set({ contentCollapsed: value }),
+  pagesCollapsed: readUi().pagesCollapsed === true,
+  setPagesCollapsed: (value) => { writeUi({ pagesCollapsed: Boolean(value) }); set({ pagesCollapsed: value }); },
+  contentCollapsed: readUi().contentCollapsed === true,
+  setContentCollapsed: (value) => { writeUi({ contentCollapsed: Boolean(value) }); set({ contentCollapsed: value }); },
   // A text clicked in the preview: { id, text (as shown now), saved (as last saved in the code), tag, status: 'idle' | 'saving' | 'saved' | 'error', error }.
   selectedText: null,
   setSelectedText: (item) => {

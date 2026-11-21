@@ -12,6 +12,9 @@ const publishedSiteSchema = new mongoose.Schema({
   firstPublishedAt: { type: Date, default: null },
   lastPublishedAt: { type: Date, default: null },
   unpublishedAt: { type: Date, default: null },
+  // The two publishing methods are independent. The Veave address (<slug>.<base>) answers only while this is on; a custom domain
+  // lives in its own DomainConnection. Existing sites keep working: they were always published on their Veave address.
+  subdomainEnabled: { type: Boolean, default: true },
   // Custom domain (e.g. example.com) served in addition to <slug>.<base>; verified through DNS.
   customDomain: { type: String, lowercase: true, trim: true, unique: true, sparse: true },
   customDomainStatus: { type: String, enum: ['none', 'pending', 'verified'], default: 'none' },

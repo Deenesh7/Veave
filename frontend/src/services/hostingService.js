@@ -15,6 +15,10 @@ export const hostingService = {
   domainHealth: (projectId, refresh = false) => api.get(`/hosting/projects/${projectId}/domain/health`, { params: refresh ? { refresh: 'true' } : {} }),
   verifyDomain: (projectId) => api.post(`/hosting/projects/${projectId}/domain/verify`),
   removeDomain: (projectId) => api.delete(`/hosting/projects/${projectId}/domain`),
+  // The owner's DNS provider accounts (Cloudflare, GoDaddy). Secrets are sent once and never come back.
+  listDnsAccounts: () => api.get('/hosting/dns-accounts'),
+  saveDnsAccount: (provider, fields) => api.put(`/hosting/dns-accounts/${provider}`, fields),
+  removeDnsAccount: (provider) => api.delete(`/hosting/dns-accounts/${provider}`),
   getDeployment: (deploymentId) => api.get(`/hosting/deployments/${deploymentId}`),
 };
 

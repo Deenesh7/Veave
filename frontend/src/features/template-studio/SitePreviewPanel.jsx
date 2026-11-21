@@ -3,7 +3,7 @@ import SectionEditModal from './SectionEditModal';
 import { penScript } from './sectionEditScripts';
 import { API_URL } from '../../config';
 import { Monitor, Tablet, Smartphone, RefreshCw, Maximize2, Minimize2, History, RotateCcw, X, Palette, Type } from 'lucide-react';
-import { useTemplateStudioStore } from '../../store/templateStudioStore';
+import { useTemplateStudioStore, readUi, writeUi } from '../../store/templateStudioStore';
 import { templateSiteService, apiMessage } from '../../services/templateSiteService';
 import { ASSET_BASE_PLACEHOLDER } from '../../services/previewService';
 import ThemePanel from './ThemePanel';
@@ -29,7 +29,7 @@ function mark(el,attr,val){if(el)el.removeAttribute(attr);if(val)val.setAttribut
 document.addEventListener('pointerdown',function(){window.parent.postMessage({type:'studio-preview-touch'},'*');},true);
 document.addEventListener('mousemove',function(e){if(!on)return;var el=at(e.clientX,e.clientY,e.target);if(el===hov)return;if(hov)hov.removeAttribute('data-studio-hover');hov=el;if(el&&el!==sel)el.setAttribute('data-studio-hover','');},true);
 var LIVE='button,a,summary,select,input,textarea,[role="tab"],[role="button"],[role="switch"],label';
-document.addEventListener('click',function(e){if(!on)return;if(e.ctrlKey||e.metaKey)return;if(e.target&&e.target.closest&&e.target.closest(LIVE))return;var el=at(e.clientX,e.clientY,e.target);if(!el)return;e.preventDefault();e.stopImmediatePropagation();
+document.addEventListener('click',function(e){if(!on)return;if(e.ctrlKey||e.metaKey)return;if(e.target&&e.target.closest&&e.target.closest(LIVE))return;var el=at(e.clientX,e.clientY,e.target);if(!el){if(sel){sel.removeAttribute('data-studio-sel');sel=null;clearSoft();window.parent.postMessage({type:'studio-text-deselected'},'*');}return;}e.preventDefault();e.stopImmediatePropagation();
 if(sel)sel.removeAttribute('data-studio-sel');sel=el;el.removeAttribute('data-studio-hover');el.setAttribute('data-studio-sel','');
 soft(el);if(!el.__sid){el.__sid='s'+(++n);map[el.__sid]=el;}
 window.parent.postMessage({type:'studio-text-selected',id:el.__sid,text:norm(own(el)),tag:el.tagName.toLowerCase()},'*');},true);
@@ -45,7 +45,7 @@ nodes.forEach(function(x){if(x!==first)x.nodeValue='';});first.nodeValue=lead+d.
 
 // When sections are ticked in the Content column, every other section of the page is dimmed so the chosen ones stand out.
 const FOCUS_SCRIPT = `<script>(function(){
-var st=document.createElement('style');st.textContent='[data-studio-dim]{opacity:.4!important;filter:grayscale(.35);transition:opacity .25s ease,filter .25s ease}[data-studio-focus]{transition:opacity .25s ease}';document.head.appendChild(st);
+var st=document.createElement('style');st.textContent='[data-studio-dim]{opacity:.4!important;filter:grayscale(.35);pointer-events:none!important;user-select:none!important;transition:opacity .25s ease,filter .25s ease}[data-studio-focus]{transition:opacity .25s ease}';document.head.appendChild(st);
 var current=[];
 var lastY=0,sT=null;window.addEventListener('scroll',function(){lastY=window.scrollY;clearTimeout(sT);sT=setTimeout(function(){window.parent.postMessage({type:'studio-scroll',y:lastY},'*');},120);},{passive:true});
 function norm(s){return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();}
@@ -91,8 +91,9 @@ export default function SitePreviewPanel({ className = '' }) {
   const iframeRef = useRef(null);
   const [full, setFull] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
-  const [textMode, setTextMode] = useState(true); // click text in the page to edit it in the Content column (off: links work as in the real site)
-  const textModeRef = useRef(true);
+  const [textMode, setTextModeState] = useState(() => readUi().textMode !== false);
+  const setTextMode = (next) => setTextModeState((value) => { const resolved = typeof next === 'function' ? next(value) : next; writeUi({ textMode: resolved }); return resolved; }); // click text in the page to edit it in the Content column (off: links work as in the real site)
+  const textModeRef = useRef(readUi().textMode !== false);
   // Touching the preview (the page itself or its toolbar) folds the app's menu sidebar and the Pages column, so the work area gets the room.
   const foldMenu = useCallback(() => { const store = useTemplateStudioStore.getState(); if (!store.appSidebarHidden) store.setAppSidebarHidden(true); if (!store.pagesCollapsed) store.setPagesCollapsed(true); }, []);
   const [sectionEdit, setSectionEdit] = useState(null); // the section opened with its pen: { name, domId, html, head, ... }
@@ -144,7 +145,8 @@ export default function SitePreviewPanel({ className = '' }) {
     cssRef.current = '';
   }, [pushCss]);
   const page = pages.find((item) => item.id === activePageId) || null;
-  const [device, setDevice] = useState('desktop');
+  const [device, setDeviceState] = useState(() => (DEVICES.some((item) => item.id === readUi().device) ? readUi().device : 'desktop'));
+  const setDevice = (id) => { writeUi({ device: id }); setDeviceState(id); };
   const [manualKey, setManualKey] = useState(0);
   useEffect(() => {
     if (!full) return undefined;
@@ -210,7 +212,12 @@ export default function SitePreviewPanel({ className = '' }) {
       if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return;
       if (event.data?.type === 'preview-rendered') { showRoute(routeRef.current); sendTextMode(); }
       if (event.data?.type === 'studio-preview-touch') foldMenu();
-      if (event.data?.type === 'studio-scroll') scrollRef.current = Number(event.data.y) || 0;
+      if (event.data?.type === 'studio-scroll') {
+        scrollRef.current = Number(event.data.y) || 0;
+        const siteKey = useTemplateStudioStore.getState().activeSiteId;
+        if (siteKey) writeUi({ scroll: { ...(readUi().scroll || {}), [`${siteKey}:${routeRef.current}`]: scrollRef.current } });
+      }
+      if (event.data?.type === 'studio-text-deselected') useTemplateStudioStore.getState().setSelectedText(null);
       if (event.data?.type === 'studio-section-edit' && revisionPreview?.status !== 'ready') setSectionEdit({ name: String(event.data.name || ''), domId: String(event.data.domId || ''), index: event.data.index, html: String(event.data.html || ''), head: String(event.data.head || ''), htmlClass: String(event.data.htmlClass || ''), bodyClass: String(event.data.bodyClass || '') });
       if (event.data?.type === 'studio-text-selected' && revisionPreview?.status !== 'ready') useTemplateStudioStore.getState().setSelectedText({ id: event.data.id, text: String(event.data.text || ''), tag: String(event.data.tag || '') });
       if (event.data?.type === 'preview-route-changed') {
@@ -288,7 +295,7 @@ export default function SitePreviewPanel({ className = '' }) {
             <iframe
               key={frameKey} ref={iframeRef} title={`${site.name} website preview`} srcDoc={html}
               sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
-              onLoad={() => { showRoute(routeRef.current); sendTextMode(); setTimeout(sendFocus, 400); try { if (scrollRef.current > 0) iframeRef.current?.contentWindow?.postMessage({ type: 'studio-restore-scroll', y: scrollRef.current }, '*'); } catch { /* the frame may be reloading */ } useTemplateStudioStore.getState().setSelectedText(null); if (cssRef.current) pushCss(cssRef.current); }} className="h-full w-full border-0 bg-white"
+              onLoad={() => { showRoute(routeRef.current); sendTextMode(); setTimeout(sendFocus, 400); try { const savedY = scrollRef.current || Number(readUi().scroll?.[`${useTemplateStudioStore.getState().activeSiteId}:${routeRef.current}`]) || 0; if (savedY > 0) iframeRef.current?.contentWindow?.postMessage({ type: 'studio-restore-scroll', y: savedY }, '*'); } catch { /* the frame may be reloading */ } useTemplateStudioStore.getState().setSelectedText(null); if (cssRef.current) pushCss(cssRef.current); }} className="h-full w-full border-0 bg-white"
             />
           </div>
         ) : null}

@@ -17,7 +17,7 @@ const DomainConnection = require('../../models/DomainConnection');
 const PublishedSite = require('../../models/PublishedSite');
 const Deployment = require('../../models/Deployment');
 const logger = require('../../utils/logger');
-const { hostingConfig, domainConfig, siteHost } = require('./config');
+const { hostingConfig, domainConfig, siteHost, isPublicHost, ingressHost } = require('./config');
 const verification = require('./domainVerification');
 const providers = require('./dnsProviders');
 const planner = require('./dnsPlanner');
@@ -34,7 +34,8 @@ const defaultDeps = () => ({
   probes: liveProbes.defaultProbes,
   verification,
   providers,
-  adapters: null, // tests inject fake DNS providers; production has none, so DNS is changed manually
+  adapters: null, // tests inject fake DNS providers; otherwise the customer's connected DNS accounts are used (see dnsAccounts)
+  dnsAccounts: require('./dnsAccounts'),
   startPublish: (args) => require('./deploymentService').startPublish(args),
   readActiveIndex: async (site) => {
     const html = await fs.readFile(path.join(storage.versionDir(site._id, site.activeVersion), 'index.html'));
@@ -80,20 +81,45 @@ function fail(connection, message, deps, { recoverable = true } = {}) {
   connection.leaseUntil = null;
 }
 
+/** The DNS adapters that may be used for this connection: injected ones (tests), else the owner's connected accounts. */
+async function adaptersOf(connection, deps) {
+  if (deps.adapters) return deps.adapters;
+  return deps.dnsAccounts.adaptersFor(connection).catch((error) => { logger.warn(`DNS accounts unavailable for ${connection.hostname}: ${error.message}`); return []; });
+}
+
+/** Per-hostname status: DNS and HTTPS are tracked separately for every address this connection serves. */
+function setHost(connection, hostname, patch) {
+  const hosts = connection.hosts && typeof connection.hosts === 'object' ? connection.hosts : {};
+  const current = hosts[hostname] || {};
+  connection.hosts = { ...hosts, [hostname]: { ...current, ...(patch.dns ? { dns: { ...(current.dns || {}), ...patch.dns } } : {}), ...(patch.ssl ? { ssl: { ...(current.ssl || {}), ...patch.ssl } } : {}) } };
+  connection.markModified('hosts');
+}
+
+/** Remembers a record Veave wrote itself, so disconnecting can take back exactly that and nothing else. */
+function rememberCreated(connection, record) {
+  const list = Array.isArray(connection.dns.created) ? connection.dns.created.filter((item) => !(item.type === record.type && item.name === record.name)) : [];
+  connection.dns.created = [...list, { type: record.type, name: record.name, data: record.data }];
+  connection.markModified('dns');
+}
+
 async function loadSite(connection) {
   return connection.siteId ? PublishedSite.findById(connection.siteId) : PublishedSite.findOne({ projectId: connection.projectId });
 }
 
 async function endpoint(connection, site, deps) {
   const config = domainConfig();
-  return { ipv4: config.ipv4, ipv6: config.ipv6, cnameTarget: siteHost(site.slug) };
+  // A name that only exists on one machine (localhost...) is never handed to a customer's DNS.
+  const target = ingressHost(site);
+  return { ipv4: config.ipv4, ipv6: config.ipv6, cnameTarget: target && isPublicHost(target) ? target : null };
 }
 
 // The addresses visitors must be sent to: the configured ingress, or (development) wherever the platform host resolves.
 async function expectedAddresses(connection, site, deps) {
   const config = domainConfig();
   if (config.ipv4) return [config.ipv4];
-  const target = await deps.probes.resolveAll(siteHost(site.slug));
+  const host = ingressHost(site);
+  if (!host) return [];
+  const target = await deps.probes.resolveAll(host);
   return target.a;
 }
 
@@ -130,7 +156,7 @@ const handlers = {
     // Who runs this domain's DNS, and can Veave change it?
     if (!c.dns.provider || c.dns.authorized === false && c.retries === 0) {
       const provider = await deps.providers.detectProvider(c.apex).catch(() => ({ id: 'unknown', label: 'your DNS provider', found: false }));
-      const access = await deps.providers.resolveAdapter(c.apex, { provider, adapters: deps.adapters });
+      const access = await deps.providers.resolveAdapter(c.apex, { provider, adapters: await adaptersOf(c, deps) });
       if (access.transient) { waitFor(c, backoff(deps, c.retries, 10000, 120000), deps, { message: access.reason }); return; }
       c.dns.provider = provider.id;
       c.dns.authorized = access.authorized;
@@ -140,11 +166,11 @@ const handlers = {
     }
     // With authority, Veave publishes the challenge itself (only that one record).
     if (c.dns.authorized && !c.dns.txtWritten) {
-      const access = await deps.providers.resolveAdapter(c.apex, { provider: { id: c.dns.provider, found: true, label: c.dns.provider }, adapters: deps.adapters });
+      const access = await deps.providers.resolveAdapter(c.apex, { provider: { id: c.dns.provider, found: true, label: c.dns.provider }, adapters: await adaptersOf(c, deps) });
       if (!access.adapter) { c.dns.authorized = false; c.dns.mode = 'manual'; c.markModified('dns'); waitFor(c, 5000, deps, { message: access.reason }); return; }
       await access.adapter.setRecord(c.apex, { type: 'TXT', name: record.name, data: record.data, ttl: 600 });
       c.dns.txtWritten = true;
-      c.markModified('dns');
+      rememberCreated(c, { type: 'TXT', name: record.name, data: record.data });
       note(c, `Wrote the ownership TXT record ${record.name}.`);
     }
 
@@ -183,7 +209,7 @@ const handlers = {
     if (!site) { fail(c, 'The project is no longer published.', deps, { recoverable: false }); return; }
     const target = await endpoint(c, site, deps);
     const provider = { id: c.dns.provider || 'unknown', found: Boolean(c.dns.provider && c.dns.provider !== 'unknown'), label: c.dns.provider || 'your DNS provider' };
-    const access = await deps.providers.resolveAdapter(c.apex, { provider, adapters: deps.adapters });
+    const access = await deps.providers.resolveAdapter(c.apex, { provider, adapters: await adaptersOf(c, deps) });
     if (access.transient) { waitFor(c, backoff(deps, c.retries, 10000, 120000), deps, { message: access.reason }); return; }
 
     if (!access.adapter) {
@@ -220,6 +246,7 @@ const handlers = {
     for (const action of plan.actions) {
       if (action.op === 'delete') await access.adapter.deleteRecord(c.apex, { type: action.type, name: action.name });
       else await access.adapter.setRecord(c.apex, { type: action.type, name: action.name, data: action.data, ttl: action.ttl || 600 });
+      if (action.op === 'set') rememberCreated(c, { type: action.type, name: action.name, data: action.data });
       note(c, `DNS ${action.op} ${action.type} ${action.name}${action.data ? ` -> ${action.data}` : ''}`);
     }
     // Verify what the provider now holds.
@@ -243,6 +270,7 @@ const handlers = {
     const checks = await Promise.all(c.hostnames.map((hostname) => dnsPointsHere(hostname, expected, deps)));
     c.dns.checks = checks.map(({ hostname, ok, a, cname, problem }) => ({ hostname, ok, a, cname, problem }));
     c.markModified('dns');
+    for (const check of checks) setHost(c, check.hostname, { dns: { ok: check.ok, problem: check.problem || null, checkedAt: deps.now() } });
     if (checks.every((check) => check.ok)) { c.dns.resolvedAt = deps.now(); c.markModified('dns'); note(c, `DNS points ${c.hostnames.join(', ')} at Veave.`); moveTo(c, 'deploying', deps); return; }
     const startedAt = c.dns.appliedAt || c.createdAt;
     if (deps.now() - new Date(startedAt) > cfg.dnsWaitMs) {
@@ -343,11 +371,11 @@ const handlers = {
     for (const hostname of c.hostnames) {
       const resolved = await deps.probes.resolveAll(hostname);
       const ip = resolved.a.find((address) => expected.includes(address) && deps.probes.isPublicAddress(address));
-      if (!ip) { failures.push(`${hostname} does not resolve to Veave yet`); continue; }
+      if (!ip) { failures.push(`${hostname} does not resolve to Veave yet`); setHost(c, hostname, { dns: { ok: false, problem: `${hostname} does not resolve to Veave yet`, checkedAt: deps.now() }, ssl: { status: 'pending', error: 'Waiting for DNS' } }); continue; }
       // The first handshake for a new hostname makes the TLS terminator obtain a certificate on demand.
       const result = await deps.probes.tlsProbe({ ip, hostname, timeout: c.retries === 0 ? 60000 : 20000 });
-      if (!result.ok) failures.push(`${hostname}: ${result.error || 'certificate not valid'}`);
-      else probe = !probe || result.validTo < probe.validTo ? result : probe;
+      if (!result.ok) { failures.push(`${hostname}: ${result.error || 'certificate not valid'}`); setHost(c, hostname, { dns: { ok: true, problem: null, checkedAt: deps.now() }, ssl: { status: 'pending', error: result.error || 'certificate not valid', checkedAt: deps.now() } }); }
+      else { probe = !probe || result.validTo < probe.validTo ? result : probe; setHost(c, hostname, { dns: { ok: true, problem: null, checkedAt: deps.now() }, ssl: { status: 'active', issuer: result.issuer, expiresAt: result.validTo, error: null, checkedAt: deps.now() } }); }
     }
     // A certificate that is about to expire has not been renewed yet: keep asking for a fresh one instead of calling it done.
     if (!failures.length && probe && probe.daysLeft !== null && probe.daysLeft < cfg.sslRenewWithinDays) failures.push(`the certificate expires in ${probe.daysLeft} days and has not renewed`);
@@ -397,6 +425,27 @@ const handlers = {
     if (result.tlsProblem) { c.stage = 'ssl_pending'; c.status = 'in_progress'; c.retries = 0; c.nextRunAt = deps.now(); }
   }
 };
+
+/**
+ * Takes back what Veave wrote in the customer's DNS when the domain is disconnected: only records that still hold exactly the
+ * value Veave wrote. Anything the customer changed or added since is left alone. Never throws (a leftover record is harmless).
+ */
+async function rollbackDns(connection, deps = defaultDeps()) {
+  const created = Array.isArray(connection.dns?.created) ? connection.dns.created : [];
+  if (!created.length || connection.dns.mode !== 'automatic') return { removed: [], kept: [] };
+  const removed = []; const kept = [];
+  try {
+    const access = await deps.providers.resolveAdapter(connection.apex, { provider: { id: connection.dns.provider, found: true, label: connection.dns.provider }, adapters: await adaptersOf(connection, deps) });
+    if (!access.adapter) return { removed, kept: created, reason: access.reason };
+    const present = (await access.adapter.listRecords(connection.apex)).map(planner.normalizeRecord);
+    for (const record of created) {
+      const here = present.filter((item) => item.type === record.type && item.name === planner.normalizeRecord(record).name);
+      const ours = here.length === 1 && String(here[0].data).replace(/\.$/, '').toLowerCase() === String(record.data).replace(/\.$/, '').toLowerCase();
+      if (ours) { await access.adapter.deleteRecord(connection.apex, { type: record.type, name: record.name }); removed.push(record); } else kept.push(record);
+    }
+  } catch (error) { logger.warn(`DNS rollback for ${connection.hostname} was not completed: ${error.message}`); }
+  return { removed, kept };
+}
 
 const originHost = () => new URL(hostingConfig().verifyOrigin).hostname;
 const originPort = () => Number(new URL(hostingConfig().verifyOrigin).port) || 80;
@@ -476,6 +525,10 @@ function applyHealth(c, result, deps) {
   if (result.ok) c.health.lastSuccessAt = deps.now();
   c.health.checks = { failures: result.failures, hosts: result.checks };
   c.markModified('health');
+  for (const entry of result.checks || []) {
+    if (entry.dns) setHost(c, entry.hostname, { dns: { ok: entry.dns.ok, problem: entry.dns.ok ? null : (result.failures.find((line) => line.includes(entry.hostname)) || null), checkedAt: deps.now() } });
+    if (entry.tls) setHost(c, entry.hostname, { ssl: { status: entry.tls.ok ? 'active' : 'failed', issuer: entry.tls.issuer || null, error: entry.tls.error || null, checkedAt: deps.now() } });
+  }
   if (result.soonest) {
     Object.assign(c.ssl, { status: 'active', issuer: result.soonest.issuer, validFrom: result.soonest.validFrom, expiresAt: result.soonest.validTo, lastCheckedAt: deps.now(), error: null });
     c.markModified('ssl');
@@ -562,4 +615,4 @@ async function runNow(connectionId, depsOverride = {}) {
   finally { await DomainConnection.updateOne({ _id: connectionId }, { $set: { leaseUntil: null } }).catch(() => {}); }
 }
 
-module.exports = { advance, tick, start, stop, runNow, runHealth, releaseRouting, handlers, defaultDeps, canonicalOf };
+module.exports = { advance, tick, start, stop, runNow, runHealth, releaseRouting, rollbackDns, handlers, defaultDeps, canonicalOf };

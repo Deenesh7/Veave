@@ -23,7 +23,7 @@ function desiredRecords(connection, { ipv4 = null, ipv6 = null, cnameTarget = nu
   const need = (record) => out.push({ ttl: 600, ...record });
   if (connection.kind === 'subdomain') {
     const label = connection.hostname.slice(0, -(connection.apex.length + 1));
-    if (!cnameTarget && !ipv4) return { records: [], error: 'The hosting endpoint is not configured (PUBLISH_SERVER_IP / base domain).' };
+    if (!cnameTarget && !ipv4) return { records: [], error: 'The hosting endpoint is not configured (set PUBLISH_SERVER_IP, or PUBLISH_CNAME_TARGET for a CNAME).' };
     if (cnameTarget) need({ type: 'CNAME', name: label, data: cnameTarget, purpose: `Points ${connection.hostname} at your Veave site` });
     else need({ type: 'A', name: label, data: ipv4, purpose: `Points ${connection.hostname} at Veave` });
     return { records: out };
