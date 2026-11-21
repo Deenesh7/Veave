@@ -43,7 +43,7 @@ const MAX_RECOVERIES = 2;
 const ACTIVE = TemplateGenerationJob.ACTIVE_STATUSES;
 // Where each state may be entered from.
 const FROM = {
-  processing: ['queued', 'processing'],
+  processing: ['queued', 'processing', 'validating', 'repairing'],
   validating: ['processing', 'validating', 'repairing'],
   repairing: ['processing', 'validating', 'repairing'],
   committing: ['processing', 'validating', 'repairing', 'committing'],
@@ -110,6 +110,17 @@ class JobCancelled extends Error { constructor() { super('Cancelled'); this.name
 
 const lease = () => ({ leaseOwner: INSTANCE_ID, leaseExpiresAt: new Date(Date.now() + LEASE_MS) });
 const leaseFilter = () => ({ $or: [{ leaseExpiresAt: null }, { leaseExpiresAt: { $lt: new Date() } }, { leaseOwner: INSTANCE_ID }] });
+
+const HEAL_TRIES = Number(process.env.TEMPLATE_HEAL_TRIES) > 0 ? Number(process.env.TEMPLATE_HEAL_TRIES) : 3;
+// Failures a new try can fix. Never retried: cancelling, a missing key or credits, an empty instruction, a missing page, or a site that someone else changed.
+const NOT_HEALABLE = /^(EMPTY_INSTRUCTION|PAGE_FILE_MISSING|SITE_CHANGED|OPENROUTER_AUTH_ERROR|OPENROUTER_INSUFFICIENT_CREDITS|PLAN_LIMIT.*)$/;
+function isHealable(error) {
+  if (!error || error instanceof JobCancelled || error?.name === 'AbortError' || error?.name === 'OpenRouterAuthError' || error?.name === 'PlanLimitError') return false;
+  return !NOT_HEALABLE.test(String(error.code || ''));
+}
+// What the owner reads when every try failed: plain words, never a build log. The technical text stays in the server log.
+const FRIENDLY_CODES = new Set(['PAGE_VALIDATION_FAILED', 'BUILD_VALIDATION_FAILED', 'FINAL_CHECK_FAILED', 'MODEL_ANSWER_UNUSABLE', 'NO_USABLE_CHANGES']);
+const FRIENDLY_MESSAGE = 'The AI tried several times but could not apply this change safely, so your page is exactly as it was. Please try again, describe the change in smaller steps, or tick the section you mean.';
 
 function failureCode(error, { timedOut = false } = {}) {
   if (timedOut) return 'JOB_TIMEOUT';
@@ -323,11 +334,12 @@ class TemplateJobManager {
       : leaseLost ? `The generation was interrupted (${leaseLost}). The page is unchanged.`
       : String(error?.message || error).slice(0, 1500);
     const code = leaseLost && !timedOut ? 'JOB_LEASE_LOST' : failureCode(error, { timedOut });
+    const shown = !timedOut && !leaseLost && FRIENDLY_CODES.has(code) ? FRIENDLY_MESSAGE : message;
     logger.warn(`Template job ${job.jobId} failed (${code}): ${message}`);
     // A website run that saved nothing puts the site back BEFORE it is reported as failed, so what the owner sees afterwards is the working website.
     if (job.type === 'site-customize') await rollbackIfUseless(job);
-    const updated = await this.move(job.jobId, 'failed', { error: message, errorCode: code, stepName: 'Failed', completedAt: new Date(), leaseOwner: null, leaseExpiresAt: null, result: error?.issues?.length ? { issues: error.issues.slice(0, 8) } : null });
-    if (updated && job.pageId) await setGeneration(job.pageId, 'failed', message);
+    const updated = await this.move(job.jobId, 'failed', { error: shown, errorCode: code, stepName: 'Failed', completedAt: new Date(), leaseOwner: null, leaseExpiresAt: null, result: error?.issues?.length ? { issues: error.issues.slice(0, 8) } : null });
+    if (updated && job.pageId) await setGeneration(job.pageId, 'failed', shown);
     if (updated && job.type === 'site-customize') await clearPending((await TemplateGenerationJob.findOne({ jobId: job.jobId }).select('plan').lean())?.plan);
   }
 
@@ -434,7 +446,24 @@ class TemplateJobManager {
     }
     await this.progress(job.jobId, 'processing', 'Writing the page');
     const photos = await require('./templateUploadService').resolveAttachments(site, job.attachmentPlacements?.length ? job.attachmentPlacements : job.attachments);
-    const result = await generator.regeneratePage({ template, page, pages, files, instruction: job.focusSection ? `${job.instruction}\n\n(The owner ticked only the section(s) "${job.focusSection}" of this page. Change ONLY those sections. Every other section must stay exactly as it is, character for character; do not touch, restyle, reword, reorder or remove them.)` : job.instruction, attachments: photos, deps: this.deps, signal, onState: this.onState(job), siteContext: siteContextFor(site, pages, [], { mode: (job.rewrite || adapted) ? 'website' : 'edit' }) });
+    // Self-healing: a failed try (the AI's answer was unusable, a check or the build failed) is tried again, with what went wrong told to the AI
+    // so it takes another way. The owner only sees a failure when every try has failed, and then in plain words.
+    const baseInstruction = job.focusSection ? `${job.instruction}\n\n(The owner ticked only the section(s) "${job.focusSection}" of this page. Change ONLY those sections. Every other section must stay exactly as it is, character for character; do not touch, restyle, reword, reorder or remove them.)` : job.instruction;
+    let lastProblem = '';
+    let result;
+    for (let attemptNo = 1; attemptNo <= HEAL_TRIES; attemptNo += 1) {
+      const attemptInstruction = (text) => (lastProblem ? `${text}\n\n(A previous try at this same instruction failed: ${lastProblem}. Take a different, simpler and safer way to make the same change: keep the edits small, keep every import and component name valid, and make sure the code builds.)` : text);
+      try {
+        result = await generator.regeneratePage({ template, page, pages, files, instruction: attemptInstruction(baseInstruction), attachments: photos, deps: this.deps, signal, onState: this.onState(job), siteContext: siteContextFor(site, pages, [], { mode: (job.rewrite || adapted) ? 'website' : 'edit' }) });
+        break;
+      } catch (error) {
+        if (signal?.aborted || !isHealable(error) || attemptNo === HEAL_TRIES) throw error;
+        lastProblem = String(error?.message || error).replace(/\s+/g, ' ').slice(0, 400);
+        logger.warn(`Template job ${job.jobId}: try ${attemptNo} of ${HEAL_TRIES} failed (${error?.code || 'error'}); trying again. ${lastProblem}`);
+        await this.progress(job.jobId, 'processing', `Improving the result (try ${attemptNo + 1} of ${HEAL_TRIES})`);
+        if (/RATE_LIMIT|TIMEOUT/.test(error?.code || '')) await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+    }
     signal.throwIfAborted();
     await this.progress(job.jobId, 'validating', 'Checks passed');
     // From here the result is stored on the job before anything else is written: whatever happens next, saving can be finished.
