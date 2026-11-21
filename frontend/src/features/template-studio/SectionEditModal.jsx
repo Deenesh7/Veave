@@ -37,7 +37,8 @@ function sectionOutline(html, edits, limit = 1800) {
     const key = `${tag}:${text}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    lines.push(`- ${kind(tag)}: "${text.slice(0, 220)}"${typed.has(own) ? ' (typed by the owner)' : ''}`);
+    const role = el.getAttribute('role') === 'tab' ? ' [tab]' : tag === 'button' && (el.getAttribute('type') || '').toLowerCase() === 'submit' ? ' [submit button]' : tag === 'button' ? ' [button]' : '';
+    lines.push(`- ${kind(tag)}: "${text.slice(0, 220)}"${role}${typed.has(own) ? ' (typed by the owner)' : ''}`);
   }
   let out = '';
   for (const line of lines) { if (out.length + line.length + 1 > limit) { out += '\n- …'; break; } out += `${out ? '\n' : ''}${line}`; }
