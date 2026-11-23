@@ -155,7 +155,7 @@ export default function PromptEnginePage() {
           onKeyDown={e => {
             if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submit();
           }}
-          placeholder="Describe what you want to build..."
+          aria-label="Prompt"
           rows={4}
           className="w-full resize-none text-sm text-[#111827] placeholder:text-zinc-400 focus:outline-none"
           disabled={busy}

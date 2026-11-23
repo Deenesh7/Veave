@@ -110,7 +110,7 @@ class OpenRouterService {
    * selections saved in the UI or in old jobs) is ignored.
    */
   resolveModel() {
-    return LUNA_MODEL;
+    return require('../../utils/modelScope').current() || LUNA_MODEL;
   }
 
   isConfigured() {

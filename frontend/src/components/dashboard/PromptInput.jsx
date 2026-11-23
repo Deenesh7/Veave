@@ -37,7 +37,8 @@ const PromptInput = forwardRef(function PromptInput(
       value={value}
       onChange={(e) => onChange(e.target.value)}
       onKeyDown={handleKeyDown}
-      placeholder={placeholder || 'Ask Veave to build anything, or type / for commands...'}
+      placeholder={placeholder || ''}
+      aria-label="Prompt"
       rows={1}
       className="block w-full bg-transparent border-0 p-0 text-[15px] leading-relaxed text-zinc-900 placeholder:text-zinc-400 caret-zinc-900 focus:outline-none focus:ring-0 resize-none overflow-y-auto"
     />

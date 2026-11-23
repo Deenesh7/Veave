@@ -87,7 +87,7 @@ const DEVICES = [
  * same-origin access) and talks to it only through messages. Nothing here is a mock-up of the site.
  */
 export default function SitePreviewPanel({ className = '' }) {
-  const { site, pages, activePageId, previewKey, selectPage, job, revisionPreview, closeRevisionPreview, restoreRevision, previewRevision, busy } = useTemplateStudioStore();
+  const { site, pages, activePageId, previewKey, selectPage, job, lastRequest, revisionPreview, closeRevisionPreview, restoreRevision, previewRevision, busy } = useTemplateStudioStore();
   const iframeRef = useRef(null);
   const [full, setFull] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
@@ -219,7 +219,7 @@ export default function SitePreviewPanel({ className = '' }) {
         const siteKey = useTemplateStudioStore.getState().activeSiteId;
         if (siteKey) writeUi({ scroll: { ...(readUi().scroll || {}), [`${siteKey}:${routeRef.current}`]: scrollRef.current } });
       }
-      if (event.data?.type === 'studio-section-html') window.dispatchEvent(new CustomEvent('studio-section-html', { detail: { key: event.data.key, html: String(event.data.html || '') } }));
+      if (event.data?.type === 'studio-section-html') window.dispatchEvent(new CustomEvent('studio-section-html', { detail: { key: event.data.key, html: String(event.data.html || ''), head: String(event.data.head || ''), htmlClass: String(event.data.htmlClass || ''), bodyClass: String(event.data.bodyClass || '') } }));
       if (event.data?.type === 'studio-text-deselected') useTemplateStudioStore.getState().setSelectedText(null);
       if (event.data?.type === 'studio-section-edit' && revisionPreview?.status !== 'ready') setSectionEdit({ name: String(event.data.name || ''), domId: String(event.data.domId || ''), index: event.data.index, html: String(event.data.html || ''), head: String(event.data.head || ''), htmlClass: String(event.data.htmlClass || ''), bodyClass: String(event.data.bodyClass || '') });
       if (event.data?.type === 'studio-text-selected' && revisionPreview?.status !== 'ready') useTemplateStudioStore.getState().setSelectedText({ id: event.data.id, text: String(event.data.text || ''), tag: String(event.data.tag || '') });
@@ -235,6 +235,7 @@ export default function SitePreviewPanel({ className = '' }) {
 
   const width = DEVICES.find((item) => item.id === device)?.width || '100%';
   const regenerating = job && !['completed', 'failed', 'cancelled'].includes(job.status);
+  const sectionName = job && job.pageId && lastRequest && lastRequest.pageId === job.pageId ? String(lastRequest.focusSection || '').trim() : '';
 
   // An older revision, when one is being looked at, replaces the live site until it is closed.
   const old = revisionPreview?.status === 'ready' ? revisionPreview : null;
@@ -305,7 +306,7 @@ export default function SitePreviewPanel({ className = '' }) {
         {themeOpen && site ? <ThemePanel key={site.id} onCss={pushCss} onClose={closeTheme} /> : null}
         {regenerating ? (
           <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center p-3" role="status">
-            <span className={`flex items-center gap-2 rounded-full border ${line} bg-[#FBF9F4]/95 px-3 py-1.5 text-xs shadow ${ink}`}><Spinner className="h-3 w-3 text-[#5E7B5F]" />{job.pageId ? 'Regenerating a page. This is the current saved version.' : 'Writing the pages. This is the current saved version.'}</span>
+            <span className={`flex items-center gap-2 rounded-full border ${line} bg-[#FBF9F4]/95 px-3 py-1.5 text-xs shadow ${ink}`}><Spinner className="h-3 w-3 text-[#5E7B5F]" />{job.pageId ? (sectionName ? `Updating the section “${sectionName}”. The rest of the page stays as it is.` : 'Regenerating a page. This is the current saved version.') : 'Writing the pages. This is the current saved version.'}</span>
           </div>
         ) : null}
       </div>

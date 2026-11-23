@@ -438,7 +438,6 @@ export default function AIComposer({ prompt, setPrompt, onGenerated }) {
             onChange={handlePromptChange}
             onKeyDown={handleInputKeyDown}
             onSubmit={handleSubmit}
-            placeholder="Describe the website you want to create..."
           />
         </div>
 

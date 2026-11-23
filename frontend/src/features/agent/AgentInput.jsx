@@ -94,7 +94,7 @@ export function AgentInput() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={pendingApproval ? "Approve or cancel the plan above..." : isGenerating ? "AI is thinking..." : "Ask AI to modify your design..."}
+          aria-label="Prompt"
           className="w-full bg-transparent border-0 resize-none px-3 py-3 text-sm text-zinc-900 placeholder:text-zinc-500 focus:ring-0 min-h-[44px] max-h-[120px] scrollbar-thin"
           rows={1}
           disabled={isGenerating}

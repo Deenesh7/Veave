@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ImagePlus, Sparkles, X, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Pencil, Check, RotateCcw, LayoutList, ArrowRight, Type, Loader2 } from 'lucide-react';
-import { PRODUCTION_PRESET, PRODUCTION_PRESET_LABEL } from './promptPresets';
 import { useTemplateStudioStore, CONTENT_MIN, CONTENT_MAX, readUi, writeUi } from '../../store/templateStudioStore';
 import { FAILURE_TITLES } from '../../store/generationJobStore';
 import { PanelHeader, EmptyState, IconButton, PrimaryButton, GhostButton, Spinner, Skeleton, inputClass, ink, muted, line } from './ui';
@@ -61,6 +60,7 @@ export default function ContentEditorPanel({ className = '' }) {
   const instruction = (activePageId && drafts[activePageId]) || '';
   const running = job && !TERMINAL.includes(job.status);
   const mine = job && (job.pageId === activePageId || !job.pageId);
+  const focusName = job && job.pageId && lastRequest && lastRequest.pageId === job.pageId ? String(lastRequest.focusSection || '').trim() : '';
   const chosen = (activePageId && selection[activePageId]) || {};
   const chosenImages = pagePhotos(chosen, images).ids;
   const uploading = uploads.some((item) => item.status === 'queued' || item.status === 'uploading');
@@ -318,10 +318,8 @@ export default function ContentEditorPanel({ className = '' }) {
                   </div>
                 ) : null}
                 <textarea id="page-instruction" aria-label="Instruction for this page" value={instruction} onChange={(event) => setDraft(page.id, event.target.value)} maxLength={MAX_TEXT} rows={4} disabled={running}
-                  placeholder={checkedNumbers.length ? 'What should change in the selected sections?' : 'Tell the AI what to change on this page…'}
-                  className={`block min-h-[6rem] w-full resize-y rounded-md border-0 bg-transparent px-3 py-2 text-sm leading-relaxed ${ink} placeholder:text-xs placeholder:text-[#A59E90] focus:outline-none focus:ring-0`} />
-                <div className="flex items-center justify-between gap-2 px-2 pb-2">
-                  <button type="button" disabled={running} onClick={() => setDraft(page.id, PRODUCTION_PRESET)} className="inline-flex items-center gap-1 rounded-full border border-[#CFE0CF] bg-[#E8F0E8] px-2.5 py-0.5 text-[11px] font-medium text-[#3F5E41] hover:bg-[#DCE9DC] disabled:opacity-50"><Sparkles className="h-3 w-3" />{PRODUCTION_PRESET_LABEL}</button>
+                  className={`block min-h-[6rem] w-full resize-none rounded-md border-0 bg-transparent px-3 py-2 text-sm leading-relaxed ${ink} placeholder:text-xs placeholder:text-[#A59E90] focus:outline-none focus:ring-0`} />
+                <div className="flex items-center justify-end gap-2 px-2 pb-2">
                   <VoiceInputButton disabled={running} onText={(text) => setDraft(page.id, `${instruction}${instruction && !/\s$/.test(instruction) ? ' ' : ''}${text}`.slice(0, MAX_TEXT))} />
                 </div>
               </div>
@@ -335,7 +333,7 @@ export default function ContentEditorPanel({ className = '' }) {
 
             <div className="space-y-2">
               <PrimaryButton type="submit" className="w-full !py-2.5" disabled={!canSend}>
-                {busy.regenerate || running ? <Spinner /> : <Sparkles className="h-4 w-4" />}{running && mine ? 'Regenerating…' : 'Regenerate Page'}
+                {busy.regenerate || running ? <Spinner /> : <Sparkles className="h-4 w-4" />}{running && mine ? (focusName ? 'Updating section…' : 'Regenerating…') : 'Regenerate Page'}
               </PrimaryButton>
               <p className={`text-[11px] leading-relaxed ${muted}`}>
                 {chosenImages.length ? <><ImagePlus className="mr-1 inline h-3 w-3" />{chosenImages.length} photo{chosenImages.length === 1 ? '' : 's'} will be placed on this page exactly as uploaded. </> : null}
@@ -348,7 +346,7 @@ export default function ContentEditorPanel({ className = '' }) {
             <div className="px-5 py-4" role="status" aria-live="polite">
               <div className={`rounded-md border p-3 ${job.status === 'failed' ? 'border-[#E2DCCF] bg-[#FBF9F4]' : job.status === 'completed' ? 'border-[#B8CBB9] bg-[#E8F0E8]' : `${line} bg-white`}`}>
                 <div className="flex items-center justify-between gap-2">
-                  <p className={`text-sm font-medium ${ink}`}>{running ? (job.type === 'site-customize' ? (job.stepName || STEP[job.status]) : STEP[job.status] || job.stepName) : job.status === 'completed' ? (job.type === 'site-customize' ? 'The website was generated' : 'The page was regenerated and saved') : job.status === 'cancelled' ? 'Cancelled. Nothing was changed.' : (FAILURE_TITLES[job.errorCode] || 'The page was not changed')}</p>
+                  <p className={`text-sm font-medium ${ink}`}>{running ? (job.type === 'site-customize' ? (job.stepName || STEP[job.status]) : focusName && job.status === 'processing' ? `Updating the section “${focusName}”` : STEP[job.status] || job.stepName) : job.status === 'completed' ? (job.type === 'site-customize' ? 'The website was generated' : focusName ? 'The section was updated and saved' : 'The page was regenerated and saved') : job.status === 'cancelled' ? 'Cancelled. Nothing was changed.' : (FAILURE_TITLES[job.errorCode] || 'The page was not changed')}</p>
                   {running && job.status !== 'committing' ? <GhostButton onClick={cancelJob} className="!px-2 !py-1"><X className="h-3 w-3" />Cancel</GhostButton> : null}
                 </div>
                 {running ? (

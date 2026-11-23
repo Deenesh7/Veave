@@ -124,7 +124,7 @@ const FRIENDLY_MESSAGE = 'The AI tried several times but could not apply this ch
 
 function failureCode(error, { timedOut = false } = {}) {
   if (timedOut) return 'JOB_TIMEOUT';
-  if (error?.code && /^[A-Z_]+$/.test(error.code) && ['PAGE_VALIDATION_FAILED', 'BUILD_VALIDATION_FAILED', 'FINAL_CHECK_FAILED', 'MODEL_ANSWER_UNUSABLE', 'NO_USABLE_CHANGES', 'EMPTY_INSTRUCTION', 'PAGE_FILE_MISSING', 'SITE_CHANGED', 'PLAN_FAILED', 'PLAN_UNUSABLE', 'IDENTITY_FAILED', 'PLAN_LIMIT_REACHED'].includes(error.code)) return error.code;
+  if (error?.code && /^[A-Z_]+$/.test(error.code) && ['PAGE_VALIDATION_FAILED', 'BUILD_VALIDATION_FAILED', 'FINAL_CHECK_FAILED', 'MODEL_ANSWER_UNUSABLE', 'NO_USABLE_CHANGES', 'INTENT_NOT_MET', 'NO_EFFECTIVE_CHANGE', 'EMPTY_INSTRUCTION', 'PAGE_FILE_MISSING', 'SITE_CHANGED', 'PLAN_FAILED', 'PLAN_UNUSABLE', 'IDENTITY_FAILED', 'PLAN_LIMIT_REACHED'].includes(error.code)) return error.code;
   if (error?.code === 'OPENROUTER_INSUFFICIENT_CREDITS') return 'PROVIDER_CREDITS';
   if (error?.code === 'OPENROUTER_AUTH_ERROR') return 'PROVIDER_AUTH';
   if (error?.code === 'OPENROUTER_RATE_LIMIT') return 'PROVIDER_RATE_LIMIT';
@@ -275,6 +275,7 @@ class TemplateJobManager {
 
   async progress(jobId, to, stepName, extra = {}) {
     const moved = await this.move(jobId, to, { stepName, ...lease(), ...extra });
+    if (moved) TemplateGenerationJob.updateOne({ jobId }, { $push: { timeline: { $each: [{ state: to, step: String(stepName).slice(0, 120), at: new Date() }], $slice: -80 } } }).catch(() => {});
     if (!moved) {
       const current = await TemplateGenerationJob.findOne({ jobId }).select('status').lean();
       if (current?.status === 'cancelled') throw new JobCancelled();
@@ -314,7 +315,7 @@ class TemplateJobManager {
     try {
       if (claimed.pendingCommit) await this.finishCommit(claimed);
       else if (claimed.type === 'site-customize') await this.runCustomize(claimed, controller.signal);
-      else await this.runRegenerate(claimed, controller.signal);
+      else await require('../../utils/modelScope').run(process.env.TEMPLATE_EDIT_MODEL, () => this.runRegenerate(claimed, controller.signal)); // the page and section editors use their own model
     } catch (error) {
       await this.fail(claimed, error, { timedOut, leaseLost });
     } finally {
@@ -448,13 +449,13 @@ class TemplateJobManager {
     const photos = await require('./templateUploadService').resolveAttachments(site, job.attachmentPlacements?.length ? job.attachmentPlacements : job.attachments);
     // Self-healing: a failed try (the AI's answer was unusable, a check or the build failed) is tried again, with what went wrong told to the AI
     // so it takes another way. The owner only sees a failure when every try has failed, and then in plain words.
-    const baseInstruction = job.focusSection ? `${job.instruction}\n\n(The owner ticked only the section(s) "${job.focusSection}" of this page. Change ONLY those sections. Every other section must stay exactly as it is, character for character; do not touch, restyle, reword, reorder or remove them.)` : job.instruction;
+    const baseInstruction = job.focusSection ? `${job.instruction}\n\n(The owner ticked only the section(s) "${job.focusSection}" of this page. Change ONLY those sections. Every other section must stay exactly as it is, character for character; do not touch, restyle, reword, reorder or remove them. Use small exact "patch" edits for wording, attributes and classes. When the change wraps or restructures markup (a background picture, a new layout, moving blocks), return the complete file with "modify" so every opening tag keeps its closing tag.)` : job.instruction;
     let lastProblem = '';
     let result;
     for (let attemptNo = 1; attemptNo <= HEAL_TRIES; attemptNo += 1) {
-      const attemptInstruction = (text) => (lastProblem ? `${text}\n\n(A previous try at this same instruction failed: ${lastProblem}. Take a different, simpler and safer way to make the same change: keep the edits small, keep every import and component name valid, and make sure the code builds.)` : text);
+      const attemptInstruction = (text) => (lastProblem ? `${text}\n\n(A previous try at this same instruction failed: ${lastProblem}. Take a different, simpler and safer way to make the same change: keep every import and component name valid, make sure every opening tag has its closing tag and the code builds. If the failure was a syntax or build error, return the complete file with "modify" instead of patches.)` : text);
       try {
-        result = await generator.regeneratePage({ template, page, pages, files, instruction: attemptInstruction(baseInstruction), attachments: photos, deps: this.deps, signal, onState: this.onState(job), siteContext: siteContextFor(site, pages, [], { mode: (job.rewrite || adapted) ? 'website' : 'edit' }) });
+        result = await generator.regeneratePage({ template, page, pages, files, instruction: attemptInstruction(baseInstruction), attachments: photos, deps: this.deps, signal, onState: this.onState(job), onTiming: (entry) => { TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $push: { callTimings: { $each: [entry], $slice: -40 } } }).catch(() => {}); }, siteContext: siteContextFor(site, pages, [], { mode: (job.rewrite || adapted) ? 'website' : 'edit' }) });
         break;
       } catch (error) {
         if (signal?.aborted || !isHealable(error) || attemptNo === HEAL_TRIES) throw error;
@@ -468,7 +469,7 @@ class TemplateJobManager {
     await this.progress(job.jobId, 'validating', 'Checks passed');
     // From here the result is stored on the job before anything else is written: whatever happens next, saving can be finished.
     const assets = await collectAssets(result.files, result.changedPaths);
-    const pendingCommit = { pageId: String(page._id), changed: result.changed, previous: result.previous, assets, validation: { mode: result.report?.validationMode || null, status: result.report?.status || null, attempts: result.attempts }, usage: result.usage, entity: result.entity };
+    const pendingCommit = { pageId: String(page._id), changed: result.changed, previous: result.previous, assets, validation: { mode: result.report?.validationMode || null, status: result.report?.status || null, attempts: result.attempts, functional: result.report?.functional || null }, usage: result.usage, entity: result.entity };
     await this.progress(job.jobId, 'committing', 'Saving the new version');
     await TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $set: { pendingCommit, usage: result.usage } });
     await this.finishCommit(await TemplateGenerationJob.findOne({ jobId: job.jobId }));

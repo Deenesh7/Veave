@@ -239,7 +239,7 @@ export function AIAssistant({
                 handleExecuteAi();
               }
             }}
-            placeholder="Ask AI to modify this code..."
+            aria-label="Prompt"
             className="w-full bg-zinc-50 border border-zinc-200 focus:border-zinc-500 focus:bg-white text-zinc-900 placeholder-zinc-400 text-xs rounded-xl p-2.5 pr-9 outline-none resize-none transition-colors"
           />
           <button

@@ -47,6 +47,9 @@ const templateGenerationJobSchema = new mongoose.Schema({
   // Tokens spent before the page was written (understanding and rewriting the website for a one-page transformation).
   extraTokens: { type: Number, default: 0 },
   usage: { type: mongoose.Schema.Types.Mixed, default: null },
+  // Where the time went: when each step started, and how long each AI call or the build took (for finding what is slow).
+  timeline: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  callTimings: { type: [mongoose.Schema.Types.Mixed], default: [] },
   leaseOwner: { type: String, default: null },
   leaseExpiresAt: { type: Date, default: null },
   recoveryAttempts: { type: Number, default: 0 },

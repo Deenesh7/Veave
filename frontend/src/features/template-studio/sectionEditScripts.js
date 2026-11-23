@@ -68,9 +68,14 @@ export function penScript() {
       if (found) {
         var clone = found.cloneNode(true);
         Array.prototype.forEach.call(clone.querySelectorAll('script,[data-studio-pen]'), function (n) { n.remove(); });
+        [clone].concat(Array.prototype.slice.call(clone.querySelectorAll('*'))).forEach(function (n) {
+          Array.prototype.slice.call(n.attributes).forEach(function (a) { if (/^data-studio-/.test(a.name)) n.removeAttribute(a.name); });
+        });
         out = clone.outerHTML;
       }
-      window.parent.postMessage({ type: 'studio-section-html', key: d.key, html: out }, '*');
+      // The styles travel with the markup: a change can add new classes, and the section pop-up must be drawn with the page's current CSS.
+      var head = Array.prototype.map.call(document.querySelectorAll('style,link[rel="stylesheet"]'), function (n) { return n.outerHTML; }).join('');
+      window.parent.postMessage({ type: 'studio-section-html', key: d.key, html: out, head: head, htmlClass: document.documentElement.className, bodyClass: document.body.className }, '*');
     }
   });
 }

@@ -133,12 +133,6 @@ export function StudioPromptBar({
         } catch {
           setIsListening(false);
         }
-      } else {
-        setIsListening(true);
-        setTimeout(() => {
-          setPromptText('Make the homepage more modern with clean spacing.');
-          setIsListening(false);
-        }, 800);
       }
     }
   };
@@ -253,7 +247,7 @@ export function StudioPromptBar({
           value={promptText}
           onChange={(e) => setPromptText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={selectedElement ? `Change the selected ${String(selectedElement.role || 'element').toLowerCase()}... e.g. "make it blue"` : 'Describe what to change... (Shift + Enter for new line)'}
+          aria-label="Prompt"
           rows={1}
           className="w-full min-h-[38px] max-h-40 bg-transparent text-xs sm:text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none resize-none leading-relaxed px-1 overflow-y-auto scrollbar-thin"
         />

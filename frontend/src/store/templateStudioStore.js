@@ -481,7 +481,7 @@ export const useTemplateStudioStore = create((set, get) => ({
       const pageId = job.pageId || get().activePageId;
       if (pageId && pageId === get().activePageId) { get().loadRevisions(pageId); get().loadSections(pageId); }
       get().loadImages();
-      if (job.pageId) get().flash('success', 'The page was regenerated and saved.');
+      if (job.pageId) { const part = String(get().lastRequest?.pageId === job.pageId ? get().lastRequest.focusSection || '' : '').trim(); const unverified = job.result?.validation?.functional?.status === 'unverified'; if (unverified) get().flash('info', 'Saved, but the new behaviour could not be tested automatically. Please try it in the preview.'); else get().flash('success', part ? `The section “${part}” was updated and saved.` : 'The page was regenerated and saved.'); }
       else if (job.result?.needsAttention) get().flash('info', `Website generated: ${job.result.completed} of ${job.result.total} pages are ready. ${job.result.needsAttention} need${job.result.needsAttention === 1 ? 's' : ''} attention${job.result.images && (job.result.images.failed || job.result.images.skipped) ? ` (${job.result.images.failed + job.result.images.skipped} picture${job.result.images.failed + job.result.images.skipped === 1 ? '' : 's'} could not be made)` : ''}.`);
       else get().flash('success', `Your website is ready: all ${job.result?.total || ''} pages were generated.`.replace('all  pages', 'all pages'));
     } else if (job.status === 'failed') {

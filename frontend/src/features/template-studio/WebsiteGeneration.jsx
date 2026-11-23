@@ -87,8 +87,7 @@ export default function WebsiteGeneration() {
           <p className={`text-sm leading-relaxed ${ink}`}>Describe your website once. Every page ({total}) is then written in order, in the same style, using this description. You do not need to write anything for each page.</p>
           <div>
             <label htmlFor="website-brief" className={`block text-[11px] font-medium uppercase tracking-wider ${muted}`}>Website description</label>
-            <textarea id="website-brief" autoFocus value={brief} onChange={(event) => setBrief(event.target.value)} maxLength={4000} rows={6} className={`${inputClass} mt-1 leading-relaxed`}
-              placeholder="e.g. A calm architecture studio in Lisbon that designs quiet houses from natural materials. Warm, honest tone. Show recent work, how we work, and a contact page." />
+            <textarea id="website-brief" autoFocus value={brief} onChange={(event) => setBrief(event.target.value)} maxLength={4000} rows={6} className={`${inputClass} mt-1 leading-relaxed`} />
             <p className={`mt-1 text-right text-[11px] ${muted}`}>{brief.length}/4000</p>
           </div>
           <p className={`text-xs leading-relaxed ${muted}`}>Say which pages you want, for example <span className={ink}>"Pages: Home, About, Admissions, Contact"</span>, and you get exactly those, never more. Without a list the website keeps the template's {total} pages. Mention colours or a style (for example "navy blue and white") and the design follows it.</p>

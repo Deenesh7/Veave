@@ -199,13 +199,18 @@ function wantsAiAnswers(instruction) {
   // AI + something that is produced for a visitor + a place where the visitor meets it (a pop-up, a box, a button, a question).
   return /\b(ai|a\.i\.|artificial intelligence|chat ?bot|assistant|gpt|llm)\b/i.test(text) && /\b(generate[sd]?|generating|answers?|replies|reply|respond|responds?|response|explain|ask|content|tell)\b/i.test(text) && /\b(pop-?up|poopup|pop ?up|box|modal|dialog|chat|chatbot|assistant|ask|visitors?|click(?:ed|s)?|button|tab|typed?|question|questions)\b/i.test(text);
 }
-const callsAssistant = (files) => files.some((file) => typeof file.content === 'string' && /window\.VEAVE_AI\b|VEAVE_AI\.ask/.test(file.content) && /^src\//.test(file.path));
+// The assistant must really be ASKED and its answer used: a file that only mentions window.VEAVE_AI does not count.
+const callsAssistant = (files) => files.some((file) => typeof file.content === 'string' && /^src\//.test(file.path) && /\bVEAVE_AI\b/.test(file.content) && /\.ask\s*\(/.test(file.content) && (/\.then\s*\(/.test(file.content) || /\bawait\b[^;\n]*\.ask\s*\(/.test(file.content)));
 
 function checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments = [], instruction = '', siteWide = false, rewrite = false }) {
   const problems = [];
   // ai: an AI answer box must really call the assistant
   if (wantsAiAnswers(instruction) && !callsAssistant(candidate)) {
-    problems.push(issue('ai', 'The page was asked to show AI-generated content, but nothing calls the website assistant, so the box would only show fixed text.', { path: page.componentPath, route: page.route, cause: 'The AI content was written into the page instead of being asked for.', action: 'Make the box call window.VEAVE_AI.ask(question, { topic }) (it returns a Promise of a plain-text answer): open the pop-up at once with a loading line, put the answer in it when the Promise resolves, and show a short written fallback if it fails. Do not write the answer text into the page.' }));
+    problems.push(issue('ai', 'The page was asked to show AI-generated content, but nothing calls the website assistant, so the box would only show fixed text.', { path: page.componentPath, route: page.route, cause: 'The AI content was written into the page instead of being asked for.', action: 'Make the box call window.VEAVE_AI.ask(question, { topic }) (it returns a Promise of a plain-text answer): open the pop-up at once with a loading line, put the answer in it when the Promise resolves, and show a clear error line (not an invented answer) if it fails. Do not write the answer text into the page.' }));
+  }
+  // functional: nothing that only looks finished (unused data, empty handlers, fake success, an assistant that is never asked)
+  for (const found of require('./templateFunctionalAudit').auditChange({ baseline, candidate, changedPaths })) {
+    problems.push(issue('functional', found.message, { path: found.path, route: page.route, cause: 'The code looks complete but does not do what it appears to do.', action: found.action }));
   }
   // removal: a section the owner asked to remove must really be gone (not just emptied), and nothing may still link to it
   const tickedForRemoval = selectedSectionNumbers(instruction);
@@ -315,7 +320,7 @@ const PLAN_PATH = 'veave.validation.json';
  * The production build and a browser test of every route, through the shared gate. `repair(files, diagnostics, history)` is the
  * page-scoped repair (it may only change this page's files). Returns { files, report }; throws a PipelineError when it still fails.
  */
-async function runBuildGate(files, { routes, signal, onProgress, repair, maxRepairs }) {
+async function runBuildGate(files, { routes, extraTests = [], signal, onProgress, repair, maxRepairs }) {
   const { validateAndRepair } = require('../ai/validationGate');
   const { executeProject, isDockerAvailable } = require('../ai/executionRunner');
   const { verifyPreviewRuntime } = require('../ai/targetRenderVerifier');
@@ -323,7 +328,7 @@ async function runBuildGate(files, { routes, signal, onProgress, repair, maxRepa
   if (process.env.ENABLE_DOCKER_VALIDATION === 'true') useDocker = true;
   else if (process.env.ENABLE_DOCKER_VALIDATION === 'false') useDocker = false;
   else useDocker = await isDockerAvailable();
-  const tests = routes.map((path) => ({ name: `Route ${path}`, path, viewports: ['desktop', 'mobile'], steps: [{ action: 'assert', selector: '#root', visible: true }] }));
+  const tests = routes.map((path) => ({ name: `Route ${path}`, path, viewports: ['desktop', 'mobile'], steps: [{ action: 'assert', selector: '#root', visible: true }] })).concat(extraTests);
   const withPlan = tests.length ? [...files.filter((file) => file.path !== PLAN_PATH), { path: PLAN_PATH, language: 'json', content: JSON.stringify({ version: 1, tests }, null, 2) }] : files;
   const validated = await validateAndRepair(withPlan, {
     signal, onProgress, repair, requireExecution: true, requireArtifacts: useDocker,
