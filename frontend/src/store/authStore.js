@@ -85,11 +85,15 @@ export const useAuthStore = create((set, get) => ({
       } else {
         set({ isLoading: false });
       }
-    } catch {
-      if (token) {
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status === 401 || status === 403) {
         localStorage.removeItem('veave_token');
+        set({ user: null, token: null, isAuthenticated: false, isLoading: false });
+      } else {
+        // Backend unreachable (e.g. mid-deploy): keep the saved session instead of signing the user out.
+        set({ isLoading: false, isAuthenticated: !!token });
       }
-      set({ user: null, token: null, isAuthenticated: false, isLoading: false });
     }
   },
 
