@@ -83,7 +83,8 @@ function groupOf(word) {
   return best;
 }
 
-const ownerPart = (instruction) => String(instruction || '').split(/\n\n(?:PAGE CONTEXT|SECTION CONTENT|\(The owner|\(A previous try)/)[0].trim();
+// The same marks as templateValidationService's CONTEXT_MARK: everything after them was added by the studio or the job, not typed by the owner.
+const ownerPart = (instruction) => String(instruction || '').split(/\n\n(?:SECTION(?: \d+)? CONTENT|PAGE CONTEXT|\(The owner|\(A previous try|This applies to the text)/)[0].trim();
 
 function readWords(text) {
   const words = String(text || '').toLowerCase().match(/[a-z']+/g) || [];

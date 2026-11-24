@@ -91,6 +91,60 @@ export function withSectionPrefix(text, name, previousName = null) {
   return `${sectionPrefix(name)}${rest}`;
 }
 
+const normName = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const plainOf = (html) => String(html || '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ');
+
+/**
+ * Which of the page's sections (as the server lists them) the section opened in the preview is: its 0-based index, or -1 when it
+ * cannot be told for sure. The preview names a section by its DOM (aria-label, first heading, id) and the server by its source
+ * (aria-label, heading, or the component's name), so they do not always agree:
+ *   1. the element's own id;  2. the same name (several: the one nearest to where it is on the page);
+ *   3. the one server name that the section's visible text contains;  4. a slug that happens to equal the id.
+ */
+export function matchSection(sections, { domId = '', name = '', index = -1, html = '' } = {}) {
+  const list = Array.isArray(sections) ? sections : [];
+  const nearest = (indexes) => (indexes.length === 1 || index < 0 ? indexes[0] : indexes.reduce((best, i) => (Math.abs(i - index) < Math.abs(best - index) ? i : best), indexes[0]));
+  const all = (test) => list.map((item, i) => (test(item) ? i : -1)).filter((i) => i >= 0);
+  if (domId) {
+    const byId = all((item) => item.domId === domId);
+    if (byId.length) return nearest(byId);
+  }
+  const wanted = normName(name);
+  if (wanted) {
+    const byName = all((item) => normName(item.name) === wanted);
+    if (byName.length) return nearest(byName);
+  }
+  const text = ` ${normName(plainOf(html))} `;
+  if (text.trim()) {
+    const inText = all((item) => normName(item.name).length >= 4 && text.includes(` ${normName(item.name)} `));
+    if (inText.length === 1) return inText[0];
+  }
+  if (domId) {
+    const bySlug = all((item) => !item.domId && item.id === domId);
+    if (bySlug.length === 1) return bySlug[0];
+  }
+  return -1;
+}
+
+/** The ticked sections are remembered by their id (a number would point at another section once one is added or removed). */
+export function tickedNumbers(stored, sections) {
+  const list = Array.isArray(sections) ? sections : [];
+  const numbers = (Array.isArray(stored) ? stored : []).map((value) => (typeof value === 'number' ? (list[value - 1] ? value : 0) : list.findIndex((item) => item.id === value) + 1));
+  return [...new Set(numbers.filter((n) => n > 0))].sort((a, b) => a - b);
+}
+export const tickedIds = (numbers, sections) => [...new Set((numbers || []).map((n) => sections?.[n - 1]?.id).filter(Boolean))];
+
+/**
+ * Adds reference material after what the owner wrote, within `max` characters. The owner's own words are never cut to make room for it:
+ * the context is shortened or left out instead.
+ */
+export function withContextWithin(base, context, max) {
+  const own = String(base || '');
+  if (own.length >= max) return own.slice(0, max);
+  const extra = String(context || '');
+  return extra ? own + extra.slice(0, max - own.length) : own;
+}
+
 /* ---- Sections picked with check boxes: the prompt bar shows their numbers, the AI is sent their names ---- */
 
 const NUMBER_PREFIX = /^Sections? ((?:\d{2,3})(?:, \d{2,3})*): /;

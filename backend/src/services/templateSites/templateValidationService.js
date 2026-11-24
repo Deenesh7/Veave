@@ -32,8 +32,15 @@ const issue = (stage, message, { path = null, route = null, cause = '', action =
  * (e.g. "remove the search tabs") cannot be done inside one page file. Those prompts get a wider scope: see pageScope.
  */
 const SITE_WIDE_WORDS = /\b(nav(?:bar|igation)?|menu|header|footer|logo|brand(?:ing)?|re-?brand|site[ -]?name|site[ -]?wide|whole (?:web)?site|entire (?:web)?site|all (?:the )?pages|every page|other pages|across (?:the )?(?:web)?site|throughout|everywhere|all references|favicon|page title|tagline)\b/i;
+// With ticked sections only an explicit request about the shared parts counts: "header", "menu" or "brand" are usually words of the
+// section itself (a section header, a restaurant menu, pasted copy), and the section's own name ("Listing Card") names its component.
+const TICKED_SITE_WIDE_WORDS = /\b(nav(?:bar|igation)|footer|logo|re-?brand|site[ -]?name|site[ -]?wide|whole (?:web)?site|entire (?:web)?site|all (?:the )?pages|every page|other pages|across (?:the )?(?:web)?site|everywhere|favicon|page title|tagline)\b/i;
+const SECTION_LEAD = /^In ((?:and |, )?section \d+ \("[^"]*"\)(?:,? ?(?:and )?)?)+:\s*/i;
+const isTickedEdit = (instruction) => selectedSectionNumbers(instruction).length > 0 || /ticked only the section\(s\)/.test(String(instruction || ''));
 function wantsSiteWide(instruction, files = []) {
   const text = ownerWords(instruction);
+  // The ticked sections decide the scope (their components and records are added by pageScope); the page stays a page edit.
+  if (isTickedEdit(instruction)) return TICKED_SITE_WIDE_WORDS.test(text.replace(SECTION_LEAD, ''));
   if (SITE_WIDE_WORDS.test(text)) return true;
   // "remove/replace/rename X" where X also lives in the shared parts of the site (menu, footer, shared components, site data).
   if (/\b(remove|delete|get rid of|replace|rename|drop|eliminate|references?)\b/i.test(text)) {
@@ -67,12 +74,13 @@ function wantsSiteWide(instruction, files = []) {
 function namedSections(instruction) {
   const text = String(instruction || '');
   const names = [...text.matchAll(/section \d+ \("([^"]+)"\)/gi)].map((match) => match[1]);
+  // The job's note quotes every name on its own ("Hours, Location", "Team"), so a comma inside a name does not split it.
   const ticked = (text.match(/ticked only the section\(s\) "([^\n]+?)" of this page/i) || [])[1];
-  if (ticked) names.push(...ticked.split(/",\s*"|,\s+/).map((item) => item.replace(/^"|"$/g, '')));
+  if (ticked) names.push(...ticked.split(/",\s*"/).map((item) => item.replace(/^"|"$/g, '')));
   return [...new Set(names.map((name) => name.trim()).filter(Boolean))];
 }
 
-function pageScope({ files, page, pages, template, siteWide = false, includeSharedContent = false, sectionNames = [] }) {
+function pageScope({ files, page, pages, template, siteWide = false, includeSharedContent = false, sectionNames = [], sectionPhrases = [] }) {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const locked = new Set([...(template?.scaffold?.sharedFiles || []), ...(template?.scaffold?.protectedFiles || []), ...(template?.scaffold?.requiredFiles || []), 'src/App.jsx', 'src/main.jsx', 'src/data/site.js', 'src/index.css', 'package.json', 'index.html']);
   const usedElsewhere = new Set();
@@ -99,6 +107,15 @@ function pageScope({ files, page, pages, template, siteWide = false, includeShar
       if (!owned.includes(component)) owned.push(component);
       // The records the cards show come from the component's own data or, as often, from the data the PAGE imports and maps over.
       for (const data of [...pageDistinctness.reachableFiles(component, byPath, 1), ...pageDistinctness.reachableFiles(page.componentPath, byPath, 1)]) if (/^src\/data\//.test(data) && SOURCE.test(data) && !locked.has(data) && byPath.has(data)) { sectionFiles.push(data); if (!owned.includes(data)) owned.push(data); }
+    }
+  }
+  // The ticked section's own texts are written in a component (the tabs and search box of a hero): that component shows the section, so
+  // it may change with it (without making the whole website changeable). Two or more of the section's texts must be found there.
+  if (sectionPhrases.length >= 2) {
+    for (const path of reachable) {
+      const content = textOf(byPath.get(path));
+      if (owned.includes(path) || locked.has(path) || !/^src\/components\//.test(path) || !content) continue;
+      if (sectionPhrases.filter((phrase) => content.includes(phrase)).length >= 2) { sectionFiles.push(path); owned.push(path); }
     }
   }
   if (siteWide) {
@@ -346,6 +363,11 @@ function checkCandidate({ baseline, candidate, scope, page, pages, template, cha
   for (const found of require('./templateFunctionalAudit').auditChange({ baseline, candidate, changedPaths })) {
     problems.push(issue('functional', found.message, { path: found.path, route: page.route, cause: 'The code looks complete but does not do what it appears to do.', action: found.action }));
   }
+  // data: rewritten records must still be readable by the code that filters, sorts and searches them (otherwise the page shows nothing)
+  for (const found of require('./templateDataContract').brokenReads({ baseline, candidate, changedPaths, owned: scope.owned })) {
+    const fields = found.fields.slice(0, 10).join(', ');
+    problems.push(issue('functional', `${found.path} still reads the fields ${fields} of the records in ${found.dataPath}, but the new records no longer have them: its filter, sorting or search would hide every record (or break), so the page would show nothing.`, { path: found.path, route: page.route, cause: 'The records were rewritten without the code that reads them.', action: found.owned ? `Change the filter, sorting and search code of ${found.path} (only that code, not its sections) so it reads the fields the new records have, or keep ${fields} in every record with values that make sense for them.` : `${found.path} cannot be changed by this edit: keep the fields ${fields} in every record of ${found.dataPath}, with values that make sense for the new records.` }));
+  }
   // removal: a section the owner asked to remove must really be gone (not just emptied), and nothing may still link to it
   const tickedForRemoval = selectedSectionNumbers(instruction);
   if (tickedForRemoval.length && wantsRemoval(instruction, policy)) {
@@ -484,8 +506,12 @@ const PLAN_PATH = 'veave.validation.json';
 
 const isPlanDiagnostic = (item) => item?.path === 'veave.validation.json' || /veave\.validation\.json/.test(String(item?.message || ''));
 /** Did ONLY the AI-written behaviour tests fail (the build, every route and the error checks passed)? */
+// A request of the browser test to the build machine's own preview server that was dropped (ECONNRESET, net::ERR_FAILED): the machine's
+// fault, not the page's, so it never decides whether the page failed.
+const TRANSIENT_FETCH = /ECONNRESET|socket hang up|net::ERR_(?:FAILED|CONNECTION_RESET|CONNECTION_CLOSED|EMPTY_RESPONSE|ABORTED)/i;
+const isTransientFetch = (item) => /^https?:\/\/(?:127\.0\.0\.1|localhost)[:/]/.test(String(item?.path || item?.message || '')) && TRANSIENT_FETCH.test(String(item?.message || ''));
 function behaviourFailureOnly(diagnostics = []) {
-  const list = Array.isArray(diagnostics) ? diagnostics : [];
+  const list = (Array.isArray(diagnostics) ? diagnostics : []).filter((item) => !isTransientFetch(item));
   return list.some(isPlanDiagnostic) && list.every((item) => isPlanDiagnostic(item) || /^Error: Browser validation failed/.test(String(item?.message || '')));
 }
 /** "strict mode violation: locator resolved to 3 elements": the test's selector was ambiguous, which is a fault of the test, not of the page. */
@@ -555,4 +581,4 @@ function finalSiteChecks(files, pages) {
   return found;
 }
 
-module.exports = { wantsRemoval, finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, routeMatches, videoUseProblem, namedSections, behaviourFailureOnly, strictModeProblem, relaxSelectors, ownedWordSet, keptShareOwned, visibleWording, wordingOf, issue, sha, MIN_PAGE_WORDS };
+module.exports = { isTickedEdit, wantsRemoval, finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, routeMatches, videoUseProblem, namedSections, behaviourFailureOnly, strictModeProblem, relaxSelectors, ownedWordSet, keptShareOwned, visibleWording, wordingOf, issue, sha, MIN_PAGE_WORDS };

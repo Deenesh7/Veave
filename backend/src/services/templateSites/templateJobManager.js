@@ -113,7 +113,7 @@ const leaseFilter = () => ({ $or: [{ leaseExpiresAt: null }, { leaseExpiresAt: {
 
 const HEAL_TRIES = Number(process.env.TEMPLATE_HEAL_TRIES) > 0 ? Number(process.env.TEMPLATE_HEAL_TRIES) : 3;
 // Failures a new try can fix. Never retried: cancelling, a missing key or credits, an empty instruction, a missing page, or a site that someone else changed.
-const NOT_HEALABLE = /^(EMPTY_INSTRUCTION|PAGE_FILE_MISSING|SITE_CHANGED|UNDO_USES_VERSIONS|OPENROUTER_AUTH_ERROR|OPENROUTER_INSUFFICIENT_CREDITS|PLAN_LIMIT.*)$/;
+const NOT_HEALABLE = /^(EMPTY_INSTRUCTION|PAGE_FILE_MISSING|SITE_CHANGED|UNDO_USES_VERSIONS|OPENROUTER_AUTH_ERROR|OPENROUTER_INSUFFICIENT_CREDITS|OPENROUTER_CONTEXT_TOO_LONG|PLAN_LIMIT.*)$/;
 function isHealable(error) {
   if (!error || error instanceof JobCancelled || error?.name === 'AbortError' || error?.name === 'OpenRouterAuthError' || error?.name === 'PlanLimitError') return false;
   return !NOT_HEALABLE.test(String(error.code || ''));
@@ -130,6 +130,7 @@ function failureCode(error, { timedOut = false } = {}) {
   if (error?.code === 'OPENROUTER_RATE_LIMIT') return 'PROVIDER_RATE_LIMIT';
   if (error?.code === 'OPENROUTER_MODEL_UNAVAILABLE') return 'PROVIDER_MODEL';
   if (error?.code === 'OPENROUTER_TIMEOUT') return 'PROVIDER_TIMEOUT';
+  if (error?.code === 'OPENROUTER_CONTEXT_TOO_LONG') return 'PROVIDER_CONTEXT_TOO_LONG';
   return 'JOB_FAILED';
 }
 
@@ -173,6 +174,9 @@ class TemplateJobManager {
       }
       throw error;
     }
+    // The check above and the creation are two steps: a website run started in between would write at the same time. Checked again now
+    // that this job exists; the later one gives way.
+    if (await this.lostRace(job, { type: 'site-customize' })) throw new ConflictError('The whole website is being generated. Wait for it to finish or cancel it first.');
     await setGeneration(page._id, 'generating');
     // The pictures chosen for this change are now tied to this page in the library.
     if (photos.length) await require('../../models/TemplateAsset').updateMany({ siteId: site._id, projectPath: { $in: photos.map((photo) => `public${photo.path}`) } }, { $addToSet: { pageIds: page._id } }).catch(() => {});
@@ -215,9 +219,21 @@ class TemplateJobManager {
       if (error?.code === 11000) throw new ConflictError('A generation is already running for this site.');
       throw error;
     }
+    if (await this.lostRace(job, {})) throw new ConflictError('A generation is already running for this site.');
     await TemplatePage.updateMany({ _id: { $in: pages.map((page) => page._id) } }, { $set: { status: 'ready', 'generation.state': 'queued', 'generation.error': null, 'generation.updatedAt': new Date(), lastError: null } });
     this.schedule(job.jobId);
     return job;
+  }
+
+  /**
+   * Another active job of the site that `job` must not run beside (matching `filter`) and that was created first: then `job` is withdrawn
+   * (cancelled, its active key freed) and true is returned.
+   */
+  async lostRace(job, filter) {
+    const other = await TemplateGenerationJob.findOne({ siteId: job.siteId, jobId: { $ne: job.jobId }, status: { $in: ACTIVE }, ...filter }).sort({ createdAt: 1, _id: 1 }).select('jobId createdAt _id').lean();
+    if (!other || String(other._id) > String(job._id)) return false;
+    await TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $set: { status: 'cancelled', stepName: 'Cancelled', activeKey: null, completedAt: new Date(), error: 'Another generation was already running for this site.' } });
+    return true;
   }
 
   /** Writes ONE page again from the stored website brief and the page's own purpose (no instruction to type). Same job as Regenerate Page. */
@@ -331,8 +347,10 @@ class TemplateJobManager {
       if (job.type === 'site-customize') { await clearPending((await TemplateGenerationJob.findOne({ jobId: job.jobId }).select('plan').lean())?.plan); await rollbackIfUseless(job); }
       return;
     }
-    const message = timedOut ? `The generation took longer than ${JOB_MAX_MS >= 60000 ? `${Math.round(JOB_MAX_MS / 60000)} minutes` : `${Math.round(JOB_MAX_MS / 1000)} seconds`} and was stopped. The page is unchanged.`
+    const limit = job.type === 'site-customize' ? SITE_JOB_MAX_MS : JOB_MAX_MS;
+    const message = timedOut ? `The generation took longer than ${limit >= 60000 ? `${Math.round(limit / 60000)} minutes` : `${Math.round(limit / 1000)} seconds`} and was stopped. The page is unchanged.`
       : leaseLost ? `The generation was interrupted (${leaseLost}). The page is unchanged.`
+      : error?.code === 'OPENROUTER_CONTEXT_TOO_LONG' ? 'This page is too large for the AI to change in one go, so nothing was changed. Tick only the section you want to change, or ask for a smaller change.'
       : String(error?.message || error).slice(0, 1500);
     const code = leaseLost && !timedOut ? 'JOB_LEASE_LOST' : failureCode(error, { timedOut });
     // The owner is told the real reason in plain words (the checks' own sentences are written to be read), not only "could not apply safely".
@@ -378,7 +396,7 @@ class TemplateJobManager {
     if (!intent.mayChangeCategory(owner) && !(await this.namesNewSubject({ job, page, pages, files, site, signal }))) return false;
     await this.progress(job.jobId, 'processing', 'Understanding the website you want', { progress: 5 });
     // The planner reads what the owner typed, not the section list the studio appends (it names the OLD website's sections).
-    const typed = String(job.instruction).split(/\n\n(?:PAGE CONTEXT|SECTION CONTENT|\(The owner)/)[0].trim() || job.instruction;
+    const typed = require('./templateValidationService').ownerWords(job.instruction).trim() || job.instruction;
     const brief = site.brief && site.brief !== typed ? `${typed}\n\n(An earlier description of this website, which the instruction above overrides where they differ: ${site.brief})` : typed;
     const created = await planner.createPlan({ template, pages, files, brief, ownerName: planner.ownerNameFor(site.name, template), deps: this.deps, signal });
     let spent = Number(created.usage?.totalTokens ?? created.usage?.total_tokens ?? 0) || 0;
@@ -450,7 +468,7 @@ class TemplateJobManager {
   /** The last instructions on this page: "do the same again" and "make it like before" are read against them. */
   async pageHistory(job, page) {
     const rows = await TemplateGenerationJob.find({ pageId: page._id, status: 'completed', jobId: { $ne: job.jobId } }).sort({ createdAt: -1 }).limit(3).select('instruction result.changedPaths intent.intent').lean().catch(() => []);
-    return rows.map((item) => ({ instruction: String(item.instruction || '').split(/\n\n(?:PAGE CONTEXT|SECTION CONTENT|\(The owner)/)[0], changedPaths: item.result?.changedPaths || [], intent: item.intent?.intent || null }));
+    return rows.map((item) => ({ instruction: require('./templateValidationService').ownerWords(item.instruction), changedPaths: item.result?.changedPaths || [], intent: item.intent?.intent || null }));
   }
 
   /** Tokens spent before the page itself is written (planning, rewriting the shared parts) are charged with the page's own. */
@@ -492,7 +510,10 @@ class TemplateJobManager {
     const photos = await require('./templateUploadService').resolveAttachments(site, job.attachmentPlacements?.length ? job.attachmentPlacements : job.attachments);
     // Self-healing: a failed try (the AI's answer was unusable, a check or the build failed) is tried again, with what went wrong told to the AI
     // so it takes another way. The owner only sees a failure when every try has failed, and then in plain words.
-    const baseInstruction = job.focusSection ? `${job.instruction}\n\n(The owner ticked only the section(s) "${job.focusSection}" of this page. Change ONLY those sections. Every other section must stay exactly as it is, character for character; do not touch, restyle, reword, reorder or remove them. Use small exact "patch" edits for wording, attributes and classes. When the change wraps or restructures markup (a background picture, a new layout, moving blocks), return the complete file with "modify" so every opening tag keeps its closing tag.)` : job.instruction;
+    // Every name is quoted on its own: the names come from the instruction's "In section 01 ("A"), section 02 ("B"):" lead when it has one
+    // (a name may contain a comma), otherwise from what the panel sent.
+    const tickedNames = (() => { const named = require('./templateValidationService').namedSections(job.instruction); return named.length ? named : [String(job.focusSection || '').trim()].filter(Boolean); })();
+    const baseInstruction = job.focusSection ? `${job.instruction}\n\n(The owner ticked only the section(s) ${tickedNames.map((name) => `"${name.replace(/"/g, "'")}"`).join(', ')} of this page. Change ONLY those sections. Every other section must stay exactly as it is, character for character; do not touch, restyle, reword, reorder or remove them. Use small exact "patch" edits for wording, attributes and classes. When the change wraps or restructures markup (a background picture, a new layout, moving blocks), return the complete file with "modify" so every opening tag keeps its closing tag.)` : job.instruction;
     let lastProblem = '';
     let result;
     // The last instructions on this page: "do the same again" and "make it like before" are read against them.
@@ -925,7 +946,7 @@ class TemplateJobManager {
       }
       if (job.recoveryAttempts >= MAX_RECOVERIES) {
         const failed = await TemplateGenerationJob.findOneAndUpdate({ _id: job._id, status: { $in: ACTIVE } }, { $set: { status: 'failed', error: 'The generation was interrupted repeatedly. The page is unchanged.', errorCode: 'JOB_ABANDONED', completedAt: new Date(), leaseOwner: null, leaseExpiresAt: null, activeKey: null } });
-        if (failed) { abandoned += 1; if (job.pageId) await TemplatePage.updateOne({ _id: job.pageId }, { $set: { status: 'failed' } }); }
+        if (failed) { abandoned += 1; if (job.pageId) await setGeneration(job.pageId, 'failed', 'The generation was interrupted repeatedly. The page is unchanged.'); }
         continue;
       }
       const requeued = await TemplateGenerationJob.findOneAndUpdate({ _id: job._id, status: { $in: ACTIVE }, recoveryAttempts: job.recoveryAttempts, ...orphan }, { $set: { status: 'queued', stepName: 'Resuming', leaseOwner: null, leaseExpiresAt: null }, $inc: { recoveryAttempts: 1 } }, { new: true });

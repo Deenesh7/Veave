@@ -7,11 +7,13 @@ import ImageLibrary from './ImageLibrary';
 import VoiceInputButton from './VoiceInputButton';
 import { sectionOutline } from './sectionOutline';
 import { calmMessage } from '../../services/templateSiteService';
-import { pagePhotos, numberPrefix, expandSectionNumbers } from './panelLogic';
+import { pagePhotos, numberPrefix, expandSectionNumbers, tickedNumbers, tickedIds, withContextWithin } from './panelLogic';
 
 const STEP = { queued: 'Waiting to start', processing: 'Writing the page', validating: 'Building the site and testing every page', repairing: 'Fixing a problem the checks found', committing: 'Saving the new version', completed: 'Saved', failed: 'Failed', cancelled: 'Cancelled' };
 const TERMINAL = ['completed', 'failed', 'cancelled'];
 const MAX_TEXT = 4000;
+// What the owner may type: the rest of the 4000 characters the server accepts is room for the section names put in front of it.
+const TYPED_MAX = MAX_TEXT - 500;
 const SECTIONS_SHOWN = 10;
 
 function SectionTitle({ children, hint }) {
@@ -31,7 +33,7 @@ export default function ContentEditorPanel({ className = '' }) {
   const page = pages.find((item) => item.id === activePageId) || null;
   const [renaming, setRenaming] = useState(null);   // the new name while editing
   const [resizing, setResizing] = useState(false);
-  const [picked, setPicked] = useState({}); // the ticked section numbers, per page; they are shown as chips, never typed into the prompt
+  const [picked, setPicked] = useState({}); // the ticked sections (their ids), per page; they are shown as chips, never typed into the prompt
   // The ticks are kept per website, so a refresh of the page does not lose them.
   const siteKey = site?.id || null;
   const pickedFor = useRef(null);
@@ -79,7 +81,8 @@ export default function ContentEditorPanel({ className = '' }) {
   const sections = Array.isArray(loaded) ? loaded : [];
   const [showAllSections, setShowAllSections] = useState(false);
   useEffect(() => { setShowAllSections(false); }, [activePageId]);
-  const checkedNumbers = (activePageId && picked[activePageId]) || [];
+  // Remembered by id, read as the numbers the panel shows: a tick never moves to another section when one is added or removed.
+  const checkedNumbers = tickedNumbers(activePageId ? picked[activePageId] : [], sections);
 
   // The ticked sections are told to the preview, which dims every other section so the chosen ones are easy to see.
   const focusKey = checkedNumbers.map((n) => sections[n - 1]?.id).filter(Boolean).join('|');
@@ -95,7 +98,7 @@ export default function ContentEditorPanel({ className = '' }) {
   const sectionsFailed = Boolean(activePageId && sectionsError?.[activePageId]);
   const isLoadingSections = Boolean(activePageId && (loaded === undefined || (sectionsLoading && !sections.length)) && !sectionsFailed);
   // Sections are picked with check boxes and shown as chips above the prompt; the AI is sent their names.
-  const setChecked = (numbers) => setPicked((state) => ({ ...state, [activePageId]: [...new Set(numbers)].sort((a, b) => a - b) }));
+  const setChecked = (numbers) => setPicked((state) => ({ ...state, [activePageId]: tickedIds([...new Set(numbers)].sort((a, b) => a - b), sections) }));
   const toggleSection = (section, idx) => {
     if (!activePageId || running) return;
     const number = idx + 1;
@@ -135,7 +138,8 @@ export default function ContentEditorPanel({ className = '' }) {
       const fromPage = activePageId;
       if (await store.addPage({ name: pageName, description: text.slice(0, 500) })) {
         if (fromPage) setDraft(fromPage, '');
-        if (await regenerate(`Build this new page. ${sent.instruction}`, attachmentsNow(), '')) { clearSelection(); setChecked([]); }
+        // The new page has none of this page's sections: the ticked numbers are not sent with it.
+        if (await regenerate(`Build this new page. ${text}`.slice(0, MAX_TEXT), attachmentsNow(), '')) { clearSelection(); setChecked([]); }
       }
       return;
     }
@@ -159,18 +163,19 @@ export default function ContentEditorPanel({ className = '' }) {
   const addPageContext = async (base) => {
     try {
       const list = sections.slice(0, 24).map((item, index) => `${String(index + 1).padStart(2, '0')} ${String(item.name).replace(/"/g, "'").slice(0, 70)}`).join('; ');
-      let out = `${base}\n\nPAGE CONTEXT: this is the "${page?.name || 'page'}" page (route ${page?.route || '/'}).${list ? ` Its sections, in order: ${list}.` : ''}`;
+      // The owner's words come first and are never cut for the context: the context gets what room is left.
+      let context = `\n\nPAGE CONTEXT: this is the "${page?.name || 'page'}" page (route ${page?.route || '/'}).${list ? ` Its sections, in order: ${list}.` : ''}`;
       for (const n of checkedNumbers.slice(0, 3)) {
         const section = sections[n - 1];
         if (!section) continue;
         const html = await readSectionHtml(section);
-        const room = MAX_TEXT - out.length - 120;
+        const room = MAX_TEXT - base.length - context.length - 120;
         if (!html || room < 300) continue;
         const outline = sectionOutline(html, [], Math.min(1500, room));
-        if (outline) out += `\n\nSECTION ${String(n).padStart(2, '0')} CONTENT (what the visitor sees in "${String(section.name).replace(/"/g, "'").slice(0, 70)}" right now; for reference, change only what the instruction asks):\n${outline}`;
+        if (outline) context += `\n\nSECTION ${String(n).padStart(2, '0')} CONTENT (what the visitor sees in "${String(section.name).replace(/"/g, "'").slice(0, 70)}" right now; for reference, change only what the instruction asks):\n${outline}`;
       }
-      return out.slice(0, MAX_TEXT);
-    } catch { return base; }
+      return withContextWithin(base, context, MAX_TEXT);
+    } catch { return String(base).slice(0, MAX_TEXT); }
   };
 
   const saveName = async () => {
@@ -302,7 +307,7 @@ export default function ContentEditorPanel({ className = '' }) {
           {/* C. AI page instructions */}
           <form onSubmit={submit} aria-label="AI page instructions" className="space-y-5 px-5 py-5">
             <div>
-              <SectionTitle hint={<span className={instruction.length > MAX_TEXT - 200 ? 'text-[#A4493A]' : ''}>{instruction.length}/{MAX_TEXT}</span>}>AI instructions</SectionTitle>
+              <SectionTitle hint={<span className={instruction.length > TYPED_MAX - 200 ? 'text-[#A4493A]' : ''}>{instruction.length}/{TYPED_MAX}</span>}>AI instructions</SectionTitle>
               <div className={`rounded-md border ${line} bg-white focus-within:border-[#5E7B5F] focus-within:ring-1 focus-within:ring-[#5E7B5F]`}>
                 {checkedNumbers.length ? (
                   <div className={`flex flex-wrap items-center gap-1.5 border-b ${line} px-2.5 py-2`} aria-label="Selected sections">
@@ -317,10 +322,10 @@ export default function ContentEditorPanel({ className = '' }) {
                     {checkedNumbers.length > 1 ? <button type="button" disabled={running} onClick={() => setChecked([])} className={`ml-auto text-[11px] font-medium underline underline-offset-2 ${muted}`}>Clear</button> : null}
                   </div>
                 ) : null}
-                <textarea id="page-instruction" aria-label="Instruction for this page" value={instruction} onChange={(event) => setDraft(page.id, event.target.value)} maxLength={MAX_TEXT} rows={4} disabled={running}
+                <textarea id="page-instruction" aria-label="Instruction for this page" value={instruction} onChange={(event) => setDraft(page.id, event.target.value)} maxLength={TYPED_MAX} rows={4} disabled={running}
                   className={`block min-h-[6rem] w-full resize-none rounded-md border-0 bg-transparent px-3 py-2 text-sm leading-relaxed ${ink} placeholder:text-xs placeholder:text-[#A59E90] focus:outline-none focus:ring-0`} />
                 <div className="flex items-center justify-end gap-2 px-2 pb-2">
-                  <VoiceInputButton disabled={running} onText={(text) => setDraft(page.id, `${instruction}${instruction && !/\s$/.test(instruction) ? ' ' : ''}${text}`.slice(0, MAX_TEXT))} />
+                  <VoiceInputButton disabled={running} onText={(text) => setDraft(page.id, `${instruction}${instruction && !/\s$/.test(instruction) ? ' ' : ''}${text}`.slice(0, TYPED_MAX))} />
                 </div>
               </div>
             </div>

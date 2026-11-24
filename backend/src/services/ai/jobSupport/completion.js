@@ -9,7 +9,8 @@ async function completeOpenRouterResponse(messages, completion, {
   continuationInstruction,
   structured = false,
   maxContinuations = Number.parseInt(process.env.OPENROUTER_MAX_CONTINUATIONS, 10) || 4,
-  timeout = 120000
+  timeout = 120000,
+  signal = null
 } = {}) {
   // A structured answer is finished when the provider did not cut it for length AND nothing in it is visibly cut off (a provider can
   // report "stop" for tool-call JSON that ends mid-string, or leave a <FILE> block open).
@@ -24,6 +25,7 @@ async function completeOpenRouterResponse(messages, completion, {
   let combined = String(partialToolArguments || completion?.content || '');
   let aggregateUsage = completion?.usage || null;
   for (let attempt = 0; attempt < maxContinuations; attempt++) {
+    signal?.throwIfAborted?.();
     if (!combined || combined.length > 1024 * 1024) break;
     const continued = await generateWithRetry([
       ...messages,
@@ -37,7 +39,7 @@ async function completeOpenRouterResponse(messages, completion, {
       reasoning: { effort: 'low', exclude: true },
       response_format: false,
       timeout
-    });
+    }, { signal: signal || undefined });
     const continuedToolArguments = continued?.tool_calls?.[0]?.function?.arguments || continued?.tool_calls?.[0]?.arguments;
     aggregateUsage = mergeRawOpenRouterUsage(aggregateUsage, continued?.usage);
     const continuation = continuedToolArguments || continued?.content;

@@ -383,6 +383,8 @@ export const useTemplateStudioStore = create((set, get) => ({
   regenerate: async (instruction, attachments = [], focusSection = '', typed = null) => {
     const { activeSiteId: siteId, activePageId: pageId } = get();
     if (!siteId || !pageId) return false;
+    // A second click while the first request is on its way would start a second job (each request has its own key).
+    if (get().busy?.regenerate) return false;
     get().setBusy('regenerate', true);
     try {
       const res = await templateSiteService.regeneratePage(siteId, pageId, { instruction, attachments, ...(focusSection ? { focusSection } : {}), idempotencyKey: `regen-${pageId}-${Date.now()}` });
@@ -395,6 +397,7 @@ export const useTemplateStudioStore = create((set, get) => ({
 
   generateSite: async (brief, photos = []) => {
     const siteId = get().activeSiteId;
+    if (get().busy?.generateSite) return false;
     get().setBusy('generateSite', true);
     try {
       const res = await templateSiteService.generateSite(siteId, { brief, photos, idempotencyKey: `gen-${siteId}-${Date.now()}` });

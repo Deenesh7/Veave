@@ -6,7 +6,10 @@
 const templateService = require('../templates/templateService');
 
 const SHARED_SOURCE_LIMIT = 3500;
-const FILE_LIMIT = 24000;
+// A file the model may change is shown in full (a shortened file returned whole would lose its end); only a very large one is cut,
+// and then it may only be changed with patches (see applyAnswer).
+const OWNED_FILE_LIMIT = Number.parseInt(process.env.TEMPLATE_OWNED_FILE_LIMIT, 10) || 120000;
+const FILE_LIMIT = OWNED_FILE_LIMIT;
 
 const fence = (path, content, limit = FILE_LIMIT) => `// File: ${path}\n${String(content).length > limit ? `${String(content).slice(0, limit)}\n// ... (shortened)` : content}`;
 
@@ -125,7 +128,7 @@ RULES:
  * @param {string} p.entityBlock   verified named-entity images (optional)
  * @param {object} p.repair        { diagnostics: string[], candidate: [{path, content}] } when a previous attempt was rejected
  */
-function buildPageMessages({ template, page, otherPages = [], instruction, ownedFiles, sharedFiles = [], entityBlock = '', attachments = [], repair = null, siteContext = null, siteWide = false, intent = null, policy = null, researchBlock = '', sectionFiles = [] }) {
+function buildPageMessages({ template, page, otherPages = [], instruction, ownedFiles, sharedFiles = [], entityBlock = '', attachments = [], repair = null, siteContext = null, siteWide = false, intent = null, policy = null, researchBlock = '', sectionFiles = [], usageBlock = '' }) {
   const mode = siteContext?.mode === 'website' && siteContext?.plan ? 'website' : 'edit';
   const system = `${mode === 'website' ? `${TRANSFORM_PREAMBLE}\n\n` : ''}${siteWide ? SITE_WIDE_RULES : rulesFor(mode)}
 
@@ -150,17 +153,27 @@ ${tokenSummary(template)}`;
     otherPages.length ? `OTHER PAGES (do not repeat their content; they are not part of this change):\n${otherPages.map((other) => `- ${other.name} (${other.route})${other.description ? `: ${other.description}` : ''}`).join('\n')}` : '',
     `${siteWide ? 'FILES YOU MAY CHANGE (this instruction is about the whole website, so shared components, shared data, src/data/site.js and index.html are included)' : 'FILES YOU MAY CHANGE'}:\n${ownedFiles.map((file) => fence(file.path, file.content)).join('\n\n')}`,
     sharedFiles.length ? `READ-ONLY CONTEXT (shared components you may use; do not change them):\n${sharedFiles.map((file) => fence(file.path, file.content, SHARED_SOURCE_LIMIT)).join('\n\n')}` : '',
+    usageBlock || '',
     attachments.length ? photoBlock(attachments) : '',
     entityBlock ? `${entityBlock}` : '',
     researchBlock || '',
-    sectionFiles.length ? `THE TICKED SECTION IS SHOWN BY THESE FILES (they are listed under FILES YOU MAY CHANGE; other pages may use them too): ${sectionFiles.join(', ')}.\nChange the section by changing what those files hold: write the new RECORDS in the data file(s) (keep each export's name, the field names the page reads such as id, title, price, beds, type, image, and keep an id on every record) and change the card component to show them. The page file (${page.componentPath}) belongs to the sections the owner did NOT tick: do not edit it, do not rename its variables (results, listings, filters ...) and do not change its headings or counts, unless the ticked section's own markup cannot work without it. A page whose records changed still reads them through the same names.` : '',
+    sectionFiles.length ? `THE TICKED SECTION IS SHOWN BY THESE FILES (they are listed under FILES YOU MAY CHANGE; other pages may use them too): ${sectionFiles.join(', ')}.\nChange the section by changing what those files hold: write the new RECORDS in the data file(s) (keep each export's name, the field names the page reads such as id, title, price, beds, type, image, and keep an id on every record) and change the card component to show them. The page file (${page.componentPath}) belongs to the sections the owner did NOT tick: they stay exactly as they are; do not rename its variables (results, listings, filters ...) and do not change its headings or counts. Its filter, sorting and search code is not a section: when the new records have other fields, change that code (and only that code) so it reads the new fields, so every record is still shown. A page whose records changed still reads them through the same names.` : '',
     where ? `WHERE THE TEXT THE OWNER IS LOOKING AT IS WRITTEN IN THE CODE (the section content quoted in the instruction was found in these files; the code that produces what the owner sees, and so the code to change, is there):\n${where}` : '',
     policy ? require('../ai/intentUnderstandingService').planBlock(intent, policy) : '',
     `USER INSTRUCTION:\n${String(instruction).trim()}`
   ];
   if (repair) {
     parts.push(`YOUR PREVIOUS ANSWER WAS REJECTED. Fix exactly these problems and nothing else:\n${repair.diagnostics.map((item) => `- ${item}`).join('\n')}`);
-    if (repair.candidate?.length) parts.push(`YOUR PREVIOUS VERSION OF THE FILES (the starting point for the fix):\n${repair.candidate.map((file) => fence(file.path, file.content)).join('\n\n')}`);
+    const shown = new Map(ownedFiles.map((file) => [file.path, file.content]));
+    const sameAsShown = (repair.candidate || []).every((file) => shown.get(file.path) === file.content);
+    if (repair.restart && repair.candidate?.length) {
+      // The answer changed what it had to keep: it is thrown away and the change is made again on the ORIGINAL files shown above.
+      parts.push(`The files under FILES YOU MAY CHANGE above are the ORIGINAL files, as they are on the website now. Make the change again on THEM (patches must match their text) and copy every part you must not change exactly from them. Your rejected version, for reference only (do not patch it):\n${repair.candidate.map((file) => fence(file.path, file.content)).join('\n\n')}`);
+    } else if (repair.candidate?.length && !sameAsShown) {
+      parts.push(`YOUR PREVIOUS VERSION OF THE FILES (the starting point for the fix):\n${repair.candidate.map((file) => fence(file.path, file.content)).join('\n\n')}`);
+    } else if (repair.candidate?.length) {
+      parts.push('YOUR PREVIOUS VERSION OF THE FILES is what is shown under FILES YOU MAY CHANGE above: it is the starting point for the fix (patches must match its text).');
+    }
     parts.push('Return the corrected files. The original instruction above still applies in full.');
   }
   return [{ role: 'system', content: system }, { role: 'user', content: parts.filter(Boolean).join('\n\n') }];
@@ -188,4 +201,4 @@ RULES:
 7. Prefer small exact "patch" edits (a unique search block copied from the code shown); return a complete file with "modify" when you rewrite it substantially.
 8. Never invent facts: no statistics, rankings, fees, dates, phone numbers, emails, names of people. Use general wording or a clear placeholder instead.`;
 
-module.exports = { buildPageMessages, RULES, rulesFor, SITE_WIDE_RULES };
+module.exports = { buildPageMessages, RULES, rulesFor, SITE_WIDE_RULES, OWNED_FILE_LIMIT };

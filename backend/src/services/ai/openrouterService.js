@@ -19,6 +19,7 @@ const MAX_INPUT_BYTES = Number.parseInt(process.env.OPENROUTER_MAX_INPUT_BYTES, 
 // Connection-level failures (no HTTP response) are safe to retry: the request never completed.
 // EPIPE/ECONNRESET usually mean a stale keep-alive socket or the server closed a large upload early,
 // so retries use a fresh, non-pooled connection.
+const CONTEXT_TOO_LONG = /context[ _-]?length|maximum context|context window|too many (?:input )?tokens|prompt is too long|input is too long|reduce the length of the (?:messages|prompt)/i;
 const NETWORK_RETRY_PATTERN = /EPIPE|ECONNRESET|socket hang up|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH/i;
 const freshAgent = new https.Agent({ keepAlive: false });
 
@@ -192,6 +193,10 @@ class OpenRouterService {
       };
     } catch (error) {
       if (error instanceof AIError) throw error;
+      // A cancelled job (or a job that ran out of time) aborted the call: that is not a failure of the AI service.
+      if (options.signal?.aborted || error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+        throw Object.assign(new Error('The AI request was cancelled.'), { name: 'AbortError', code: 'ABORT_ERR' });
+      }
       logger.error(`OpenRouter API Error: ${error.message}`);
       if (error.code === 'ECONNABORTED' || (error.message && error.message.toLowerCase().includes('timeout'))) {
         throw new OpenRouterTimeoutError(`The AI request timed out: ${error.message}`);
@@ -240,6 +245,10 @@ class OpenRouterService {
             tool_choice: undefined,
             _retried400: true
           });
+        }
+        // "This model's maximum context length is ..." names the model, but the request was too large, not the model unavailable.
+        if (typeof msg === 'string' && CONTEXT_TOO_LONG.test(msg)) {
+          throw Object.assign(new OpenRouterAPIError(`The request was too large for the AI model: ${msg}`, status), { code: 'OPENROUTER_CONTEXT_TOO_LONG', contextTooLong: true, permanent: true });
         }
         if (status === 404 || (typeof msg === 'string' && (msg.toLowerCase().includes('model') || msg.toLowerCase().includes('not found')))) {
           { const modelError = new OpenRouterModelError('The AI model is unavailable. Please try again later.'); modelError.permanent = true; throw modelError; }

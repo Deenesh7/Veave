@@ -7,12 +7,13 @@ import { PrimaryButton, GhostButton, Spinner, ink, muted, line } from './ui';
 import VoiceInputButton from './VoiceInputButton';
 import { sectionEditScript } from './sectionEditScripts';
 import { sectionOutline } from './sectionOutline';
-import { pagePhotos } from './panelLogic';
+import { pagePhotos, matchSection } from './panelLogic';
 import { useImageSrc } from './imageUtils';
 
 const MAX_TEXT = 4000;
+// What the owner may type: the rest of the 4000 characters is room for the section's name and the notes put around it.
+const TYPED_MAX = MAX_TEXT - 500;
 const esc = (value) => String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-const norm = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const pad = (n) => String(n).padStart(2, '0');
 
 // The page of the popup: the real styles of the website and only this section, with its text editable in place.
@@ -60,12 +61,15 @@ export default function SectionEditModal({ payload, onClose }) {
   const startKey = useRef(previewKey);
   const current = useMemo(() => (fresh ? { ...payload, ...fresh } : payload), [payload, fresh]);
 
-  // Which section of the Content column this is (its number is what the AI is told).
+  // Which section of the Content column this is (its number is what the AI is told, and what keeps every other section locked).
+  // Once known it is kept: after the AI renames the section's heading the new name may not be found in the list right away.
+  const known = useRef(null);
   const match = useMemo(() => {
-    const byId = payload.domId ? sections.findIndex((item) => item.domId === payload.domId || item.id === payload.domId) : -1;
-    const wanted = norm(payload.name);
-    const byName = byId >= 0 ? byId : sections.findIndex((item) => norm(item.name) === wanted);
-    return byName >= 0 ? { number: byName + 1, item: sections[byName] } : null;
+    const key = `${payload.domId || ''}|${payload.name || ''}|${payload.index ?? ''}`;
+    if (known.current?.key !== key) known.current = null; // another section was opened
+    const found = matchSection(sections, { domId: payload.domId || '', name: payload.name || '', index: Number.isInteger(payload.index) ? payload.index : -1, html: payload.html || '' });
+    if (found >= 0) known.current = { key, number: found + 1, item: sections[found] };
+    return known.current;
   }, [payload, sections]);
   const title = match?.item?.name || payload.name || 'This section';
 
@@ -145,7 +149,8 @@ export default function SectionEditModal({ payload, onClose }) {
       const lead = match ? `In section ${pad(match.number)} ("${String(title).replace(/"/g, "'")}"): ` : `In the section "${String(title).replace(/"/g, "'")}": `;
       const notes = saved.length ? `\n\n(The owner already typed these changes into this section by hand. Keep them exactly as written: ${saved.map((item) => `"${item.old}" became "${item.next}"`).join('; ')}.)` : '';
       const head = `${lead}${text}${notes}`.slice(0, MAX_TEXT - 300);
-      const outline = sectionOutline(payload.html, saved, Math.max(0, Math.min(1800, MAX_TEXT - head.length - 200)));
+      // What the section shows NOW: after an earlier AI change in this pop-up that is the new markup, not the one it opened with.
+      const outline = sectionOutline(current.html, saved, Math.max(0, Math.min(1800, MAX_TEXT - head.length - 200)));
       const context = outline ? `\n\nSECTION CONTENT (what the visitor sees in this section right now, with the typed changes applied; for reference, change only what the instruction asks):\n${outline}` : '';
       const instruction = `${head}${context}`.slice(0, MAX_TEXT);
       startKey.current = useTemplateStudioStore.getState().previewKey;
@@ -222,17 +227,17 @@ export default function SectionEditModal({ payload, onClose }) {
                 ))}
               </div>
             ) : null}
-            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={MAX_TEXT} rows={3} disabled={saving || applying || running} aria-label="AI instruction for this section"
+            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={TYPED_MAX} rows={3} disabled={saving || applying || running} aria-label="AI instruction for this section"
               className={`block w-full resize-none rounded-md border-0 bg-transparent px-3 py-2 text-sm leading-relaxed ${ink} placeholder:text-xs placeholder:text-[#A59E90] focus:outline-none focus:ring-0`} />
             <div className="flex items-center justify-between px-2.5 pb-2">
               <span className="flex items-center gap-2">
                 <button type="button" disabled={saving || applying || running} onClick={() => setPrompt('Remove this section completely from the page, including anything that only it used and any link or button that points to it. Do not change any other section.')} className="inline-flex items-center gap-1 rounded-full border border-[#E2DCCF] bg-white px-2.5 py-0.5 text-[11px] font-medium text-[#5C564B] hover:bg-[#EFEBE1] disabled:opacity-50"><X className="h-3 w-3" />Remove this section</button>
-                <span className={`text-[11px] ${muted}`}>{prompt.length}/{MAX_TEXT}</span>
+                <span className={`text-[11px] ${muted}`}>{prompt.length}/{TYPED_MAX}</span>
               </span>
               <span className="flex items-center gap-1">
               <input ref={fileInput} type="file" multiple accept={MEDIA_TYPES.join(',')} className="hidden" aria-label="Choose photos or videos for this section" onChange={(event) => { uploadFiles(event.target.files); event.target.value = ''; }} />
               <button type="button" disabled={saving || applying || running} onClick={() => fileInput.current?.click()} aria-label="Add a photo" title="Add a photo to this section" className={`inline-flex h-7 w-7 items-center justify-center rounded-full border ${line} bg-white ${muted} hover:bg-[#EFEBE1] disabled:opacity-50`}><ImagePlus className="h-3.5 w-3.5" /></button>
-              <VoiceInputButton disabled={saving || applying || running} onText={(text) => setPrompt((value) => `${value}${value && !/\s$/.test(value) ? ' ' : ''}${text}`.slice(0, MAX_TEXT))} />
+              <VoiceInputButton disabled={saving || applying || running} onText={(text) => setPrompt((value) => `${value}${value && !/\s$/.test(value) ? ' ' : ''}${text}`.slice(0, TYPED_MAX))} />
               </span>
             </div>
           </div>

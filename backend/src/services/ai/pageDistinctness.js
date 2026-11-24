@@ -284,4 +284,4 @@ function findPageIssues(files = [], { spec = null } = {}) {
 /** Issues a finished site must not keep: it would show one page under several URLs. */
 const BLOCKING_KINDS = new Set(['page-shared-component', 'page-duplicate-content', 'page-rendered-duplicate']);
 
-module.exports = { reachableFiles, extractRoutes, navLabels, findPageIssues, BLOCKING_KINDS, humanize, jaccard, visibleText, pageSource };
+module.exports = { resolveImport, importMap, reachableFiles, extractRoutes, navLabels, findPageIssues, BLOCKING_KINDS, humanize, jaccard, visibleText, pageSource };

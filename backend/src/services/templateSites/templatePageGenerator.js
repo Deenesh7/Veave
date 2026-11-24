@@ -8,7 +8,7 @@
  */
 const aiProtocol = require('../ai/aiProtocol');
 const generationPipeline = require('../ai/generationPipeline');
-const { buildPageMessages } = require('./templatePromptBuilder');
+const { buildPageMessages, OWNED_FILE_LIMIT } = require('./templatePromptBuilder');
 const validation = require('./templateValidationService');
 const semantic = require('./templateSemanticValidator');
 const store = require('./siteFileStore');
@@ -38,10 +38,12 @@ function defaultCallModel(mode = 'edit') {
       model, temperature: 0.2, max_tokens: Number.parseInt(process.env.TEMPLATE_PAGE_MAX_TOKENS, 10) || 16000,
       timeout: Number.parseInt(process.env.OPENROUTER_GENERATION_TIMEOUT_MS, 10) || 300000,
       reasoning: { effort: 'low', exclude: true }, tools: [aiProtocol.FILE_OPERATIONS_TOOL],
-      tool_choice: { type: 'function', function: { name: aiProtocol.FILE_OPERATIONS_TOOL.function.name } }
+      tool_choice: { type: 'function', function: { name: aiProtocol.FILE_OPERATIONS_TOOL.function.name } },
+      // Cancelling the job (or its time limit) stops the call in flight instead of paying for a page nobody will see.
+      ...(signal ? { signal } : {})
     };
     const first = await jobManager.withTransientRetry(() => openrouterService.generateCompletion(messages, options), { signal, retryTimeouts: false });
-    return jobManager.completeOpenRouterResponse(messages, first, { model, structured: true, continuationInstruction: 'Continue the interrupted file-operation arguments exactly where they stopped. Complete all files and close the structured response.' });
+    return jobManager.completeOpenRouterResponse(messages, first, { model, structured: true, signal, continuationInstruction: 'Continue the interrupted file-operation arguments exactly where they stopped. Complete all files and close the structured response.' });
   };
 }
 
@@ -69,13 +71,19 @@ async function defaultDiscoverImages(instruction, { signal }) {
  * Parses an answer and applies the operations that are inside the scope. Returns the new files, the paths that changed and the
  * operations that were dropped (with reasons). Throws when nothing usable remains.
  */
-function applyAnswer(files, response, scope, page, { allowPatch = true } = {}) {
+function applyAnswer(files, response, scope, page, { allowPatch = true, shownLimit = Infinity } = {}) {
   const parsed = aiProtocol.parseAIResponse(response, page.componentPath);
   // After a patch left the markup broken, patches are not accepted any more: the model must return the whole file.
   if (!allowPatch && (parsed.files || []).some((op) => op.operation === 'patch')) throw new PageGenerationError('Patch edits are not accepted any more for this page: return the complete file with operation "modify".', { code: 'PATCH_NOT_ALLOWED', issues: [validation.issue('code', 'Patch edits are not accepted after the last patch broke the markup.', { path: page.componentPath, cause: 'A patch left the JSX unbalanced.', action: 'Return the complete corrected file with operation "modify" and every opening tag closed.' })] });
   const normalized = [];
   const dropped = [];
   for (const op of parsed.files || []) {
+    // A file too large to be shown in full cannot be replaced as a whole: the model never saw its end, so "modify" would cut it off.
+    const existing = files.find((file) => file.path === op.path);
+    if (String(op.operation || 'modify').toLowerCase() === 'modify' && typeof existing?.content === 'string' && existing.content.length > shownLimit) {
+      dropped.push({ path: op.path, operation: 'modify', reason: 'the file is too large to be replaced as a whole (only its beginning was shown); change it with exact "patch" edits' });
+      continue;
+    }
     try { normalized.push({ ...op, path: aiProtocol.validatePath(op.path) }); }
     catch (error) { dropped.push({ path: op.path, operation: op.operation, reason: error.message }); }
   }
@@ -136,6 +144,10 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
       logger.warn(`Intent understanding was skipped: ${error.message}`);
     }
   }
+  // The owner ticked sections: whatever the words say, the change is made in those sections. It is never a rewrite of the whole page
+  // (that would demand new wording in the sections that must stay as they are) and never a change of the whole website.
+  const ticked = isTicked(text);
+  if (policy && ticked) policy = { ...policy, rewrite: false, refinement: false, maxKeep: undefined, siteWide: false };
   if (policy?.revert) throw new PageGenerationError('This asks to undo an earlier change. Restore the earlier version from the version history instead; nothing was changed.', { code: 'UNDO_USES_VERSIONS' });
   /* ---- facts from the web, when the owner asks for them ("search online for the programmes and their fees") ---- */
   const webResearch = require('./templateWebResearch');
@@ -150,7 +162,8 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   }
   const siteWide = validation.wantsSiteWide(text, files) || Boolean(policy?.siteWide);
   const originals = (() => { try { return new Map(require('../templates/templateService').instantiateFiles(template).map((file) => [file.path, file.content])); } catch { return null; } })();
-  const scope = validation.pageScope({ files, page, pages, template, siteWide, includeSharedContent: Boolean(policy?.rewrite), sectionNames: validation.namedSections(text) });
+  const sectionPhrases = ticked ? quotedPhrases(text) : [];
+  const scope = validation.pageScope({ files, page, pages, template, siteWide, includeSharedContent: Boolean(policy?.rewrite), sectionNames: validation.namedSections(text), sectionPhrases });
   const get = (path) => files.find((file) => file.path === path);
   if (!get(page.componentPath)) throw new PageGenerationError(`The page file ${page.componentPath} is missing from the site.`, { code: 'PAGE_FILE_MISSING' });
   const ownedFiles = scope.ownedList.map(get).filter(Boolean);
@@ -160,9 +173,11 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   let entity = null;
   try { entity = await discoverImages?.(validation.ownerWords(text), { signal }); } catch (error) { if (signal?.aborted) throw error; logger.warn(`Image search for the page instruction was skipped: ${error.message}`); }
 
+  // Who else reads the files this change may touch (exports, record fields), so the change keeps them working.
+  const usageBlock = (() => { try { return require('./templateDataContract').usageNotes(files, scope.ownedList); } catch { return ''; } })();
   const promptFor = (repair, current = files) => buildPageMessages({
     template, page, otherPages, instruction: text, ownedFiles: scope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
-    entityBlock: entity?.block || '', researchBlock: research?.block || '', sectionFiles: scope.sectionFiles || [], attachments, repair, siteContext, intent: intentResult?.intent || null, policy
+    entityBlock: entity?.block || '', researchBlock: research?.block || '', sectionFiles: scope.sectionFiles || [], attachments, repair, siteContext, intent: intentResult?.intent || null, policy, usageBlock
   });
 
   /* ---- generate, check, repair (static stages) ---- */
@@ -174,10 +189,16 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   let reviewNotes = [];
   let attempts = 0;
   let allowPatch = true;
+  // The files the next answer is applied to: the last candidate for a repair, or the original files again when the last answer changed
+  // what it had to keep (a section that was not ticked, the wording of the rest of the page): patching that answer cannot bring them back.
+  let startFrom = files;
   // An independent reviewer compares the changed lines with the owner's words (not in tests that supply their own model, nor when a whole website is written).
   const reviewOn = Boolean(deps.reviewIntent || deps.askIntentModel) || (!deps.callModel && siteContext?.mode !== 'website');
   const keptShare = ({ baseline: before, candidate: after }) => validation.keptShareOwned(before, after, scope);
-  const review = (args) => (deps.reviewIntent || require('./templateIntentReview').reviewIntent)({ instruction: text, focus: (text.match(/ticked only the section\(s\) "([^"]+)"/) || [])[1] || '', deps, signal, intent: policy ? intentResult.intent : null, research: research ? { found: research.found, organisation: research.organisation || '', sources: research.sources.map((entry) => entry.url), items: research.items.length } : null, wording: policy?.rewrite ? validation.wordingOf(args.candidate, (scope.pageFiles || []).filter((path) => scope.owned.has(path))) : '', site: policy?.rewrite ? [siteContext?.name, siteContext?.brief].filter(Boolean).join(': ').slice(0, 300) : '', refinement: Boolean(policy?.refinement), keptShare: policy && !policy.refinement ? keptShare(args) : null, ...args });
+  // The sections the owner ticked, and the ones that must stay as they are: the reviewer judges the change in the ticked ones only.
+  const focusNames = validation.namedSections(text);
+  const lockedNames = ticked ? untickedSectionNames(get(page.componentPath)?.content, text, focusNames) : [];
+  const review = (args) => (deps.reviewIntent || require('./templateIntentReview').reviewIntent)({ instruction: text, focus: focusNames.join(', '), lockedSections: lockedNames, deps, signal, intent: policy ? intentResult.intent : null, research: research ? { found: research.found, organisation: research.organisation || '', sources: research.sources.map((entry) => entry.url), items: research.items.length } : null, wording: policy?.rewrite ? validation.wordingOf(args.candidate, (scope.pageFiles || []).filter((path) => scope.owned.has(path))) : '', site: policy?.rewrite ? [siteContext?.name, siteContext?.brief].filter(Boolean).join(': ').slice(0, 300) : '', refinement: Boolean(policy?.refinement), keptShare: policy && !policy.refinement ? keptShare(args) : null, ...args });
   let verdict = { met: null };
   const BROKEN_MARKUP = /syntax error|closing tag|unexpected token|unterminated/i;
   for (let round = 0; round <= repairRounds; round += 1) {
@@ -186,14 +207,14 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     attempts += 1;
     let applied;
     try {
-      const response = await timed(round === 0 ? 'write page' : `repair ${round}`, () => callModel(promptFor(repair, candidate || files), { signal }));
+      const response = await timed(round === 0 ? 'write page' : `repair ${round}`, () => callModel(promptFor(repair, startFrom), { signal }));
       usage = sumUsage(usage, response.usage);
-      applied = applyAnswer(candidate || files, response, scope, page, { allowPatch });
+      applied = applyAnswer(startFrom, response, scope, page, { allowPatch, shownLimit: OWNED_FILE_LIMIT });
     } catch (error) {
       if (signal?.aborted || error?.permanent || error?.name === 'OpenRouterAuthError' || /OPENROUTER_(AUTH|INSUFFICIENT|RATE)/.test(error?.code || '') || error instanceof PageGenerationError && error.code === 'EMPTY_INSTRUCTION') throw error;
       problems = error instanceof PageGenerationError ? error.issues : [validation.issue('code', `The answer could not be applied: ${error.message}`, { cause: 'The response was malformed or cut off.', action: 'Return complete, valid file operations.' })];
       if (!problems.length) problems = [validation.issue('code', error.message, { action: 'Return valid file operations.' })];
-      repair = { diagnostics: describe(problems), candidate: candidate ? scope.ownedList.map((path) => candidate.find((file) => file.path === path)).filter(Boolean) : null };
+      repair = { diagnostics: describe(problems), candidate: candidate ? scope.ownedList.map((path) => candidate.find((file) => file.path === path)).filter(Boolean) : null, restart: Boolean(candidate) && startFrom === files };
       if (problems.some((item) => BROKEN_MARKUP.test(String(item.message)))) allowPatch = false;
       // A patch that leaves the markup unbalanced is not fixed by another patch: ask for the whole file instead.
       if (problems.some((item) => /syntax error|closing tag|unexpected token|unterminated/i.test(String(item.message)))) repair.diagnostics.push('[code] The last answer used patch edits that left the JSX broken. Do NOT use patches this time: return the complete corrected file with operation "modify", with every opening tag closed.');
@@ -253,7 +274,9 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     if (!problems.length) break;
     // Remarks from the relevance reviewer are advice, not a reason to throw the page away: one correction is tried, then the page is kept and flagged for review.
     if (problems.every((item) => item.stage === 'semantic-review') && (round >= 1 || round === repairRounds)) { reviewNotes = problems; break; }
-    repair = { diagnostics: describe(problems), candidate: scope.ownedList.map((path) => candidate.find((file) => file.path === path)).filter(Boolean) };
+    const restart = problems.some((item) => item.stage === 'preserve');
+    repair = { diagnostics: describe(problems), candidate: scope.ownedList.map((path) => candidate.find((file) => file.path === path)).filter(Boolean), restart };
+    startFrom = restart ? files : candidate;
     if (problems.some((item) => BROKEN_MARKUP.test(String(item.message)))) allowPatch = false;
     if (problems.some((item) => BROKEN_MARKUP.test(String(item.message)))) repair.diagnostics.push('[code] The last answer left the JSX broken. Do NOT use patches this time: return the complete corrected file with operation "modify", with every opening tag closed.');
     if (round === repairRounds) throw new PageGenerationError(problems.every((item) => item.stage === 'intent') ? `The AI could not do what you asked. ${problems.map((item) => item.message.replace(/^The change does not do what was asked: /, '')).join(' ')} Your page is exactly as it was.` : `The new version of the ${page.name} page did not pass validation after ${attempts} attempt(s): ${problems.slice(0, 3).map((item) => item.message).join(' | ')}`, { code: problems.every((item) => item.stage === 'intent') ? 'INTENT_NOT_MET' : 'PAGE_VALIDATION_FAILED', issues: problems });
@@ -276,10 +299,10 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
       // A test that fails on its own selector (it matches several elements) is not fixed by rewriting the page.
       if (validation.strictModeProblem(diagnostics) && validation.behaviourFailureOnly(diagnostics)) return [];
       onState('repairing', 'Fixing a build or browser error');
-      const gateScope = validation.pageScope({ files: current, page, pages, template, siteWide, includeSharedContent: Boolean(policy?.rewrite), sectionNames: validation.namedSections(text) });
+      const gateScope = validation.pageScope({ files: current, page, pages, template, siteWide, includeSharedContent: Boolean(policy?.rewrite), sectionNames: validation.namedSections(text), sectionPhrases });
       const gateRepairPrompt = buildPageMessages({
         template, page, otherPages, instruction: text, ownedFiles: gateScope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
-        entityBlock: '', attachments, repair: { diagnostics: [generationPipeline.formatDiagnostics(diagnostics)], candidate: null }, siteContext, intent: intentResult?.intent || null, policy, researchBlock: research?.block || ''
+        entityBlock: '', attachments, repair: { diagnostics: [generationPipeline.formatDiagnostics(diagnostics)], candidate: null }, siteContext, intent: intentResult?.intent || null, policy, researchBlock: research?.block || '', usageBlock
       });
       const response = await callModel(gateRepairPrompt, { signal });
       usage = sumUsage(usage, response.usage);
@@ -316,7 +339,10 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
       const attempts = [];
       if (validation.strictModeProblem(diagnosticsOf(gateError))) attempts.push({ tests: validation.relaxSelectors(behavior.tests), looser: true });
       attempts.push({ tests: [], looser: false });
-      for (const attempt of attempts) {
+      let machineError = null;
+      let machineRetries = 0;
+      for (let index = 0; index < attempts.length; index += 1) {
+        const attempt = attempts[index];
         try {
           onState('validating', attempt.looser ? 'Retrying the browser test with clearer selectors' : 'Checking the build without the faulty browser test');
           gated = await timed('build + browser tests (recovery)', () => buildGate(candidate, { routes, extraTests: attempt.tests, signal, maxRepairs: 0, onProgress: (state) => onState('validating', state?.stage || 'validating') }));
@@ -326,8 +352,21 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
           break;
         } catch (error) {
           if (signal?.aborted || error?.name === 'AbortError') throw error;
-          if (!validation.behaviourFailureOnly(diagnosticsOf(error))) { gateError = error; break; }
+          // The build machine failed during the re-check (a dropped connection of the preview server): the page itself already built and
+          // opened, so the machine is given one more chance and then the page is kept on the strength of that earlier run.
+          if (environmental(error)) {
+            machineError = error;
+            if (machineRetries < 1) { machineRetries += 1; await pause(Number(deps.gateRetryMs) >= 0 ? Number(deps.gateRetryMs) : 4000); index -= 1; }
+            continue;
+          }
+          if (!validation.behaviourFailureOnly(diagnosticsOf(error))) { gateError = error; machineError = null; break; }
         }
+      }
+      if (!gated && machineError && validation.behaviourFailureOnly(diagnosticsOf(gateError))) {
+        logger.warn(`The ${page.name} page was accepted without its generated browser test: the build machine could not finish the re-check (${String(machineError?.report?.reason || machineError.message).slice(0, 160)}).`);
+        gated = { files: candidate, report: { ...(gateError?.report || {}), status: 'passed', validationMode: 'static-only', stage: 'static', checks: [], infrastructure: String(machineError?.report?.reason || machineError.message).slice(0, 300), verifiedAt: new Date().toISOString() } };
+        behavior = { status: 'unavailable', tests: [], reason: 'The page builds and every route opens, but the automatic browser test for this change could not be completed. Please try the change in the preview.' };
+        gateError = null;
       }
     }
     if (!gated) {
@@ -382,8 +421,24 @@ function intentContext({ page, pages, files, instruction, siteContext, history }
   const sections = blocks.flatMap((block) => block.numbers.map(() => block.name));
   const numbers = validation.selectedSectionNumbers(instruction);
   const ticked = (instruction.match(/ticked only the section\(s\) "([^"]+)"/) || [])[1];
-  const selectedSections = numbers.length ? numbers.map((n) => sections[n - 1]).filter(Boolean) : ticked ? ticked.split(/",\s*"|,\s*/).map((name) => name.trim()).filter(Boolean) : [];
+  const selectedSections = numbers.length ? numbers.map((n) => sections[n - 1]).filter(Boolean) : ticked ? ticked.split(/",\s*"/).map((name) => name.trim()).filter(Boolean) : [];
   return { page: { name: page.name, route: page.route }, sections, selectedSections, category: siteContext?.plan?.identity?.category || null, otherPages: pages.filter((item) => String(item._id) !== String(page._id)).map((item) => item.name), history };
+}
+
+/** Did the owner tick (or name, through the section panel) the sections this change is about? */
+const isTicked = (instruction) => validation.isTickedEdit(instruction);
+
+/** The texts the studio quoted from the section the owner is looking at ("SECTION 01 CONTENT: - Heading: "Homes for sale""). */
+const quotedPhrases = (instruction) => [...new Set((String(instruction || '').match(/"([^"\n]{10,120})"/g) || []).map((item) => item.slice(1, -1).trim()))];
+
+/** The names of the page's sections that were not ticked (they must stay exactly as they are). */
+function untickedSectionNames(source, instruction, tickedNames) {
+  let blocks = [];
+  try { blocks = require('./templatePageService').sectionBlocks(source || ''); } catch { return []; }
+  const numbers = validation.selectedSectionNumbers(instruction);
+  const squash = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const tickedSet = new Set(tickedNames.map(squash));
+  return [...new Set(blocks.filter((block) => (numbers.length ? !block.numbers.some((n) => numbers.includes(n)) : !tickedSet.has(squash(block.name)))).map((block) => block.name))];
 }
 
 const textOfFile = (file) => (file && file.encoding !== 'base64' && typeof file.content === 'string' ? file.content : '');

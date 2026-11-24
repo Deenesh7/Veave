@@ -20,8 +20,10 @@ const logger = require('../../utils/logger');
 const MAX_PAGES = Number.parseInt(process.env.TEMPLATE_SITE_MAX_PAGES, 10) || 30;
 
 async function assertNoRunningJob(siteId, pageId = null, exceptJobId = null) {
-  const filter = { siteId, status: { $in: TemplateGenerationJob.ACTIVE_STATUSES }, ...(pageId ? { pageId } : {}), ...(exceptJobId ? { jobId: { $ne: exceptJobId } } : {}) };
-  if (await TemplateGenerationJob.exists(filter)) throw new ConflictError(pageId ? 'This page is being regenerated. Wait for it to finish or cancel it first.' : 'A generation is running for this site. Wait for it to finish or cancel it first.');
+  // A page is also busy while a job for the whole website runs (it has no pageId but rewrites every page).
+  const filter = { siteId, status: { $in: TemplateGenerationJob.ACTIVE_STATUSES }, ...(pageId ? { $or: [{ pageId }, { type: 'site-customize' }] } : {}), ...(exceptJobId ? { jobId: { $ne: exceptJobId } } : {}) };
+  const running = await TemplateGenerationJob.findOne(filter).select('type').lean();
+  if (running) throw new ConflictError(!pageId ? 'A generation is running for this site. Wait for it to finish or cancel it first.' : running.type === 'site-customize' ? 'The website is being generated. Wait for it to finish or cancel it first.' : 'This page is being regenerated. Wait for it to finish or cancel it first.');
 }
 
 /** Computes the new files, validates them, writes them. Returns what the caller needs to finish or undo the change. */
@@ -355,10 +357,40 @@ function sectionBlocks(source) {
     const items = list.map((item, k) => ({ item, number: k + 1 })).filter((entry) => entry.item.index === start);
     const inline = items.find((entry) => entry.item.kind === 'section')?.item;
     const next = starts[i + 1];
-    let end = next ?? inline?.end ?? text.length;
-    if (next === undefined && !inline) { const close = text.indexOf('/>', start); end = close >= 0 ? close + 2 : text.length; }
+    // A section is its own element: an inline <section> up to its closing tag, a section component up to the end of its JSX element.
+    // The code between two sections (a wrapper, a results bar, an empty state) belongs to the page, not to the section before it.
+    const own = inline?.end ?? jsxElementEnd(text, start);
+    const end = Math.min(own ?? next ?? text.length, next ?? text.length);
     return { numbers: items.map((entry) => entry.number), number: items[0].number, name: (inline || items[0].item).name, source: text.slice(start, end) };
   });
+}
+
+/** Where the JSX element that opens at `start` ends (after `/>` or its matching closing tag), or null when it cannot be read. */
+function jsxElementEnd(text, start) {
+  const name = (/^<([A-Za-z][\w.]*)/.exec(text.slice(start, start + 200)) || [])[1];
+  if (!name) return null;
+  let depth = 0;
+  let quote = null;
+  for (let i = start + 1 + name.length; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) { if (c === quote && text[i - 1] !== '\\') quote = null; continue; }
+    if (c === '"' || c === "'" || c === '`') quote = c;
+    else if (c === '{') depth += 1;
+    else if (c === '}') depth -= 1;
+    else if (depth === 0 && c === '/' && text[i + 1] === '>') return i + 2;
+    else if (depth === 0 && c === '>') {
+      const tag = new RegExp(`<(/?)${name.replace(/\./g, '\\.')}(?![\\w.])`, 'g');
+      tag.lastIndex = i + 1;
+      for (let m = tag.exec(text); m; m = tag.exec(text)) {
+        if (m[1]) { const close = text.indexOf('>', m.index); return close >= 0 ? close + 1 : null; }
+        const inner = jsxElementEnd(text, m.index); // a nested element of the same name is skipped as a whole
+        if (inner === null) return null;
+        tag.lastIndex = inner;
+      }
+      return null;
+    }
+  }
+  return null;
 }
 
 /**
@@ -408,4 +440,4 @@ async function describeSections(site, page) {
   return (await describeSectionItems(site, page)).map((item) => item.name);
 }
 
-module.exports = { extractHeadings, extractSections, sectionBlocks, describeSectionItems, describeSections, listPagesFor, addPage, renamePage, deletePage, reorderPages, MAX_PAGES, assertNoRunningJob, changeFiles, undoFiles, bumpSite, reindex };
+module.exports = { extractHeadings, extractSections, sectionBlocks, jsxElementEnd, describeSectionItems, describeSections, listPagesFor, addPage, renamePage, deletePage, reorderPages, MAX_PAGES, assertNoRunningJob, changeFiles, undoFiles, bumpSite, reindex };
