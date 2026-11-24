@@ -92,10 +92,11 @@ function pageScope({ files, page, pages, template, siteWide = false, includeShar
   if (sectionNames.length) {
     const squash = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
     for (const name of sectionNames.map(squash).filter((item) => item.length >= 4)) {
-      const component = reachable.find((path) => !owned.includes(path) && !locked.has(path) && /^src\/components\//.test(path) && squash(path.split('/').pop().replace(/\.[jt]sx?$/, '')) === name);
+      const component = reachable.find((path) => !locked.has(path) && /^src\/components\//.test(path) && squash(path.split('/').pop().replace(/\.[jt]sx?$/, '')) === name);
       if (!component) continue;
-      owned.push(component);
-      for (const data of pageDistinctness.reachableFiles(component, byPath, 1)) if (/^src\/data\//.test(data) && SOURCE.test(data) && !locked.has(data) && !owned.includes(data) && byPath.has(data)) owned.push(data);
+      if (!owned.includes(component)) owned.push(component);
+      // The records the cards show come from the component's own data or, as often, from the data the PAGE imports and maps over.
+      for (const data of [...pageDistinctness.reachableFiles(component, byPath, 1), ...pageDistinctness.reachableFiles(page.componentPath, byPath, 1)]) if (/^src\/data\//.test(data) && SOURCE.test(data) && !locked.has(data) && !owned.includes(data) && byPath.has(data)) owned.push(data);
     }
   }
   if (siteWide) {

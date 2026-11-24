@@ -227,7 +227,10 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
       .concat(validation.imageProblems(failed, (entity?.assets || []).filter((asset) => !working.some((file) => textOfFile(file).includes(asset.url)))));
     // The owner asked for what was found online: the list on the page must be that list, not a summary of it.
     if (research?.found && research.items.length >= 3 && !problems.length) {
-      const onPage = (scope.pageFiles || scope.ownedList).filter((path) => scope.owned.has(path)).map((path) => validation.visibleWording((candidate.find((file) => file.path === path) || {}).content)).join('\n');
+      // What the page shows: its own files and the files the AI created for it (a new data file holding the list is the usual way).
+      const known = new Set(baseline.map((file) => file.path));
+      const paths = new Set([...(scope.pageFiles || scope.ownedList).filter((path) => scope.owned.has(path)), ...candidate.filter((file) => !known.has(file.path) && /^src\//.test(file.path)).map((file) => file.path)]);
+      const onPage = [...paths].map((path) => validation.visibleWording((candidate.find((file) => file.path === path) || {}).content)).join('\n');
       const seen = webResearch.coverage(research.items, onPage);
       if (seen.share < 0.7) problems.push(validation.issue('research', `The page shows ${seen.covered} of the ${seen.total} items found online. Missing: ${seen.missing.slice(0, 14).join('; ')}${seen.missing.length > 14 ? '; ...' : ''}.`, { path: page.componentPath, route: page.route, cause: 'Items found online were left out or merged into general ones.', action: `Add one entry for EACH missing item (${seen.missing.length}), with its facts exactly as in WEB RESEARCH. Do not group or summarise items. Keep the entries that are already there.` }));
     }
