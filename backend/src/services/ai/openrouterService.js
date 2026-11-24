@@ -185,6 +185,8 @@ class OpenRouterService {
         content: choice?.content || choice?.reasoning || '',
         reasoning: choice?.reasoning || null,
         tool_calls: choice?.tool_calls || null,
+        // Sources the model used when the web search plugin was on ([{ type: 'url_citation', url_citation: { url, title, content } }]).
+        annotations: choice?.annotations || null,
         finishReason: response.data.choices?.[0]?.finish_reason || null,
         usage: response.data.usage
       };

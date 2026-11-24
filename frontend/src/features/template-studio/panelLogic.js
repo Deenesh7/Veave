@@ -3,24 +3,42 @@
 export const PHOTO_EXTENSIONS = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif' };
 export const PHOTO_MIME_TYPES = Object.values(PHOTO_EXTENSIONS).filter((value, index, all) => all.indexOf(value) === index);
 export const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+// A video (MP4 or WebM) plays behind a section. It is bigger than a picture, so it has its own limit (the server checks the real bytes).
+export const VIDEO_EXTENSIONS = { mp4: 'video/mp4', webm: 'video/webm' };
+export const VIDEO_MIME_TYPES = Object.values(VIDEO_EXTENSIONS);
+export const MAX_VIDEO_BYTES = 25 * 1024 * 1024;
+const extensionOf = (file) => String(file?.name || '').split('.').pop().toLowerCase();
+/** A chosen file that is meant to be a video, by type or (when the browser gives none) by extension. */
+export const isVideoFile = (file) => Boolean(file) && (String(file.type || '').startsWith('video/') || (!file.type && Boolean(VIDEO_EXTENSIONS[extensionOf(file)])));
+/** "0:12", "1:05" for the length of a video in seconds ('' when unknown). */
+export const formatDuration = (seconds) => {
+  const total = Math.round(Number(seconds) || 0);
+  return total > 0 ? `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}` : '';
+};
 
 /**
  * Checks one chosen file before it is sent. The browser's MIME type is only a hint (some report nothing for AVIF), so the file
  * extension is the fallback. The server always re-checks the real bytes. Returns an error a person can act on, or null.
  */
-export function validatePhotoFile(file, { maxBytes = MAX_PHOTO_BYTES } = {}) {
-  if (!file) return 'Choose a picture to upload.';
-  const extension = String(file.name || '').split('.').pop().toLowerCase();
+export function validatePhotoFile(file, { maxBytes = MAX_PHOTO_BYTES, allowVideo = false, maxVideoBytes = MAX_VIDEO_BYTES } = {}) {
+  if (!file) return allowVideo ? 'Choose a picture or a video to upload.' : 'Choose a picture to upload.';
+  const extension = extensionOf(file);
+  if (allowVideo && isVideoFile(file)) {
+    if (!VIDEO_MIME_TYPES.includes(file.type) && file.type) return 'Use an MP4 or WebM video. Other video formats (such as MOV or AVI) do not play in every browser.';
+    if (file.size === 0) return 'The file is empty.';
+    if (file.size > maxVideoBytes) return `The video is larger than ${Math.round(maxVideoBytes / 1048576)} MB. Shorten it or compress it, then upload it again.`;
+    return null;
+  }
   const typeOk = PHOTO_MIME_TYPES.includes(file.type) || (!file.type && Boolean(PHOTO_EXTENSIONS[extension]));
-  if (!typeOk) return 'Use a PNG, JPEG, WebP, GIF or AVIF picture.';
+  if (!typeOk) return allowVideo ? 'Use a PNG, JPEG, WebP, GIF or AVIF picture, or an MP4 or WebM video.' : 'Use a PNG, JPEG, WebP, GIF or AVIF picture.';
   if (file.size === 0) return 'The file is empty.';
   if (file.size > maxBytes) return `The picture is larger than ${Math.round(maxBytes / 1048576)} MB.`;
   return null;
 }
 
 /** Image files from a drop or paste, by type or (when the browser gives none) by extension. */
-export function imageFilesOf(list) {
-  return Array.from(list || []).filter((file) => (file.type ? file.type.startsWith('image/') : Boolean(PHOTO_EXTENSIONS[String(file.name || '').split('.').pop().toLowerCase()])));
+export function imageFilesOf(list, { video = false } = {}) {
+  return Array.from(list || []).filter((file) => (file.type ? file.type.startsWith('image/') : Boolean(PHOTO_EXTENSIONS[extensionOf(file)])) || (video && isVideoFile(file)));
 }
 
 /** A failed upload is worth retrying only when the file itself was fine (a network or server problem, not a wrong type or size). */

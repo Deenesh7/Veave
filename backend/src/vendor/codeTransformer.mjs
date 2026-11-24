@@ -118,8 +118,13 @@ export function cleanSourceCode(content) {
 
 const PREVIEW_ASSET_MIME_TYPES = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
-  gif: 'image/gif', svg: 'image/svg+xml', avif: 'image/avif', ico: 'image/x-icon'
+  gif: 'image/gif', svg: 'image/svg+xml', avif: 'image/avif', ico: 'image/x-icon',
+  // A video the owner uploaded plays behind a section: its path is redirected to the asset server like a picture's.
+  mp4: 'video/mp4', webm: 'video/webm'
 };
+// A video is not embedded into a document (as base64 it would make the page several times its size): it is only reachable by URL.
+const MAX_EMBEDDED_VIDEO_BASE64 = 1.5 * 1024 * 1024;
+const isVideoMime = (mimeType) => /^video\//.test(mimeType || '');
 
 // A text SVG under public/ (templates ship their pictures this way) is an image asset like any other: its bytes are its UTF-8 text.
 function previewAssetBase64(file) {
@@ -137,6 +142,7 @@ export function inlinePreviewAssets(files = []) {
     const extension = file.path.split('.').pop()?.toLowerCase();
     const mimeType = PREVIEW_ASSET_MIME_TYPES[extension];
     if (!mimeType || !base64) continue;
+    if (isVideoMime(mimeType) && base64.length > MAX_EMBEDDED_VIDEO_BASE64) continue;
     const publicPath = `/${file.path.slice('public/'.length)}`;
     const dataUrl = `data:${mimeType};base64,${base64}`;
     replacements.push([publicPath, dataUrl], [file.path, dataUrl]);
@@ -165,6 +171,7 @@ function collectReferencedPreviewAssets(files = [], { allowEmptyContent = false,
     if (!base64 && !allowEmptyContent) continue;
     const mimeType = PREVIEW_ASSET_MIME_TYPES[file.path.split('.').pop()?.toLowerCase()];
     if (!mimeType) continue;
+    if (isVideoMime(mimeType) && !includeAll && base64.length > MAX_EMBEDDED_VIDEO_BASE64) continue;
     const publicPath = `/${file.path.slice('public/'.length)}`;
     if (!includeAll && !corpus.includes(publicPath)) continue;
     assets.push({ publicPath, mimeType, base64 });

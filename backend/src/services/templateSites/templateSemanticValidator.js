@@ -17,7 +17,9 @@ const STOP = new Set(['the', 'and', 'for', 'with', 'our', 'your', 'from', 'that'
 function visibleText(source) {
   const text = String(source || '').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1').replace(/^import .*$/gm, '');
   const out = [];
-  for (const match of text.matchAll(/>([^<>{}]{2,})</g)) out.push(match[1]);
+  // Text between tags. The ">" of an arrow function ("=>") or a comparison starts no text, and a run that holds code (statements, calls, array
+  // literals of strings) is code that sits between two tags, not something a visitor reads.
+  for (const match of text.matchAll(/(?<![=!-])>([^<>{}]{2,})</g)) if (!/;|=>|&&|\|\||\w\s*\(|[\[,]\s*['"`]|['"`]\s*[\],]/.test(match[1])) out.push(match[1]);
   for (const match of text.matchAll(/\b(?:alt|title|placeholder|aria-label|label|description|eyebrow|heading|subtitle|text|cta|content)\s*=\s*(?:"([^"]+)"|\{['"`]([^'"`]+)['"`]\})/g)) out.push(match[1] || match[2]);
   for (const match of text.matchAll(/\b(?:title|label|name|summary|description|text|heading|question|answer|category|role|quote|eyebrow|tagline|alt)\s*:\s*(?:'([^']+)'|"([^"]+)"|`([^`]+)`)/g)) out.push(match[1] || match[2] || match[3]);
   for (const match of text.matchAll(/\{\s*['"`]([^'"`{}]{3,})['"`]\s*\}/g)) out.push(match[1]);
@@ -50,7 +52,12 @@ function unprovidedFacts(text, brief) {
 // Text that is a stand-in for content instead of content: [bracket placeholders], lorem ipsum, {{tokens}}, "insert X here".
 const PLACEHOLDER = /\[[^\]\n]{2,60}\]|\blorem ipsum\b|\bdolor sit amet\b|\{\{[^}\n]{1,60}\}\}|\b(?:insert|add|enter|your)\s+[a-z ]{2,30}\s+here\b|\bTBD\b/gi;
 function placeholders(text) {
-  return [...new Set([...String(text || '').matchAll(PLACEHOLDER)].map((match) => match[0].trim()))].slice(0, 6);
+  return [...new Set([...String(text || '').matchAll(PLACEHOLDER)].map((match) => match[0].trim()).filter((found) => {
+    if (!found.startsWith('[')) return true;
+    // "[i % 4]", "[key]", "[0]" are array indexes, not a stand-in for text; "[Your name]" and "[Add a short description]" are.
+    const inner = found.slice(1, -1).trim();
+    return /[A-Za-z]{3,}/.test(inner) && !/^[a-z_$][\w$.]*$/.test(inner) && !/[%=<>&|]/.test(inner) && !/^\d/.test(inner);
+  }))].slice(0, 6);
 }
 
 const words = (text) => (String(text || '').toLowerCase().match(/[a-z0-9]+/g) || []).filter((word) => word.length >= 4 && !STOP.has(word));

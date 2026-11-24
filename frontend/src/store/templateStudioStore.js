@@ -1,7 +1,7 @@
 import { collaborationService } from '../services/collaborationService';
 import { create } from 'zustand';
 import { templateSiteService, apiMessage, calmMessage } from '../services/templateSiteService';
-import { validatePhotoFile, isNetworkFailure, normalizeSections } from '../features/template-studio/panelLogic';
+import { validatePhotoFile, isVideoFile, isNetworkFailure, normalizeSections } from '../features/template-studio/panelLogic';
 import { useBillingStore } from './billingStore';
 
 // Template work spends the same credits as every other AI task: the balance shown in the app is re-read whenever it may have changed.
@@ -30,6 +30,8 @@ const initialContentWidth = () => {
 };
 
 export const PHOTO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif'];
+// What the page panel, the library and the section pop-up accept: pictures, and MP4 / WebM videos that play behind a section.
+export const MEDIA_TYPES = [...PHOTO_TYPES, 'video/mp4', 'video/webm'];
 export const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 export const MAX_ATTACH = 8;
 export const PLACEMENTS = [['', 'Let the page decide'], ['hero', 'Hero image'], ['about', 'About section'], ['gallery', 'Gallery'], ['project', 'Project cover'], ['background', 'Background image'], ['section', 'A section I name below']];
@@ -66,6 +68,15 @@ const initialCollapsed = () => {
 };
 
 let textSaveTimer = null;
+
+// What the owner typed, as opposed to what is sent: the studio adds "In section 02 ("Name"): " in front and the page / section context
+// behind the typed text. Both sides are reduced to the typed words (spacing ignored) before they are compared.
+const norm = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+const CONTEXT_MARK = /\n\n(?:PAGE CONTEXT|SECTION(?: \d+)? CONTENT|\(The owner|This applies to the text)/;
+const SENT_LEAD = /^In section \d+ \("[^"]*"\)(?:(?:, | and )section \d+ \("[^"]*"\))*: /;
+const DRAFT_LEAD = /^Sections? \d{2,3}(?:, \d{2,3})*: /;
+export const typedPartOf = (sent) => { const text = String(sent || ''); const at = text.search(CONTEXT_MARK); return norm((at >= 0 ? text.slice(0, at) : text).replace(SENT_LEAD, '')); };
+export const typedOfDraft = (draft) => norm(String(draft || '').replace(DRAFT_LEAD, ''));
 
 export const useTemplateStudioStore = create((set, get) => ({
   // Set when a group's "New project" sent the user here: the site created next is shared with that group ({ groupId, groupName, permission, name }).
@@ -367,13 +378,15 @@ export const useTemplateStudioStore = create((set, get) => ({
 
   /* ------------------------------------------------ generation ------------------------------------------------ */
 
-  regenerate: async (instruction, attachments = [], focusSection = '') => {
+  // `typed` is what the owner wrote in the box. `instruction` is what is sent (the typed text plus the page and section context the studio
+  // adds), so the two differ; the box is cleared by comparing with `typed`.
+  regenerate: async (instruction, attachments = [], focusSection = '', typed = null) => {
     const { activeSiteId: siteId, activePageId: pageId } = get();
     if (!siteId || !pageId) return false;
     get().setBusy('regenerate', true);
     try {
       const res = await templateSiteService.regeneratePage(siteId, pageId, { instruction, attachments, ...(focusSection ? { focusSection } : {}), idempotencyKey: `regen-${pageId}-${Date.now()}` });
-      set((state) => ({ lastRequest: { pageId, instruction, attachments, focusSection }, job: res.data.job, jobPageId: pageId, pages: state.pages.map((page) => (page.id === pageId ? { ...page, status: 'generating', lastError: null } : page)) }));
+      set((state) => ({ lastRequest: { pageId, instruction, attachments, focusSection, typed: typed === null ? null : String(typed) }, job: res.data.job, jobPageId: pageId, pages: state.pages.map((page) => (page.id === pageId ? { ...page, status: 'generating', lastError: null } : page)) }));
       get().followJob(res.data.job.id);
       return true;
     } catch (error) { get().flash('error', apiMessage(error, 'The page could not be regenerated.')); return false; }
@@ -475,7 +488,13 @@ export const useTemplateStudioStore = create((set, get) => ({
         const edited = { ...get().editedPageIds, [job.pageId]: true };
         try { localStorage.setItem(`veave_edited_pages_${get().activeSiteId}`, JSON.stringify(edited)); } catch {}
         set({ editedPageIds: edited });
-        set((state) => (String(state.drafts[job.pageId] || '').trim() === String(job.instruction || '').trim() && state.drafts[job.pageId] ? { drafts: { ...state.drafts, [job.pageId]: '' } } : {}));
+        // What was typed is recognised from the job itself (not from memory), so it also works after a reload or when the job was
+        // already running when the page was opened.
+        set((state) => {
+          const draft = typedOfDraft(state.drafts[job.pageId]);
+          const remembered = state.lastRequest?.pageId === job.pageId && state.lastRequest?.typed ? typedOfDraft(state.lastRequest.typed) : null;
+          return draft && (draft === typedPartOf(job.instruction) || draft === remembered) ? { drafts: { ...state.drafts, [job.pageId]: '' } } : {};
+        });
       }
       set((state) => ({ previewKey: state.previewKey + 1 }));
       const pageId = job.pageId || get().activePageId;
@@ -735,9 +754,9 @@ export const useTemplateStudioStore = create((set, get) => ({
       const key = fileKey(file);
       if (known.has(key)) { skipped += 1; continue; }      // the same file picked twice
       known.add(key);
-      const problem = validatePhotoFile(file);
+      const problem = validatePhotoFile(file, { allowVideo: true });
       // The page is fixed when the file is chosen: a photo uploaded while the user moves to another page still belongs to the first one.
-      added.push({ key, id: `${key}:${Date.now()}`, file, name: file.name, size: file.size, preview: problem ? '' : URL.createObjectURL(file), status: problem ? 'error' : 'queued', progress: 0, error: problem, invalid: Boolean(problem), pageId: get().activePageId, imageId: null, reused: false });
+      added.push({ key, id: `${key}:${Date.now()}`, file, name: file.name, size: file.size, preview: problem || isVideoFile(file) ? '' : URL.createObjectURL(file), video: isVideoFile(file), status: problem ? 'error' : 'queued', progress: 0, error: problem, invalid: Boolean(problem), pageId: get().activePageId, imageId: null, reused: false });
     }
     if (skipped) get().flash('info', skipped === 1 ? 'That picture is already being uploaded.' : `${skipped} pictures were already being uploaded.`);
     if (!added.length) return;

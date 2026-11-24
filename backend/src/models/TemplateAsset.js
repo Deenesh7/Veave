@@ -13,6 +13,9 @@ const templateAssetSchema = new mongoose.Schema({
   entity: { type: String, default: '' },
   sha256: { type: String, required: true },
   mime: { type: String, default: '' },
+  // A picture or a video the owner uploaded (a video plays behind a section; it has no preview picture, enhancement or caption).
+  kind: { type: String, enum: ['image', 'video'], default: 'image' },
+  durationSeconds: { type: Number, default: null },
   size: { type: Number, default: 0 },
   jobId: { type: String, default: null },
   // Library fields of a picture the owner uploaded.

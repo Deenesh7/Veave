@@ -47,6 +47,17 @@ exports.getPreviewAsset = async (req, res, next) => {
       'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'"
     });
     if (req.headers['if-none-match'] === res.get('ETag')) return res.status(304).end();
+    // Browsers play a video by asking for pieces of it (Range); Safari will not play one that cannot be served in pieces.
+    res.set('Accept-Ranges', 'bytes');
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
+    if (range && (range[1] || range[2])) {
+      const total = asset.buffer.length;
+      const start = range[1] === '' ? Math.max(0, total - Number(range[2])) : Number(range[1]);
+      const end = range[1] === '' || range[2] === '' ? total - 1 : Math.min(Number(range[2]), total - 1);
+      if (start >= total || start > end) return res.status(416).set('Content-Range', `bytes */${total}`).end();
+      res.status(206).set({ 'Content-Range': `bytes ${start}-${end}/${total}`, 'Content-Length': String(end - start + 1) });
+      return res.end(asset.buffer.subarray(start, end + 1));
+    }
     return res.send(asset.buffer);
   } catch (error) {
     // A storage hiccup is not "this picture does not exist": tell the browser to try again shortly.

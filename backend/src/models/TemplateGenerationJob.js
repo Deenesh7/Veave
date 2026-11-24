@@ -26,6 +26,10 @@ const templateGenerationJobSchema = new mongoose.Schema({
   operation: { type: String, default: null },
   // A page job that rewrites the page for the planned website (retry of a page), instead of editing it.
   rewrite: { type: Boolean, default: false },
+  // What the instruction was understood to mean (intent, scope, operations, confidence, the policy applied): see intentUnderstandingService.
+  intent: { type: mongoose.Schema.Types.Mixed, default: null },
+  // Facts looked up on the web for this job (what was found and from which pages), when the owner asked for a search.
+  research: { type: mongoose.Schema.Types.Mixed, default: null },
   attachmentPlacements: { type: mongoose.Schema.Types.Mixed, default: [] },
   status: { type: String, enum: STATUSES, default: 'queued', index: true },
   progress: { type: Number, min: 0, max: 100, default: 0 },

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Pencil, X, Sparkles, ImagePlus, ImageOff } from 'lucide-react';
-import { useTemplateStudioStore, PHOTO_TYPES } from '../../store/templateStudioStore';
+import { Pencil, X, Sparkles, ImagePlus, ImageOff, Film } from 'lucide-react';
+import { useTemplateStudioStore, MEDIA_TYPES } from '../../store/templateStudioStore';
 import { templateSiteService, apiMessage } from '../../services/templateSiteService';
 import { PrimaryButton, GhostButton, Spinner, ink, muted, line } from './ui';
 import VoiceInputButton from './VoiceInputButton';
@@ -29,10 +29,10 @@ function buildDocument(payload) {
  */
 /** A small picture chip: the photo that will be used in this section, with a button to take it out again. */
 function PhotoChip({ siteId, image, disabled, onRemove }) {
-  const { src, failed } = useImageSrc(siteId, image, { version: 'original' });
+  const { src, failed } = useImageSrc(siteId, image, { version: 'original', skip: image.kind === 'video' });
   return (
     <span className={`relative inline-flex h-12 w-12 shrink-0 overflow-hidden rounded-md border ${line} bg-[#EFEBE1]`} title={image.name}>
-      {src ? <img src={src} alt={image.alt || image.name} draggable={false} className="h-full w-full object-cover" /> : <span className={`flex h-full w-full items-center justify-center ${muted}`}>{failed ? <ImageOff className="h-4 w-4" /> : <Spinner className="h-3 w-3" />}</span>}
+      {image.kind === 'video' ? <span className="flex h-full w-full items-center justify-center bg-[#2B2823] text-white"><Film className="h-4 w-4" aria-hidden="true" /></span> : src ? <img src={src} alt={image.alt || image.name} draggable={false} className="h-full w-full object-cover" /> : <span className={`flex h-full w-full items-center justify-center ${muted}`}>{failed ? <ImageOff className="h-4 w-4" /> : <Spinner className="h-3 w-3" />}</span>}
       <button type="button" disabled={disabled} onClick={onRemove} aria-label={`Remove photo ${image.name}`} className="absolute right-0.5 top-0.5 rounded-full bg-black/60 p-0.5 text-white hover:bg-black/80 disabled:opacity-50"><X className="h-2.5 w-2.5" /></button>
     </span>
   );
@@ -149,7 +149,10 @@ export default function SectionEditModal({ payload, onClose }) {
       const context = outline ? `\n\nSECTION CONTENT (what the visitor sees in this section right now, with the typed changes applied; for reference, change only what the instruction asks):\n${outline}` : '';
       const instruction = `${head}${context}`.slice(0, MAX_TEXT);
       startKey.current = useTemplateStudioStore.getState().previewKey;
-      const attachments = chosenPhotos.map((image) => ({ path: image.path, placement: 'section', note: `For the section "${String(title).replace(/"/g, "'")}"` }));
+      // A video plays behind the section it is given to; a picture is placed in it.
+      const attachments = chosenPhotos.map((image) => (image.kind === 'video'
+        ? { path: image.path, placement: 'background', note: `Play this video as the background of the section "${String(title).replace(/"/g, "'")}" (only that section)` }
+        : { path: image.path, placement: 'section', note: `For the section "${String(title).replace(/"/g, "'")}"` }));
       started = await regenerate(instruction, attachments, title);
       if (started) { clearSelection?.(); setApplying(true); setUpdated(false); }
     }
@@ -227,7 +230,7 @@ export default function SectionEditModal({ payload, onClose }) {
                 <span className={`text-[11px] ${muted}`}>{prompt.length}/{MAX_TEXT}</span>
               </span>
               <span className="flex items-center gap-1">
-              <input ref={fileInput} type="file" multiple accept={PHOTO_TYPES.join(',')} className="hidden" aria-label="Choose photos for this section" onChange={(event) => { uploadFiles(event.target.files); event.target.value = ''; }} />
+              <input ref={fileInput} type="file" multiple accept={MEDIA_TYPES.join(',')} className="hidden" aria-label="Choose photos or videos for this section" onChange={(event) => { uploadFiles(event.target.files); event.target.value = ''; }} />
               <button type="button" disabled={saving || applying || running} onClick={() => fileInput.current?.click()} aria-label="Add a photo" title="Add a photo to this section" className={`inline-flex h-7 w-7 items-center justify-center rounded-full border ${line} bg-white ${muted} hover:bg-[#EFEBE1] disabled:opacity-50`}><ImagePlus className="h-3.5 w-3.5" /></button>
               <VoiceInputButton disabled={saving || applying || running} onText={(text) => setPrompt((value) => `${value}${value && !/\s$/.test(value) ? ' ' : ''}${text}`.slice(0, MAX_TEXT))} />
               </span>

@@ -107,7 +107,7 @@ const describe = (problems) => problems.map((item) => `[${item.stage}] ${item.me
  * @param {object} [p.deps]    { callModel, localizeImages, discoverImages, buildGate }
  * @param {function} [p.onState] (state, detail) => void   states: generating, validating, repairing
  */
-async function regeneratePage({ template, page, pages, files, instruction, attachments = [], deps = {}, signal, onState = () => {}, onTiming = () => {}, repairRounds = REPAIR_ROUNDS(), siteContext = null }) {
+async function regeneratePage({ template, page, pages, files, instruction, attachments = [], deps = {}, signal, onState = () => {}, onTiming = () => {}, repairRounds = REPAIR_ROUNDS(), siteContext = null, history = [], onIntent = () => {}, onResearch = () => {} }) {
   const callModel = deps.callModel || defaultCallModel(siteContext?.mode === 'website' ? 'website' : 'edit');
   const localizeImages = deps.localizeImages || defaultLocalizeImages;
   const discoverImages = deps.discoverImages === undefined ? defaultDiscoverImages : deps.discoverImages;
@@ -118,21 +118,51 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   const baseline = files;
   // How long each slow part takes, reported to the job so it can be seen what is slow.
   const timed = async (label, fn) => { const started = Date.now(); try { return await fn(); } finally { try { onTiming({ label, ms: Date.now() - started }); } catch { /* timing is optional */ } } };
-  const siteWide = validation.wantsSiteWide(text, files);
-  const scope = validation.pageScope({ files, page, pages, template, siteWide });
+  let usage = null;
+
+  /* ---- understand what the owner means (INTENT_ENGINE=on): one structured reading that every later rule works from ---- */
+  const intentEngine = require('../ai/intentUnderstandingService');
+  let intentResult = null;
+  let policy = null;
+  if (intentEngine.enabled(deps)) {
+    try {
+      intentResult = await timed('understand intent', () => intentEngine.understand({ instruction: text, context: intentContext({ page, pages, files, instruction: text, siteContext, history }), deps, signal }));
+      usage = sumUsage(usage, intentResult.usage);
+      policy = intentEngine.policyFor(intentResult.intent, { refinement: (history || []).some((item) => item.intent === 'full_rewrite') });
+      logger.info(`Intent for the ${page.name} page: ${intentResult.intent.intent} / ${intentResult.intent.scope} (confidence ${intentResult.intent.confidence}, ${intentResult.source}); ${policy ? `keep ${policy.keepRatio === undefined ? 'default' : policy.keepRatio}` : 'no policy (existing rules apply)'}`);
+      try { onIntent(intentEngine.summarize(intentResult, policy)); } catch { /* recording is optional */ }
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      logger.warn(`Intent understanding was skipped: ${error.message}`);
+    }
+  }
+  if (policy?.revert) throw new PageGenerationError('This asks to undo an earlier change. Restore the earlier version from the version history instead; nothing was changed.', { code: 'UNDO_USES_VERSIONS' });
+  /* ---- facts from the web, when the owner asks for them ("search online for the programmes and their fees") ---- */
+  const webResearch = require('./templateWebResearch');
+  let research = null;
+  const wantsFacts = webResearch.enabled(deps) && (Boolean(intentResult?.intent.web_research) || require('../ai/intentUnderstandingService').asksForWebResearch(text));
+  if (wantsFacts) {
+    onState('generating', 'Searching the web for the facts');
+    research = await timed('web research', () => webResearch.research({ instruction: text, siteName: siteContext?.name || '', pageName: page.name, signal, deps }));
+    usage = sumUsage(usage, research.usage);
+    logger.info(`Web research for the ${page.name} page: ${research.found ? `${research.items.length} item(s) from ${research.sources.length} page(s)` : `nothing found${research.error ? ` (${research.error})` : ''}`}`);
+    try { onResearch(webResearch.summarize(research)); } catch { /* recording is optional */ }
+  }
+  const siteWide = validation.wantsSiteWide(text, files) || Boolean(policy?.siteWide);
+  const originals = (() => { try { return new Map(require('../templates/templateService').instantiateFiles(template).map((file) => [file.path, file.content])); } catch { return null; } })();
+  const scope = validation.pageScope({ files, page, pages, template, siteWide, includeSharedContent: Boolean(policy?.rewrite), sectionNames: validation.namedSections(text) });
   const get = (path) => files.find((file) => file.path === path);
   if (!get(page.componentPath)) throw new PageGenerationError(`The page file ${page.componentPath} is missing from the site.`, { code: 'PAGE_FILE_MISSING' });
   const ownedFiles = scope.ownedList.map(get).filter(Boolean);
   const sharedFiles = scope.sharedList.map(get).filter(Boolean);
   const otherPages = pages.filter((item) => String(item._id) !== String(page._id)).map((item) => ({ name: item.name, route: item.route, description: item.description }));
 
-  let usage = null;
   let entity = null;
   try { entity = await discoverImages?.(validation.ownerWords(text), { signal }); } catch (error) { if (signal?.aborted) throw error; logger.warn(`Image search for the page instruction was skipped: ${error.message}`); }
 
   const promptFor = (repair, current = files) => buildPageMessages({
     template, page, otherPages, instruction: text, ownedFiles: scope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
-    entityBlock: entity?.block || '', attachments, repair, siteContext
+    entityBlock: entity?.block || '', researchBlock: research?.block || '', attachments, repair, siteContext, intent: intentResult?.intent || null, policy
   });
 
   /* ---- generate, check, repair (static stages) ---- */
@@ -146,7 +176,8 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   let allowPatch = true;
   // An independent reviewer compares the changed lines with the owner's words (not in tests that supply their own model, nor when a whole website is written).
   const reviewOn = Boolean(deps.reviewIntent || deps.askIntentModel) || (!deps.callModel && siteContext?.mode !== 'website');
-  const review = (args) => (deps.reviewIntent || require('./templateIntentReview').reviewIntent)({ instruction: text, focus: (text.match(/ticked only the section\(s\) "([^"]+)"/) || [])[1] || '', deps, signal, ...args });
+  const keptShare = ({ baseline: before, candidate: after }) => validation.keptShareOwned(before, after, scope);
+  const review = (args) => (deps.reviewIntent || require('./templateIntentReview').reviewIntent)({ instruction: text, focus: (text.match(/ticked only the section\(s\) "([^"]+)"/) || [])[1] || '', deps, signal, intent: policy ? intentResult.intent : null, research: research ? { found: research.found, sources: research.sources.map((entry) => entry.url), items: research.items.length } : null, wording: policy?.rewrite ? validation.wordingOf(args.candidate, (scope.pageFiles || []).filter((path) => scope.owned.has(path))) : '', site: policy?.rewrite ? [siteContext?.name, siteContext?.brief].filter(Boolean).join(': ').slice(0, 300) : '', refinement: Boolean(policy?.refinement), keptShare: policy && !policy.refinement ? keptShare(args) : null, ...args });
   let verdict = { met: null };
   const BROKEN_MARKUP = /syntax error|closing tag|unexpected token|unterminated/i;
   for (let round = 0; round <= repairRounds; round += 1) {
@@ -192,7 +223,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     // What really changed (a file the model returned unchanged is not a change).
     changedPaths = store.diffFiles(baseline, working).changed.map((item) => item.path);
     candidate = working;
-    problems = validation.checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments, instruction: text, siteWide, rewrite: siteContext?.mode === 'website' })
+    problems = validation.checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments, instruction: text, siteWide, rewrite: siteContext?.mode === 'website', policy, originalFiles: originals })
       .concat(validation.imageProblems(failed, (entity?.assets || []).filter((asset) => !working.some((file) => textOfFile(file).includes(asset.url)))));
     // Right content for THIS website: only once the page is otherwise sound (it is the costly check), and only when the site has a plan.
     // A section the owner ticked or opened is changed in place: the relevance review of the whole page is skipped (it only matters when the page's subject changes).
@@ -233,10 +264,10 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     const routes = [...new Set(['/', ...pages.map((item) => item.route)])];
     const gateRepair = async (current, diagnostics) => {
       onState('repairing', 'Fixing a build or browser error');
-      const gateScope = validation.pageScope({ files: current, page, pages, template, siteWide });
+      const gateScope = validation.pageScope({ files: current, page, pages, template, siteWide, includeSharedContent: Boolean(policy?.rewrite), sectionNames: validation.namedSections(text) });
       const gateRepairPrompt = buildPageMessages({
         template, page, otherPages, instruction: text, ownedFiles: gateScope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
-        entityBlock: '', attachments, repair: { diagnostics: [generationPipeline.formatDiagnostics(diagnostics)], candidate: null }, siteContext
+        entityBlock: '', attachments, repair: { diagnostics: [generationPipeline.formatDiagnostics(diagnostics)], candidate: null }, siteContext, intent: intentResult?.intent || null, policy, researchBlock: research?.block || ''
       });
       const response = await callModel(gateRepairPrompt, { signal });
       usage = sumUsage(usage, response.usage);
@@ -286,7 +317,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     });
     for (const original of candidate) if (!finalFiles.some((file) => file.path === original.path)) finalFiles = [...finalFiles, original];
     const finalChanged = store.diffFiles(baseline, finalFiles).changed.map((item) => item.path);
-    const finalProblems = validation.checkCandidate({ baseline, candidate: finalFiles, scope, page, pages, template, changedPaths: finalChanged, attachments, instruction: text, siteWide, rewrite: siteContext?.mode === 'website' });
+    const finalProblems = validation.checkCandidate({ baseline, candidate: finalFiles, scope, page, pages, template, changedPaths: finalChanged, attachments, instruction: text, siteWide, rewrite: siteContext?.mode === 'website', policy, originalFiles: originals });
     if (finalProblems.length) throw new PageGenerationError(`The validated version of the ${page.name} page failed the final checks: ${finalProblems[0].message}`, { code: 'FINAL_CHECK_FAILED', issues: finalProblems, report });
     changedPaths = finalChanged;
     // The build's own repairs can undo or alter the change: what is left must still be a change, and still what was asked.
@@ -301,9 +332,20 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   }
 
   const diff = store.diffFiles(baseline, finalFiles);
-  return { files: finalFiles, changed: diff.changed, previous: diff.previous, changedPaths: diff.changed.map((item) => item.path), report, usage, attempts, dropped, reviewNotes, entity: entity ? { found: [...new Set(entity.assets.map((asset) => asset.entity))], missing: entity.missing.map((item) => item.name) } : null };
+  return { intent: intentEngine.summarize(intentResult, policy), research: require('./templateWebResearch').summarize(research), files: finalFiles, changed: diff.changed, previous: diff.previous, changedPaths: diff.changed.map((item) => item.path), report, usage, attempts, dropped, reviewNotes, entity: entity ? { found: [...new Set(entity.assets.map((asset) => asset.entity))], missing: entity.missing.map((item) => item.name) } : null };
+}
+
+/** What the intent reading is given: the page, its sections, the selection, the website and the last instructions on this page (never the whole source). */
+function intentContext({ page, pages, files, instruction, siteContext, history }) {
+  let blocks = [];
+  try { blocks = require('./templatePageService').sectionBlocks((files.find((file) => file.path === page.componentPath) || {}).content || ''); } catch { /* sections are optional context */ }
+  const sections = blocks.flatMap((block) => block.numbers.map(() => block.name));
+  const numbers = validation.selectedSectionNumbers(instruction);
+  const ticked = (instruction.match(/ticked only the section\(s\) "([^"]+)"/) || [])[1];
+  const selectedSections = numbers.length ? numbers.map((n) => sections[n - 1]).filter(Boolean) : ticked ? ticked.split(/",\s*"|,\s*/).map((name) => name.trim()).filter(Boolean) : [];
+  return { page: { name: page.name, route: page.route }, sections, selectedSections, category: siteContext?.plan?.identity?.category || null, otherPages: pages.filter((item) => String(item._id) !== String(page._id)).map((item) => item.name), history };
 }
 
 const textOfFile = (file) => (file && file.encoding !== 'base64' && typeof file.content === 'string' ? file.content : '');
 
-module.exports = { regeneratePage, PageGenerationError, applyAnswer, defaultCallModel, sumUsage };
+module.exports = { regeneratePage, PageGenerationError, applyAnswer, defaultCallModel, sumUsage, intentContext };

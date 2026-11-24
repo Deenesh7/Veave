@@ -144,7 +144,7 @@ export default function ContentEditorPanel({ className = '' }) {
     const instructionText = picked ? `${sent.instruction}\n\nThis applies to the text "${picked.saved || picked.text}" (${picked.tag || 'text'} element) on this page. If asked to link it, wrap exactly that text in an <a>/router link to the route of the page named in the instruction (use the site's existing page routes, or the given URL), keeping its look.` : sent.instruction;
     // The same context the section pop-up gives: the page, its sections, and what the chosen sections show right now (read from the preview).
     const withContext = await addPageContext(instructionText);
-    if (await regenerate(withContext, attachmentsNow(), sent.focus)) { clearSelection(); setChecked([]); }
+    if (await regenerate(withContext, attachmentsNow(), sent.focus, text)) { clearSelection(); setChecked([]); }
   };
 
   const readSectionHtml = (section) => new Promise((resolve) => {
@@ -327,7 +327,7 @@ export default function ContentEditorPanel({ className = '' }) {
 
             {/* C. Photos */}
             <div>
-              <SectionTitle>Photos</SectionTitle>
+              <SectionTitle>Photos and videos</SectionTitle>
               <ImageLibrary disabled={running} />
             </div>
 
@@ -360,7 +360,7 @@ export default function ContentEditorPanel({ className = '' }) {
                     <p className={`break-words ${ink}`}>{calmMessage(job.error, 'This change could not be finished this time.')}</p>
                     <p className={`mt-1.5 ${muted}`}>The previous version of the page is still in place, and your photos are safe in the library.</p>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      {lastRequest && lastRequest.pageId === page.id ? <PrimaryButton className="!px-3 !py-1.5 text-xs" disabled={busy.regenerate} onClick={() => regenerate(lastRequest.instruction, lastRequest.attachments, lastRequest.focusSection)}><RotateCcw className="h-3 w-3" />Try again</PrimaryButton> : null}
+                      {lastRequest && lastRequest.pageId === page.id ? <PrimaryButton className="!px-3 !py-1.5 text-xs" disabled={busy.regenerate} onClick={() => regenerate(lastRequest.instruction, lastRequest.attachments, lastRequest.focusSection, lastRequest.typed)}><RotateCcw className="h-3 w-3" />Try again</PrimaryButton> : null}
                       <GhostButton className="!px-3 !py-1.5 text-xs" onClick={() => document.getElementById('page-instruction')?.focus()}>Edit the instruction</GhostButton>
                     </div>
                   </div>

@@ -81,6 +81,7 @@ async function queueEnhancement({ user, siteId, assetId, auto = false }) {
   await assets.reapStale(site._id);
   const asset = await assets.findAsset(site, assetId);
   if (asset.deletedAt) throw new ConflictError('This picture was removed from the library.');
+  if (asset.kind === 'video') { if (auto) return uploads.present(asset); throw new ValidationError('A video cannot be enhanced. Only pictures can.'); }
   if (!enhancer.isEnabled()) {
     if (auto) return uploads.present(asset);
     throw new ValidationError('AI photo enhancement is not available right now.');

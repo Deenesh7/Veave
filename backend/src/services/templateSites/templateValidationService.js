@@ -60,7 +60,19 @@ function wantsSiteWide(instruction, files = []) {
   })());
 }
 
-function pageScope({ files, page, pages, template, siteWide = false }) {
+/**
+ * The sections the owner ticked or named ("In section 04 ("Listing Card"): ...", "ticked only the section(s) "A", "B""), by name.
+ * A name such as "Listing Card" is the name of a component (ListingCard.jsx): see pageScope.
+ */
+function namedSections(instruction) {
+  const text = String(instruction || '');
+  const names = [...text.matchAll(/section \d+ \("([^"]+)"\)/gi)].map((match) => match[1]);
+  const ticked = (text.match(/ticked only the section\(s\) "([^\n]+?)" of this page/i) || [])[1];
+  if (ticked) names.push(...ticked.split(/",\s*"|,\s+/).map((item) => item.replace(/^"|"$/g, '')));
+  return [...new Set(names.map((name) => name.trim()).filter(Boolean))];
+}
+
+function pageScope({ files, page, pages, template, siteWide = false, includeSharedContent = false, sectionNames = [] }) {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const locked = new Set([...(template?.scaffold?.sharedFiles || []), ...(template?.scaffold?.protectedFiles || []), ...(template?.scaffold?.requiredFiles || []), 'src/App.jsx', 'src/main.jsx', 'src/data/site.js', 'src/index.css', 'package.json', 'index.html']);
   const usedElsewhere = new Set();
@@ -69,6 +81,23 @@ function pageScope({ files, page, pages, template, siteWide = false }) {
   }
   const reachable = pageDistinctness.reachableFiles(page.componentPath, byPath, 2).filter((path) => byPath.has(path) && SOURCE.test(path));
   const owned = reachable.filter((path) => path === page.componentPath || (!locked.has(path) && !usedElsewhere.has(path) && path.startsWith('src/')));
+  // A rewrite of the page covers what the page DISPLAYS: the cards and the sample records it renders are often components and data that
+  // other pages use as well. They are changeable for a rewrite (the build and the route test of every page then prove nothing broke).
+  if (includeSharedContent) {
+    for (const path of reachable) if (!owned.includes(path) && !locked.has(path) && /^src\/(?:components|data)\//.test(path)) owned.push(path);
+  }
+  // A section the owner named whose code is a component shared with other pages (the "Listing Card" section is ListingCard.jsx, which also
+  // renders on other pages, and shows the records of src/data/listings.js): that component and the data it displays are the section.
+  // Without them the owner's request about the section could not change anything and every answer was thrown away.
+  if (sectionNames.length) {
+    const squash = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    for (const name of sectionNames.map(squash).filter((item) => item.length >= 4)) {
+      const component = reachable.find((path) => !owned.includes(path) && !locked.has(path) && /^src\/components\//.test(path) && squash(path.split('/').pop().replace(/\.[jt]sx?$/, '')) === name);
+      if (!component) continue;
+      owned.push(component);
+      for (const data of pageDistinctness.reachableFiles(component, byPath, 1)) if (/^src\/data\//.test(data) && SOURCE.test(data) && !locked.has(data) && !owned.includes(data) && byPath.has(data)) owned.push(data);
+    }
+  }
   if (siteWide) {
     // Site-wide prompt: the shared components, shared data, site data and the HTML shell may change too. Other pages, the router, config and styles may not.
     const otherPageFiles = new Set(pages.filter((item) => String(item._id) !== String(page._id)).map((item) => item.componentPath));
@@ -80,7 +109,7 @@ function pageScope({ files, page, pages, template, siteWide = false }) {
     }
   }
   const shared = reachable.filter((path) => !owned.includes(path));
-  return { siteWide, owned: new Set(owned), ownedList: owned, sharedList: shared, locked, canCreate: (path) => CREATE_PREFIXES.some((prefix) => path.startsWith(prefix)) && !byPath.has(path) && SOURCE.test(path) };
+  return { siteWide, pageFiles: reachable, owned: new Set(owned), ownedList: owned, sharedList: shared, locked, canCreate: (path) => CREATE_PREFIXES.some((prefix) => path.startsWith(prefix)) && !byPath.has(path) && SOURCE.test(path) };
 }
 
 /** Splits operations into those inside the scope and those that are dropped (with the reason, which goes into the repair prompt). */
@@ -119,6 +148,60 @@ function installedPackages(files) {
   } catch { return new Set(BUILTIN_PACKAGES); }
 }
 
+/**
+ * The words of the files a job may actually change (the page and what only it uses). Shared components and other pages are left out:
+ * they cannot be rewritten by this job, so counting them would make "the wording really changed" impossible to satisfy.
+ */
+function ownedWordSet(files, scope) {
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const text = (scope.ownedList || []).map((path) => visibleWording(textOf(byPath.get(path)))).join('\n');
+  return new Set(text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter((word) => word.length > 2));
+}
+
+/**
+ * What a visitor can READ in a source file: the text between tags, labels and placeholders, and the human strings of data files.
+ * Class names, import paths, identifiers, urls and ids are not wording (counting them made a rewrite impossible to measure).
+ */
+function visibleWording(source) {
+  const code = String(source || '')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ')
+    .replace(/^\s*(?:import|export)\b[^\n]*\bfrom\s+['"][^'"]+['"];?/gm, ' ').replace(/^\s*import\s+['"][^'"]+['"];?/gm, ' ')
+    .replace(/\b(?:className|class|to|href|src|srcSet|key|id|type|ref|style|role|rel|target|htmlFor|name|value|method|action|loading|width|height|viewBox|d|fill|stroke)\s*=\s*(?:"[^"]*"|'[^']*'|\{`[^`]*`\}|\{(?:"[^"]*"|'[^']*')\}|\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})/g, ' ');
+  const parts = [];
+  for (const match of code.matchAll(/(?<![=!])>([^<>{}=]*[A-Za-z]{3,}[^<>{}=]*)</g)) parts.push(match[1]);
+  for (const match of code.matchAll(/(['"`])((?:(?!\1)[^\\\n$]|\\.){3,})\1/g)) {
+    const value = match[2].trim();
+    if (!/[A-Za-z]{3,}/.test(value) || /^[\/.#@]|:\/\/|^[\w.-]+@[\w.-]+$/.test(value)) continue;
+    const tokens = value.split(/\s+/);
+    if (tokens.length === 1 && !/^[A-Z][a-z]{2,}$/.test(value)) continue; // an id, key or css word
+    if (tokens.every((token) => /^[\w\-:\/\[\]\.%!#@,]+$/.test(token)) && tokens.some((token) => /[-:\[\]\/]/.test(token)) && !/^[A-Z]/.test(value)) continue; // a class list
+    parts.push(value);
+  }
+  return parts.join(' ');
+}
+/** A short, readable listing of the visible wording of some files (for the reviewer). */
+function wordingOf(files, paths, limit = 3500) {
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const out = [];
+  let size = 0;
+  for (const path of paths) {
+    const text = visibleWording(textOf(byPath.get(path))).replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    const line = `- ${path}: ${text.slice(0, Math.max(200, Math.floor(limit / Math.max(1, paths.length))))}`;
+    out.push(line);
+    size += line.length;
+    if (size > limit) break;
+  }
+  return out.join('\n');
+}
+/** Share of the old wording of the changeable files that is still there, or null when there is too little to judge. */
+function keptShareOwned(baseline, candidate, scope) {
+  const before = ownedWordSet(baseline, scope);
+  if (before.size < 40) return null;
+  const after = ownedWordSet(candidate, scope);
+  return [...before].filter((word) => after.has(word)).length / before.size;
+}
+
 /** The page's own words (its component and what only it uses), for the "is this still a real, distinct page" checks. */
 function pageWords(files, componentPath) {
   const byPath = new Map(files.map((file) => [file.path, file]));
@@ -137,7 +220,8 @@ function pageWords(files, componentPath) {
  */
 const PICTURE_WORDS = /\b(images?|photos?|pictures?|photographs?|gallery|banner|logo)s?\b/i;
 const TEXT_CHANGE_WORDS = /\b(rewrite|re-?write|remove|delete|replace the (?:text|heading|content|copy)|(?:change|edit|update|shorten|lengthen|translate) the (?:text|heading|title|content|copy|wording)|text|heading|title|content|copy|wording|about|instead|for (?:a|an|the|my) |turn|convert|transform|redesign|rebuild|new section)\b/i;
-function isPictureOnlyEdit(instruction, attachments = []) {
+function isPictureOnlyEdit(instruction, attachments = [], policy = null) {
+  if (policy?.pictureOnly === true) return true;
   const text = ownerWords(instruction);
   if (TEXT_CHANGE_WORDS.test(text.replace(/\b(image|photo|picture)s? (?:and|or) (?:text|content)\b/gi, ''))) return false;
   return PICTURE_WORDS.test(text) || (attachments.length > 0 && text.split(/\s+/).length <= 30);
@@ -150,12 +234,16 @@ const REWRITE_WORDS = /\b(rewrite|re-?write|redo|redesign|rebuild|recreate|revam
  */
 /** "Remove this section", "delete the tabs", "get rid of the footer links": the owner wants something gone, so the page legitimately loses words. */
 const REMOVE_WORDS = /\b(remove|delete|get rid of|take out|take away|drop|eliminate|erase|hide)\b/i;
-const wantsRemoval = (instruction) => REMOVE_WORDS.test(ownerWords(instruction));
+// With a confident intent the operations decide ("remvoe the footer" is a removal); without one the words do.
+const wantsRemoval = (instruction, policy = null) => (typeof policy?.removal === 'boolean' ? policy.removal : REMOVE_WORDS.test(ownerWords(instruction)));
 
-function keepRatioFor({ instruction, attachments = [], siteWide = false, rewrite = false }) {
-  if (siteWide || rewrite || REWRITE_WORDS.test(ownerWords(instruction))) return null;
+function keepRatioFor({ instruction, attachments = [], siteWide = false, rewrite = false, policy = null }) {
+  if (siteWide || rewrite) return null;
+  // The detected intent decides how much of the page must survive (a rewrite none, a bug fix almost all); no intent: the words decide.
+  if (policy && policy.keepRatio !== undefined) return policy.keepRatio;
+  if (REWRITE_WORDS.test(ownerWords(instruction))) return null;
   if (wantsRemoval(instruction)) return 0.25; // only a guard against emptying the page; the minimum-words check still applies
-  if (isPictureOnlyEdit(instruction, attachments)) return 0.9;
+  if (isPictureOnlyEdit(instruction, attachments, policy)) return 0.9;
   return /The owner ticked only the section/.test(String(instruction || '')) || selectedSectionNumbers(instruction).length ? 0.8 : 0.7;
 }
 
@@ -163,7 +251,10 @@ function keepRatioFor({ instruction, attachments = [], siteWide = false, rewrite
  * The part of an instruction the owner actually asked for. The section popup adds reference material after it (what the section shows
  * now, what was typed by hand); those words describe the page, so they must never decide what kind of change this is.
  */
-const CONTEXT_MARK = /\n\n(?:SECTION CONTENT|\(The owner already typed)/;
+// Everything after the owner's own words is added by the studio or the job: the page and section context, "(The owner ticked only the
+// section ... do not touch, restyle, reword, reorder or REMOVE them ...)" and the note about a failed earlier try. None of it is the
+// owner's request ("remove" in that note once made every ticked-section edit look like a request to delete the section).
+const CONTEXT_MARK = /\n\n(?:SECTION(?: \d+)? CONTENT|PAGE CONTEXT|\(The owner|\(A previous try|This applies to the text)/;
 const ownerWords = (instruction) => { const text = String(instruction || ''); const at = text.search(CONTEXT_MARK); return at >= 0 ? text.slice(0, at) : text; };
 
 /** The section numbers the owner ticked: the panel sends 'In section 02 ("Name"), section 05 ("Name"): ...'. */
@@ -202,7 +293,35 @@ function wantsAiAnswers(instruction) {
 // The assistant must really be ASKED and its answer used: a file that only mentions window.VEAVE_AI does not count.
 const callsAssistant = (files) => files.some((file) => typeof file.content === 'string' && /^src\//.test(file.path) && /\bVEAVE_AI\b/.test(file.content) && /\.ask\s*\(/.test(file.content) && (/\.then\s*\(/.test(file.content) || /\bawait\b[^;\n]*\.ask\s*\(/.test(file.content)));
 
-function checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments = [], instruction = '', siteWide = false, rewrite = false }) {
+/**
+ * Does a route of the router ("/listings/:id") serve the route of a page ("/listings/k-1001")? A detail page of a template is one sample
+ * of a dynamic route, so its route is a concrete address that the router matches with a parameter. Static segments must be equal.
+ */
+function routeMatches(pattern, actual) {
+  if (pattern === actual) return true;
+  const a = String(actual || '').split('/').filter(Boolean);
+  const p = String(pattern || '').split('/').filter(Boolean);
+  return p.length === a.length && p.length > 0 && p.every((segment, index) => segment === a[index] || (segment.startsWith(':') && segment.length > 1));
+}
+const routesFor = (candidate, route) => pageDistinctness.extractRoutes(candidate).filter((item) => routeMatches(item.path, route)).sort((x, y) => Number(y.path === route) - Number(x.path === route));
+
+/**
+ * A video must really play: it is a <video> (not an <img> or a CSS background), and it is muted, inline and set to autoplay, because a
+ * browser refuses to start any other kind. Returns { message, cause } or null when it is used correctly.
+ */
+function videoUseProblem(source, photo) {
+  const escaped = photo.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!source.includes(photo.path)) return { message: `The video you attached ("${photo.name}") is not used on the page.`, cause: 'The attached video was left out.' };
+  if (new RegExp(`<img\\b[^>]*${escaped}`).test(source)) return { message: `The video ("${photo.name}") was put in an <img>, which cannot play it.`, cause: 'A video needs a <video> element.' };
+  const tags = [...source.matchAll(/<video\b[^>]*>/g)].map((match) => match[0]);
+  const viaSource = new RegExp(`<video\\b[^>]*>[\\s\\S]{0,300}?<source\\b[^>]*${escaped}`).exec(source);
+  const tag = tags.find((item) => item.includes(photo.path)) || (viaSource ? viaSource[0].match(/<video\b[^>]*>/)[0] : null);
+  if (!tag) return { message: `The video ("${photo.name}") is not shown with a <video> element.`, cause: 'It was used as something other than a video (for example a CSS background).' };
+  const missing = [['autoPlay', /\bautoPlay\b|\bautoplay\b/], ['muted', /\bmuted\b/], ['playsInline', /\bplaysInline\b|\bplaysinline\b/], ['loop', /\bloop\b/]].filter(([, pattern]) => !pattern.test(tag)).map(([name]) => name);
+  return missing.length ? { message: `The video ("${photo.name}") is missing ${missing.join(', ')}, so the browser will not start or keep playing it.`, cause: 'A background video must be muted, inline, looping and autoplaying.' } : null;
+}
+
+function checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments = [], instruction = '', siteWide = false, rewrite = false, policy = null, originalFiles = null }) {
   const problems = [];
   // ai: an AI answer box must really call the assistant
   if (wantsAiAnswers(instruction) && !callsAssistant(candidate)) {
@@ -214,7 +333,7 @@ function checkCandidate({ baseline, candidate, scope, page, pages, template, cha
   }
   // removal: a section the owner asked to remove must really be gone (not just emptied), and nothing may still link to it
   const tickedForRemoval = selectedSectionNumbers(instruction);
-  if (tickedForRemoval.length && wantsRemoval(instruction)) {
+  if (tickedForRemoval.length && wantsRemoval(instruction, policy)) {
     const before = (baseline.find((file) => file.path === page.componentPath) || {}).content;
     const afterSource = (candidate.find((file) => file.path === page.componentPath) || {}).content || '';
     const squash = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -235,7 +354,30 @@ function checkCandidate({ baseline, candidate, scope, page, pages, template, cha
     if (locked) problems.push(locked);
   }
   // preserve: the instruction may change what it names, not the rest of the page
-  const keepRatio = keepRatioFor({ instruction, attachments, siteWide, rewrite });
+  const keepRatio = keepRatioFor({ instruction, attachments, siteWide, rewrite, policy });
+  // A rewrite must really replace the wording: a page that still has almost all of its words was not rewritten.
+  if (policy?.maxKeep && !siteWide) {
+    const kept = keptShareOwned(baseline, candidate, scope);
+    if (kept !== null) {
+      if (kept > policy.maxKeep) problems.push(issue('intent', `The page was asked to be rewritten, but ${Math.round(kept * 100)}% of its wording is unchanged.`, { path: page.componentPath, route: page.route, cause: 'The change was too small for a rewrite.', action: 'Write new content for the whole page: new headings, paragraphs, labels and button text for every section, and improve the composition. Return the complete file with operation "modify".' }));
+    }
+  }
+  // A rewrite covers everything the page displays (its own sections, the components and the sample data it renders), not only the page file.
+  // "Rewritten" is measured against the template as it was shipped: a file that still reads like the template's original website was not
+  // rewritten, and one that an earlier change already rewrote is not asked again.
+  if (policy?.rewrite) {
+    const original = originalFiles instanceof Map ? originalFiles : null;
+    const left = (scope.pageFiles || []).filter((path) => scope.owned.has(path)).map((path) => {
+      const reference = original?.get(path) ?? (policy.refinement ? null : textOf(baseline.find((file) => file.path === path)));
+      if (!reference) return null;
+      const before = ownedWordSet([{ path, content: reference }], { ownedList: [path] });
+      if (before.size < 15) return null;
+      const after = ownedWordSet(candidate, { ownedList: [path] });
+      const kept = [...before].filter((word) => after.has(word)).length / before.size;
+      return kept > 0.85 ? { path, kept } : null;
+    }).filter(Boolean);
+    if (left.length) problems.push(issue('intent', `The page was asked to be rewritten, but ${left.map((item) => `${item.path} (${Math.round(item.kept * 100)}% still the old wording)`).join(', ')} still ${left.length > 1 ? 'have' : 'has'} the old wording.`, { path: left[0].path, route: page.route, cause: 'Only part of what the page shows was rewritten: the rest still speaks about the old subject.', action: `Rewrite ${left.map((item) => item.path).join(', ')} as well: every label, heading, badge, placeholder, option, button text and sample record in them, for this website. Keep their export names, props, field names, number of records and image paths so the other pages still build. Return each as a complete file with operation "modify".` }));
+  }
   if (keepRatio) {
     const before = pageWords(baseline, page.componentPath);
     const after = pageWords(candidate, page.componentPath);
@@ -257,8 +399,11 @@ function checkCandidate({ baseline, candidate, scope, page, pages, template, cha
   // asset: every photo the user attached must really be placed on this page, with its exact path
   const pageSourceText = pageDistinctness.pageSource(page.componentPath, new Map(candidate.map((file) => [file.path, file])), 2);
   for (const photo of attachments) {
-    if (!pageSourceText.includes(photo.path)) {
-      problems.push(issue('asset', `The photo you attached ("${photo.name}") is not used on the page.`, { path: page.componentPath, route: page.route, cause: 'The attached picture was left out.', action: `Place <img src="${photo.path}" alt="..."> where it fits the instruction.` }));
+    if (photo.kind === 'video') {
+      const found = videoUseProblem(pageSourceText, photo);
+      if (found) problems.push(issue('asset', found.message, { path: page.componentPath, route: page.route, cause: found.cause, action: `Place <video src="${photo.path}" autoPlay muted loop playsInline preload="auto" aria-hidden="true" className="absolute inset-0 -z-10 h-full w-full object-cover motion-reduce:hidden" /> as the first child of the section that gets it (the section is "relative isolate overflow-hidden"), followed by a dark overlay div, with the section's text above it.` }));
+    } else if (!pageSourceText.includes(photo.path)) {
+      problems.push(issue('asset', `The photo you attached ("${photo.name}") is not used on the page.`, { path: page.componentPath, route: page.route, cause: 'The attached picture was left out.', action: `Place <img src="${photo.path}" alt="..." > where it fits the instruction.`.replace('" >', '">') }));
     }
   }
   // code: the build must not get worse
@@ -270,7 +415,7 @@ function checkCandidate({ baseline, candidate, scope, page, pages, template, cha
     if (!installed.has(name)) problems.push(issue('code', `${paths[0]} imports "${name}", which is not installed in this project.`, { path: paths[0], cause: 'Packages cannot be added by a page regeneration.', action: `Remove the use of "${name}" or replace it with plain React and Tailwind.` }));
   }
   // website: the route still renders this page's component, and the page is a real, distinct page
-  const routes = pageDistinctness.extractRoutes(candidate).filter((route) => route.path === page.route);
+  const routes = routesFor(candidate, page.route);
   if (!routes.length || (routes[0].target && routes[0].target !== page.componentPath)) {
     problems.push(issue('website', `The route ${page.route} no longer renders ${page.componentPath}.`, { route: page.route, path: page.componentPath, cause: 'The page component was renamed, removed or its default export changed.', action: `Keep ${page.componentPath} with its default export.` }));
   }
@@ -364,7 +509,7 @@ function finalSiteChecks(files, pages) {
   for (const page of pages) {
     const file = byPath.get(page.componentPath);
     if (!file) { found.push({ pageId: String(page._id), message: `The page file ${page.componentPath} is missing.` }); continue; }
-    if (!routes.some((route) => route.path === page.route && (!route.target || route.target === page.componentPath))) found.push({ pageId: String(page._id), message: `The route ${page.route} does not show this page.` });
+    if (!routes.some((route) => routeMatches(route.path, page.route) && (!route.target || route.target === page.componentPath))) found.push({ pageId: String(page._id), message: `The route ${page.route} does not show this page.` });
     const source = pageDistinctness.pageSource(page.componentPath, byPath, 2);
     const seen = new Set();
     for (const match of source.matchAll(/\b(?:to|href)=["'](\/[^"'#?\s]*)["']/g)) {
@@ -380,4 +525,4 @@ function finalSiteChecks(files, pages) {
   return found;
 }
 
-module.exports = { wantsRemoval, finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, issue, sha, MIN_PAGE_WORDS };
+module.exports = { wantsRemoval, finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, routeMatches, videoUseProblem, namedSections, ownedWordSet, keptShareOwned, visibleWording, wordingOf, issue, sha, MIN_PAGE_WORDS };

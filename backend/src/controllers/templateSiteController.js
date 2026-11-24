@@ -151,7 +151,7 @@ exports.uploadPhoto = wrap(async (req, res) => {
   const { photo, reused } = await uploads.addUpload({ user: req.user, siteId: req.params.siteId, buffer: req.file?.buffer, originalName: req.file?.originalname, pageId: req.body?.pageId });
   let result = photo;
   // Every new photo is enhanced automatically in the background; the upload itself never waits for it or fails because of it.
-  if (!reused && imageEnhancer.autoEnabled()) {
+  if (!reused && photo.kind !== 'video' && imageEnhancer.autoEnabled()) {
     result = await enhancements.queueEnhancement({ user: req.user, siteId: req.params.siteId, assetId: photo.id, auto: true }).catch(() => photo);
   }
   send(res, { photo: { ...result, reused } }, reused ? 200 : 201);

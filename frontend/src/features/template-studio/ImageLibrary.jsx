@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { UploadCloud, Check, X, RotateCcw, AlertCircle, ImageOff, Sparkles, SplitSquareHorizontal, MapPin, ChevronDown } from 'lucide-react';
-import { useTemplateStudioStore, PHOTO_TYPES, MAX_ATTACH } from '../../store/templateStudioStore';
+import { UploadCloud, Check, X, RotateCcw, AlertCircle, ImageOff, Sparkles, SplitSquareHorizontal, MapPin, ChevronDown, Film } from 'lucide-react';
+import { useTemplateStudioStore, MEDIA_TYPES, MAX_ATTACH } from '../../store/templateStudioStore';
 import { ConfirmModal, Spinner, Skeleton, IconButton, inputClass, ink, muted, line } from './ui';
 import { pagePhotos, imageFilesOf, isRetryable } from './panelLogic';
 import { useImageSrc, formatBytes, dimensionsOf } from './imageUtils';
@@ -9,7 +9,9 @@ import Dropdown from './Dropdown';
 import EnhancementReview from './EnhancementReview';
 
 function Thumb({ siteId, image, version = 'original', fit = 'cover' }) {
-  const { src, failed } = useImageSrc(siteId, image, { version });
+  const { src, failed } = useImageSrc(siteId, image, { version, skip: image.kind === 'video' });
+  // A video has no picture preview, and loading every video of the library just to draw a tile would be heavy: a film tile stands for it.
+  if (image.kind === 'video') return <span className="flex h-full w-full items-center justify-center bg-[#2B2823] text-white" title={`Video: ${image.name}`}><Film className="h-4 w-4" aria-hidden="true" /></span>;
   if (src) return <img src={src} alt={image.alt || image.name} loading="lazy" draggable={false} className={`h-full w-full ${fit === 'contain' ? 'object-contain' : 'object-cover'}`} />;
   if (failed) return <span className={`flex h-full w-full items-center justify-center ${muted}`}><ImageOff className="h-5 w-5" /></span>;
   return <Skeleton className="h-full w-full !rounded-none" />;
@@ -44,7 +46,7 @@ function EnhancementBlock({ siteId, image, onCompare }) {
     if (e.status === 'completed' && !e.applied) { setOpen(true); wasPending.current = true; }
     else if (e.status === 'completed' && wasPending.current) { setOpen(false); wasPending.current = false; }
   }, [e.status, e.applied]);
-  if (!e.status) return null;
+  if (!e.status || image.kind === 'video') return null; // a video cannot be enhanced
   const stage = e.status === 'queued' ? 1 : e.status === 'analyzing' ? 1 : e.status === 'enhancing' ? 2 : e.status === 'completed' ? 3 : -1;
   const starting = Boolean(busy[`enhance:${image.id}`]);
   const choosing = Boolean(busy[`choose:${image.id}`]);
@@ -155,24 +157,24 @@ export default function ImageLibrary({ disabled = false }) {
         onDragOver={(event) => { if (event.dataTransfer?.types?.includes('Files')) { event.preventDefault(); setDragging(true); } }}
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false); }}
         onDrop={(event) => { event.preventDefault(); setDragging(false); accept(event.dataTransfer.files); }}
-        onPaste={(event) => { const files = imageFilesOf(event.clipboardData?.files); if (files.length) { event.preventDefault(); accept(files); } }}
+        onPaste={(event) => { const files = imageFilesOf(event.clipboardData?.files, { video: true }); if (files.length) { event.preventDefault(); accept(files); } }}
         className={`rounded-md border border-dashed px-3 py-2.5 text-center transition-colors ${dragging ? 'border-[#5E7B5F] bg-[#E8F0E8]' : 'border-[#CFC8B6] bg-white hover:border-[#B9B2A2]'} ${disabled ? 'opacity-60' : ''}`}
       >
-        <p className={`flex items-center justify-center gap-1.5 text-xs ${ink}`}><UploadCloud className={`h-4 w-4 shrink-0 ${dragging ? 'text-[#5E7B5F]' : muted}`} aria-hidden="true" />Drop photos or <button type="button" disabled={disabled} onClick={() => input.current?.click()} className="font-medium text-[#5E7B5F] underline underline-offset-2 hover:text-[#506B52] disabled:no-underline disabled:opacity-60">browse</button></p>
-        <p className={`mt-0.5 text-[10px] ${muted}`}>PNG, JPEG, WebP, GIF, AVIF · 8 MB each</p>
-        <input ref={input} type="file" multiple accept={PHOTO_TYPES.join(',')} className="hidden" aria-label="Choose photos to upload" onChange={(event) => { accept(event.target.files); event.target.value = ''; }} />
+        <p className={`flex items-center justify-center gap-1.5 text-xs ${ink}`}><UploadCloud className={`h-4 w-4 shrink-0 ${dragging ? 'text-[#5E7B5F]' : muted}`} aria-hidden="true" />Drop photos or videos, or <button type="button" disabled={disabled} onClick={() => input.current?.click()} className="font-medium text-[#5E7B5F] underline underline-offset-2 hover:text-[#506B52] disabled:no-underline disabled:opacity-60">browse</button></p>
+        <p className={`mt-0.5 text-[10px] ${muted}`}>PNG, JPEG, WebP, GIF, AVIF · 8 MB each · MP4 or WebM video · 25 MB</p>
+        <input ref={input} type="file" multiple accept={MEDIA_TYPES.join(',')} className="hidden" aria-label="Choose photos or videos to upload" onChange={(event) => { accept(event.target.files); event.target.value = ''; }} />
       </div>
 
       {queue.length ? (
         <ul className="mt-3 space-y-2" aria-label="Uploads">
           {queue.map((item) => (
             <li key={item.id} className={`flex items-center gap-3 rounded-md border p-2 ${item.status === 'error' ? 'border-[#E2DCCF] bg-[#FBF9F4]' : `${line} bg-white`}`}>
-              <span className={`h-10 w-10 shrink-0 overflow-hidden rounded border ${line} bg-[#EFEBE1]`}>{item.preview ? <img src={item.preview} alt="" className="h-full w-full object-cover" /> : <AlertCircle className="m-2.5 h-5 w-5 text-[#A4493A]" />}</span>
+              <span className={`h-10 w-10 shrink-0 overflow-hidden rounded border ${line} bg-[#EFEBE1]`}>{item.preview ? <img src={item.preview} alt="" className="h-full w-full object-cover" /> : item.video && item.status !== 'error' ? <Film className="m-2.5 h-5 w-5 text-[#5C564B]" /> : <AlertCircle className="m-2.5 h-5 w-5 text-[#A4493A]" />}</span>
               <div className="min-w-0 flex-1">
                 <p className={`truncate text-xs font-medium ${ink}`}>{item.name}</p>
                 {item.status === 'error' ? <p className="text-[11px] text-[#5C564B]">{item.error}</p> : (
                   <>
-                    <p className={`text-[11px] ${muted}`}>{formatBytes(item.size)} · {item.status === 'queued' ? 'Waiting' : item.status === 'uploading' ? (item.progress >= 1 ? 'Saving…' : `Uploading image ${Math.round(item.progress * 100)}%`) : item.reused ? 'Already in the library' : 'Uploaded'}</p>
+                    <p className={`text-[11px] ${muted}`}>{formatBytes(item.size)} · {item.status === 'queued' ? 'Waiting' : item.status === 'uploading' ? (item.progress >= 1 ? 'Saving…' : `Uploading ${item.video ? 'video' : 'image'} ${Math.round(item.progress * 100)}%`) : item.reused ? 'Already in the library' : 'Uploaded'}</p>
                     {item.status === 'uploading' ? <div className="mt-1 h-1 overflow-hidden rounded bg-[#E9E4D7]"><div className="h-full bg-[#5E7B5F] transition-all" style={{ width: `${Math.max(4, item.progress * 100)}%` }} /></div> : null}
                   </>
                 )}
@@ -189,7 +191,7 @@ export default function ImageLibrary({ disabled = false }) {
       ) : null}
 
       <div className="mt-4 space-y-2">
-        <h5 className={`text-[11px] font-medium uppercase tracking-wider ${muted}`}>Photos for this page <span className="normal-case tracking-normal" aria-live="polite" aria-label={`${photoCount} of ${photoMax} photos`}>{photoCount}/{photoMax}</span></h5>
+        <h5 className={`text-[11px] font-medium uppercase tracking-wider ${muted}`}>Photos and videos for this page <span className="normal-case tracking-normal" aria-live="polite" aria-label={`${photoCount} of ${photoMax} photos`}>{photoCount}/{photoMax}</span></h5>
         {!imagesLoaded && !images.length ? <p className={`text-[11px] ${muted}`}>Loading your photos…</p> : null}
         {imagesError ? <p role="alert" className="text-[11px] text-[#5C564B]">{imagesError} <button type="button" onClick={loadImages} className="underline">Try again</button></p> : null}
         {imagesLoaded && !chosenIds.length && !imagesError ? <p className={`text-[11px] ${muted}`}>No photos chosen for this page yet. Upload one above{libraryRest.length ? ' or add one from your library below' : ''}.</p> : null}

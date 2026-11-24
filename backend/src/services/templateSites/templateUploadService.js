@@ -14,6 +14,8 @@ const { ValidationError, ConflictError } = require('../../utils/errors');
 const assetCaptions = require('./templateAssetCaptions');
 
 const MAX_BYTES = Number.parseInt(process.env.TEMPLATE_UPLOAD_MAX_BYTES, 10) || 8 * 1024 * 1024;
+// A video is much larger than a picture. It is kept as a normal file of the site (and read into memory with the other files), so it is capped.
+const VIDEO_MAX_BYTES = Number.parseInt(process.env.TEMPLATE_VIDEO_MAX_BYTES, 10) || 25 * 1024 * 1024;
 const MIN_SIDE = 16;
 // Vector and icon files are refused: only real photographs and raster graphics.
 const ALLOWED = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
@@ -47,6 +49,59 @@ async function inspectImage(buffer) {
   return { sniffed, size };
 }
 
+/**
+ * Is this an MP4 or a WebM that every browser can play? Decided from the bytes, never from the name. Returns { mime, extension } or null.
+ * (A HEIC/AVIF picture and a QuickTime .mov also start with "ftyp", so the brand decides: only the MP4 family is accepted.)
+ */
+const MP4_BRANDS = new Set(['isom', 'iso2', 'iso4', 'iso5', 'iso6', 'mp41', 'mp42', 'avc1', 'M4V ', 'M4VH', 'M4VP', 'dash', 'msdh', 'msix', 'mmp4', 'f4v ']);
+function sniffVideo(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 16) return null;
+  if (buffer.toString('latin1', 4, 8) === 'ftyp') {
+    const boxSize = Math.min(buffer.readUInt32BE(0) || 0, 256);
+    const brands = [buffer.toString('latin1', 8, 12)];
+    for (let at = 16; at + 4 <= boxSize; at += 4) brands.push(buffer.toString('latin1', at, at + 4));
+    if (brands[0] === 'avif' || brands[0] === 'avis' || brands[0] === 'heic' || brands[0] === 'heix' || brands[0] === 'mif1') return null;
+    return brands.some((brand) => MP4_BRANDS.has(brand)) ? { mime: 'video/mp4', extension: 'mp4' } : null;
+  }
+  if (buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) {
+    // Matroska and WebM share the container; the document type says which this is.
+    return /webm/.test(buffer.toString('latin1', 0, Math.min(buffer.length, 128))) ? { mime: 'video/webm', extension: 'webm' } : null;
+  }
+  return null;
+}
+
+/** Length of an MP4 in seconds, from its movie header (null when it cannot be read; never blocks an upload). */
+function videoDuration(buffer, mime) {
+  if (mime !== 'video/mp4') return null;
+  try {
+    const at = buffer.indexOf('mvhd');
+    if (at < 4) return null;
+    const version = buffer[at + 4];
+    const timescale = buffer.readUInt32BE(at + (version === 1 ? 24 : 16));
+    const duration = version === 1 ? Number(buffer.readBigUInt64BE(at + 28)) : buffer.readUInt32BE(at + 20);
+    const seconds = timescale ? duration / timescale : 0;
+    return seconds > 0 && seconds < 86400 ? Math.round(seconds * 10) / 10 : null;
+  } catch { return null; }
+}
+
+/** Checks the bytes of one upload (a picture or a video) and says which it is. Throws a ValidationError a person can act on. */
+async function inspectMedia(buffer) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) throw new ValidationError('Choose a picture or a video to upload.');
+  const video = sniffVideo(buffer);
+  if (video) {
+    if (buffer.length > VIDEO_MAX_BYTES) throw new ValidationError(`The video is larger than ${Math.round(VIDEO_MAX_BYTES / 1048576)} MB. Shorten it or compress it, then upload it again.`);
+    // A file with no movie box cannot be played (an unfinished download or recording).
+    if (video.mime === 'video/mp4' && buffer.indexOf('moov') < 0) throw new ValidationError('The video file looks incomplete. Export it again as an MP4 (H.264) or WebM video.');
+    return { kind: 'video', sniffed: video, size: { width: 0, height: 0, duration: videoDuration(buffer, video.mime) } };
+  }
+  try {
+    return { kind: 'image', ...(await inspectImage(buffer)) };
+  } catch (error) {
+    if (error instanceof ValidationError && /^Upload a PNG/.test(error.message)) throw new ValidationError('Upload a PNG, JPEG, WebP, GIF or AVIF picture, or an MP4 or WebM video.');
+    throw error;
+  }
+}
+
 /** A small WebP preview as a data URL (about 5-15 KB). Never blocks an upload: a picture without one is simply loaded in full. */
 async function makeThumbnail(buffer) { // eslint-disable-line no-unused-vars
   try {
@@ -76,6 +131,7 @@ function present(asset, usage = null, enhanced = null) {
     path: toPublic(asset.projectPath),
     name: asset.originalName || String(asset.attribution || '').replace(/^Uploaded by the owner: /, '') || asset.projectPath.split('/').pop(),
     mime: asset.mime, size: asset.size, width: asset.width || 0, height: asset.height || 0,
+    kind: asset.kind || (String(asset.mime || '').startsWith('video/') ? 'video' : 'image'), durationSeconds: asset.durationSeconds || null,
     alt: asset.alt || '', caption: asset.caption || '', tags: asset.tags || [], captionStatus: asset.captionStatus || 'none',
     pageIds: (asset.pageIds || []).map(String), placement: asset.placement || '', note: asset.note || '',
     thumbnail: asset.thumbnail || '', enhancement: presentEnhancement(asset, enhanced), deleted: Boolean(asset.deletedAt), createdAt: asset.createdAt,
@@ -106,7 +162,8 @@ async function addUpload(args) {
 
 async function storeUpload({ user, siteId, buffer, originalName = 'photo', pageId = null }) {
   const site = await getSite(user, siteId);
-  const { sniffed, size } = await inspectImage(buffer);
+  const { kind, sniffed, size } = await inspectMedia(buffer);
+  const folder = kind === 'video' ? 'videos' : 'images';
   const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
   const name = cleanName(originalName);
   const pageIds = pageId && mongoose.isValidObjectId(pageId) ? [pageId] : [];
@@ -135,8 +192,9 @@ async function storeUpload({ user, siteId, buffer, originalName = 'photo', pageI
     }
     // The file name carries part of the hash; a longer one is used if a different picture already owns that name.
     let hashLength = 16;
-    let filePath = `public/assets/images/uploaded-${sha256.slice(0, hashLength)}.${sniffed.extension}`;
-    while (files.some((file) => file.path === filePath) && hashLength < 64) { hashLength += 16; filePath = `public/assets/images/uploaded-${sha256.slice(0, hashLength)}.${sniffed.extension}`; }
+    const pathFor = (length) => `public/assets/${folder}/uploaded-${sha256.slice(0, length)}.${sniffed.extension}`;
+    let filePath = pathFor(hashLength);
+    while (files.some((file) => file.path === filePath) && hashLength < 64) { hashLength += 16; filePath = pathFor(hashLength); }
     try {
       await store.writeSite(site, [...files, { path: filePath, content: buffer.toString('base64'), language: 'binary', encoding: 'base64' }], projectRevision);
     } catch (error) {
@@ -144,17 +202,17 @@ async function storeUpload({ user, siteId, buffer, originalName = 'photo', pageI
       continue;
     }
     let doc;
-    const thumbnail = await makeThumbnail(buffer);
+    const thumbnail = kind === 'video' ? '' : await makeThumbnail(buffer);
     try {
       doc = await TemplateAsset.findOneAndUpdate({ siteId: site._id, sha256 }, {
-        $setOnInsert: { userId: idOf(user), projectPath: filePath, sha256, mime: sniffed.mime, size: buffer.length, attribution: `Uploaded by the owner: ${name}`, source: 'upload', originalName: name, thumbnail, width: size.width, height: size.height, pageIds, captionStatus: assetCaptions.enabled() ? 'pending' : 'skipped' }
+        $setOnInsert: { userId: idOf(user), projectPath: filePath, sha256, mime: sniffed.mime, size: buffer.length, attribution: `Uploaded by the owner: ${name}`, source: 'upload', originalName: name, thumbnail, width: size.width, height: size.height, kind, ...(kind === 'video' ? { durationSeconds: size.duration || null } : {}), pageIds, captionStatus: kind === 'image' && assetCaptions.enabled() ? 'pending' : 'skipped' }
       }, { upsert: true, new: true });
     } catch (error) {
       if (error?.code !== 11000) throw error;
       doc = await TemplateAsset.findOne({ siteId: site._id, sha256 });
     }
     await bumpSite(site._id);
-    if (assetCaptions.enabled() && doc.captionStatus === 'pending') assetCaptions.captionInBackground(doc._id, buffer, sniffed.mime);
+    if (kind === 'image' && assetCaptions.enabled() && doc.captionStatus === 'pending') assetCaptions.captionInBackground(doc._id, buffer, sniffed.mime);
     return { photo: present(doc), reused: false };
   }
   throw new ConflictError('The site was busy. Try uploading again.');
@@ -197,11 +255,12 @@ async function resolveAttachments(site, items = []) {
     const swap = asset.enhancement?.applied === 'enhanced' ? enhancedById.get(String(asset.enhancement.enhancedAssetId)) : null;
     const use = swap || asset;
     return {
-      path: toPublic(use.projectPath), name: present(asset).name, width: use.width || 0, height: use.height || 0, alt: asset.alt || '', caption: asset.caption || '', tags: asset.tags || [],
+      path: toPublic(use.projectPath), name: present(asset).name, kind: present(asset).kind, mime: use.mime || asset.mime || '', durationSeconds: asset.durationSeconds || null, width: use.width || 0, height: use.height || 0, alt: asset.alt || '', caption: asset.caption || '', tags: asset.tags || [],
       // A saved default must never carry a page-specific placement (page background, a named section) over to another page.
-      placement: choice.placement || (/^(page-background|section)/.test(asset.placement || '') ? '' : asset.placement) || '', note: choice.note || asset.note || ''
+      // A video has one use on a website: it plays behind a section (or the page), so that is its default.
+      placement: choice.placement || (/^(page-background|section)/.test(asset.placement || '') ? '' : asset.placement) || (present(asset).kind === 'video' ? 'background' : ''), note: choice.note || asset.note || ''
     };
   });
 }
 
-module.exports = { makeThumbnail, ENHANCE_ACTIVE, addUpload, resolveAttachments, inspectImage, present, toPublic, cleanName, cleanPlacement, MAX_BYTES, MAX_ATTACHMENTS, PLACEMENTS, UPLOAD_NAME };
+module.exports = { sniffVideo, videoDuration, inspectMedia, VIDEO_MAX_BYTES, makeThumbnail, ENHANCE_ACTIVE, addUpload, resolveAttachments, inspectImage, present, toPublic, cleanName, cleanPlacement, MAX_BYTES, MAX_ATTACHMENTS, PLACEMENTS, UPLOAD_NAME };

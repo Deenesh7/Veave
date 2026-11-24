@@ -6,6 +6,14 @@ const controller = require('../controllers/templateSiteController');
 
 // One picture per request, held in memory only long enough to validate and store it (the size is checked again by the service).
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: Number.parseInt(process.env.TEMPLATE_UPLOAD_MAX_BYTES, 10) || 8 * 1024 * 1024, files: 1 } });
+// The upload route also takes videos, which are bigger than pictures; the service checks each kind against its own limit.
+const VIDEO_LIMIT = Number.parseInt(process.env.TEMPLATE_VIDEO_MAX_BYTES, 10) || 25 * 1024 * 1024;
+const mediaUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: Math.max(VIDEO_LIMIT, Number.parseInt(process.env.TEMPLATE_UPLOAD_MAX_BYTES, 10) || 8 * 1024 * 1024), files: 1 } });
+const singleMedia = (req, res, next) => mediaUpload.single('photo')(req, res, (error) => {
+  if (!error) return next();
+  const tooBig = error.code === 'LIMIT_FILE_SIZE';
+  return res.status(tooBig ? 413 : 400).json({ success: false, error: { message: tooBig ? `The file is too large (pictures up to 8 MB, videos up to ${Math.round(VIDEO_LIMIT / 1048576)} MB).` : 'The upload could not be read.', statusCode: tooBig ? 413 : 400 } });
+});
 const singlePhoto = (req, res, next) => upload.single('photo')(req, res, (error) => {
   if (!error) return next();
   const tooBig = error.code === 'LIMIT_FILE_SIZE';
@@ -68,7 +76,7 @@ sites.post('/:siteId/pages/:pageId/revisions/:number/restore', controller.restor
 
 sites.get('/:siteId/pages/:pageId/revisions/:number/preview', controller.previewRevision);
 
-sites.post('/:siteId/uploads', uploadLimiter, singlePhoto, controller.uploadPhoto);
+sites.post('/:siteId/uploads', uploadLimiter, singleMedia, controller.uploadPhoto);
 sites.get('/:siteId/images', controller.listImages);
 sites.post('/:siteId/images/:imageId/enhance', aiLimiter, controller.enhanceImage);
 sites.post('/:siteId/images/:imageId/enhancement', controller.chooseEnhancement);

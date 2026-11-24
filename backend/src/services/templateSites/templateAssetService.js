@@ -179,6 +179,7 @@ async function replaceAsset({ user, siteId, assetId, buffer, originalName }) {
   const asset = await findAsset(site, assetId);
   if (asset.deletedAt) throw new ConflictError('This picture was removed. Upload a new one instead.');
   await assertNoRunningJob(site._id);
+  if ((await uploads.inspectMedia(buffer)).kind !== (asset.kind || 'image')) throw new ValidationError('Replace a picture with a picture, and a video with a video.');
   await require('./templateVersionService').snapshotBefore(site, user, `Before replacing the photo ${asset.originalName || ''}`.trim(), { operation: 'replace-asset' });
   const uploaded = await uploads.addUpload({ user, siteId, buffer, originalName });
   const next = uploaded.photo;

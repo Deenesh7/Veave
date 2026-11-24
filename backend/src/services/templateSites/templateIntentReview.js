@@ -24,6 +24,8 @@ Judge by what the changed lines really do:
 6. Behaviour (click, type, open, submit, search) is met only if the added code wires the control to the action: a handler that does the work, not an empty handler, unused data or a fixed message.
 7. Do not fail a change for style choices the owner did not specify. Do not demand more than was asked.
 8. "unmet" lists, in plain words, what is missing or wrong (one short sentence each). "unrelated" lists changes the owner did not ask for that look harmful (leave empty when none).
+9. When a DETECTED INTENT is given it is what the owner meant, spelling mistakes aside. For a rewrite (rewrite_required) the change is met only if most of the visible headings, paragraphs and labels of the page were replaced, not a few strings. For a redesign it is met only if the structure or composition really changed. When the intent says ALREADY REWRITTEN, the page was rewritten by an earlier change: do not demand that most of the wording changes again, and judge only the specific things the instruction still asks for (a new subject or name, something removed, something that still speaks about the old subject).
+10. When VISIBLE WORDING NOW ON THE PAGE is given and the intent is a rewrite, check it against the WEBSITE named there: any wording that belongs to a different kind of website (for example property listings, prices, FOR SALE badges, bedrooms, bathrooms or square feet on a college website) means met is false; name the file and the leftover wording in unmet.\n11. When WEB RESEARCH is given: if it found facts, the page must use them where the instruction asks for them (the figures as stated, with their source named) and must not contradict them; a figure the research did not find may be shown as a request to contact the organisation, which is correct, not a failure. If the research found nothing, the owner's request for researched figures cannot be met: judge only the rest of the instruction, and do not fail the change for placeholders or for missing figures.
 If the instruction itself is too vague to judge, answer met:true when the change is a reasonable reading of it.`;
 
 /** Lines that differ between two texts, with a little context, as a compact unified-style listing. */
@@ -80,7 +82,7 @@ function defaultAsk() {
  * @returns {{ met: boolean|null, unmet: string[], unrelated: string[], usage?: object, skipped?: string }}
  *   met null means "could not be judged" (no reviewer available): the change is neither blamed nor praised.
  */
-async function reviewIntent({ instruction, focus = '', baseline, candidate, changedPaths, deps = {}, signal }) {
+async function reviewIntent({ instruction, focus = '', baseline, candidate, changedPaths, deps = {}, signal, intent = null, keptShare = null, refinement = false, wording = '', site = '', research = null }) {
   const ask = deps.askIntentModel || (process.env.OPENROUTER_API_KEY ? defaultAsk() : null);
   if (!ask) return { met: null, unmet: [], unrelated: [], skipped: 'No reviewer is available.' };
   const change = describeChange({ baseline, candidate, changedPaths });
@@ -89,7 +91,7 @@ async function reviewIntent({ instruction, focus = '', baseline, candidate, chan
   if (!words) return { met: null, unmet: [], unrelated: [], skipped: 'No instruction.' };
   const messages = [
     { role: 'system', content: SYSTEM },
-    { role: 'user', content: `OWNER INSTRUCTION:\n${words}\n\nSECTION: ${focus || '(the whole page)'}\n\nCHANGED LINES:\n${change}` }
+    { role: 'user', content: `OWNER INSTRUCTION:\n${words}\n\n${intent ? `DETECTED INTENT: ${intent.intent} (${intent.scope}); rewrite_required=${intent.rewrite_required}${refinement ? '; ALREADY REWRITTEN' : ''}; operations: ${intent.operations.map((op) => `${op.type} -> ${op.target}`).join('; ')}${keptShare === null ? '' : `; ${Math.round(keptShare * 100)}% of the page's old wording is still there`}\n\n` : ''}${site ? `WEBSITE: ${site}\n\n` : ''}SECTION: ${focus || '(the whole page)'}\n\n${wording ? `VISIBLE WORDING NOW ON THE PAGE:\n${wording}\n\n` : ''}${research ? `WEB RESEARCH: ${research.found ? `found ${research.items} item(s) from ${research.sources.slice(0, 3).join(', ')}` : 'nothing reliable was found online (the owner asked for a web search)'}\n\n` : ''}CHANGED LINES:\n${change}` }
   ];
   try {
     const answer = await ask(messages, { signal });

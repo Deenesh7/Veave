@@ -113,7 +113,7 @@ const leaseFilter = () => ({ $or: [{ leaseExpiresAt: null }, { leaseExpiresAt: {
 
 const HEAL_TRIES = Number(process.env.TEMPLATE_HEAL_TRIES) > 0 ? Number(process.env.TEMPLATE_HEAL_TRIES) : 3;
 // Failures a new try can fix. Never retried: cancelling, a missing key or credits, an empty instruction, a missing page, or a site that someone else changed.
-const NOT_HEALABLE = /^(EMPTY_INSTRUCTION|PAGE_FILE_MISSING|SITE_CHANGED|OPENROUTER_AUTH_ERROR|OPENROUTER_INSUFFICIENT_CREDITS|PLAN_LIMIT.*)$/;
+const NOT_HEALABLE = /^(EMPTY_INSTRUCTION|PAGE_FILE_MISSING|SITE_CHANGED|UNDO_USES_VERSIONS|OPENROUTER_AUTH_ERROR|OPENROUTER_INSUFFICIENT_CREDITS|PLAN_LIMIT.*)$/;
 function isHealable(error) {
   if (!error || error instanceof JobCancelled || error?.name === 'AbortError' || error?.name === 'OpenRouterAuthError' || error?.name === 'PlanLimitError') return false;
   return !NOT_HEALABLE.test(String(error.code || ''));
@@ -124,7 +124,7 @@ const FRIENDLY_MESSAGE = 'The AI tried several times but could not apply this ch
 
 function failureCode(error, { timedOut = false } = {}) {
   if (timedOut) return 'JOB_TIMEOUT';
-  if (error?.code && /^[A-Z_]+$/.test(error.code) && ['PAGE_VALIDATION_FAILED', 'BUILD_VALIDATION_FAILED', 'FINAL_CHECK_FAILED', 'MODEL_ANSWER_UNUSABLE', 'NO_USABLE_CHANGES', 'INTENT_NOT_MET', 'NO_EFFECTIVE_CHANGE', 'EMPTY_INSTRUCTION', 'PAGE_FILE_MISSING', 'SITE_CHANGED', 'PLAN_FAILED', 'PLAN_UNUSABLE', 'IDENTITY_FAILED', 'PLAN_LIMIT_REACHED'].includes(error.code)) return error.code;
+  if (error?.code && /^[A-Z_]+$/.test(error.code) && ['PAGE_VALIDATION_FAILED', 'BUILD_VALIDATION_FAILED', 'FINAL_CHECK_FAILED', 'MODEL_ANSWER_UNUSABLE', 'NO_USABLE_CHANGES', 'INTENT_NOT_MET', 'NO_EFFECTIVE_CHANGE', 'EMPTY_INSTRUCTION', 'PAGE_FILE_MISSING', 'SITE_CHANGED', 'UNDO_USES_VERSIONS', 'PLAN_FAILED', 'PLAN_UNUSABLE', 'IDENTITY_FAILED', 'PLAN_LIMIT_REACHED'].includes(error.code)) return error.code;
   if (error?.code === 'OPENROUTER_INSUFFICIENT_CREDITS') return 'PROVIDER_CREDITS';
   if (error?.code === 'OPENROUTER_AUTH_ERROR') return 'PROVIDER_AUTH';
   if (error?.code === 'OPENROUTER_RATE_LIMIT') return 'PROVIDER_RATE_LIMIT';
@@ -335,11 +335,13 @@ class TemplateJobManager {
       : leaseLost ? `The generation was interrupted (${leaseLost}). The page is unchanged.`
       : String(error?.message || error).slice(0, 1500);
     const code = leaseLost && !timedOut ? 'JOB_LEASE_LOST' : failureCode(error, { timedOut });
-    const shown = !timedOut && !leaseLost && FRIENDLY_CODES.has(code) ? FRIENDLY_MESSAGE : message;
+    // The owner is told the real reason in plain words (the checks' own sentences are written to be read), not only "could not apply safely".
+    const reason = String(error?.issues?.[0]?.message || '').replace(/\s+/g, ' ').trim().slice(0, 260);
+    const shown = !timedOut && !leaseLost && FRIENDLY_CODES.has(code) ? `${FRIENDLY_MESSAGE}${reason ? ` What stopped it: ${reason}` : ''}` : message;
     logger.warn(`Template job ${job.jobId} failed (${code}): ${message}`);
     // A website run that saved nothing puts the site back BEFORE it is reported as failed, so what the owner sees afterwards is the working website.
     if (job.type === 'site-customize') await rollbackIfUseless(job);
-    const updated = await this.move(job.jobId, 'failed', { error: shown, errorCode: code, stepName: 'Failed', completedAt: new Date(), leaseOwner: null, leaseExpiresAt: null, result: error?.issues?.length ? { issues: error.issues.slice(0, 8) } : null });
+    const updated = await this.move(job.jobId, 'failed', { error: shown, errorCode: code, stepName: 'Failed', completedAt: new Date(), leaseOwner: null, leaseExpiresAt: null, result: { detail: message.slice(0, 600), ...(error?.issues?.length ? { issues: error.issues.slice(0, 8).map((item) => ({ stage: item.stage, path: item.path, message: String(item.message || '').slice(0, 300) })) } : {}) } });
     if (updated && job.pageId) await setGeneration(job.pageId, 'failed', shown);
     if (updated && job.type === 'site-customize') await clearPending((await TemplateGenerationJob.findOne({ jobId: job.jobId }).select('plan').lean())?.plan);
   }
@@ -368,9 +370,13 @@ class TemplateJobManager {
    * in website mode (replace the old subject, semantic checks on). Returns true when it did so.
    */
   async adaptToCategory({ job, site, pages, files, template, page, signal }) {
-    if (job.rewrite || !intent.mayChangeCategory(require('./templateValidationService').ownerWords(job.instruction)) || !planner.isEnabled(this.deps)) return false;
+    if (job.rewrite || !planner.isEnabled(this.deps)) return false;
+    const owner = require('./templateValidationService').ownerWords(job.instruction);
+    if (!intent.mayChangeCategory(owner) && !(await this.namesNewSubject({ job, page, pages, files, site, signal }))) return false;
     await this.progress(job.jobId, 'processing', 'Understanding the website you want', { progress: 5 });
-    const brief = site.brief && site.brief !== job.instruction ? `${job.instruction}\n\n(An earlier description of this website, which the instruction above overrides where they differ: ${site.brief})` : job.instruction;
+    // The planner reads what the owner typed, not the section list the studio appends (it names the OLD website's sections).
+    const typed = String(job.instruction).split(/\n\n(?:PAGE CONTEXT|SECTION CONTENT|\(The owner)/)[0].trim() || job.instruction;
+    const brief = site.brief && site.brief !== typed ? `${typed}\n\n(An earlier description of this website, which the instruction above overrides where they differ: ${site.brief})` : typed;
     const created = await planner.createPlan({ template, pages, files, brief, ownerName: planner.ownerNameFor(site.name, template), deps: this.deps, signal });
     let spent = Number(created.usage?.totalTokens ?? created.usage?.total_tokens ?? 0) || 0;
     const current = site.plan?.identity?.category;
@@ -408,6 +414,33 @@ class TemplateJobManager {
     await TemplateSite.updateOne({ _id: site._id }, { $set: { plan: sitePlan } });
     await this.noteExtraTokens(job, spent);
     return true;
+  }
+
+  /**
+   * With the intent engine on, "rewirte this page for Saveetha Medical College" is read for what it means: it names a NEW SUBJECT, so the
+   * website is adapted to it (plan, terms to avoid, shared records and identity) and the page is written against that plan. The words
+   * alone ("rewirte" is not in any verb list) cannot decide this.
+   */
+  async namesNewSubject({ job, page, pages, files, site, signal }) {
+    const engine = require('../ai/intentUnderstandingService');
+    if (!engine.enabled(this.deps)) return false;
+    try {
+      const history = await this.pageHistory(job, page);
+      const context = generator.intentContext({ page, pages, files, instruction: job.instruction, siteContext: siteContextFor(site, pages), history });
+      const result = await engine.understand({ instruction: job.instruction, context, deps: this.deps, signal });
+      if (result.usage) await this.noteExtraTokens(job, Number(result.usage.total_tokens ?? result.usage.totalTokens ?? 0) || 0);
+      return engine.changesSubject(result.intent);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      logger.warn(`Template job ${job.jobId}: the subject check was skipped: ${error.message}`);
+      return false;
+    }
+  }
+
+  /** The last instructions on this page: "do the same again" and "make it like before" are read against them. */
+  async pageHistory(job, page) {
+    const rows = await TemplateGenerationJob.find({ pageId: page._id, status: 'completed', jobId: { $ne: job.jobId } }).sort({ createdAt: -1 }).limit(3).select('instruction result.changedPaths intent.intent').lean().catch(() => []);
+    return rows.map((item) => ({ instruction: String(item.instruction || '').split(/\n\n(?:PAGE CONTEXT|SECTION CONTENT|\(The owner)/)[0], changedPaths: item.result?.changedPaths || [], intent: item.intent?.intent || null }));
   }
 
   /** Tokens spent before the page itself is written (planning, rewriting the shared parts) are charged with the page's own. */
@@ -452,10 +485,14 @@ class TemplateJobManager {
     const baseInstruction = job.focusSection ? `${job.instruction}\n\n(The owner ticked only the section(s) "${job.focusSection}" of this page. Change ONLY those sections. Every other section must stay exactly as it is, character for character; do not touch, restyle, reword, reorder or remove them. Use small exact "patch" edits for wording, attributes and classes. When the change wraps or restructures markup (a background picture, a new layout, moving blocks), return the complete file with "modify" so every opening tag keeps its closing tag.)` : job.instruction;
     let lastProblem = '';
     let result;
+    // The last instructions on this page: "do the same again" and "make it like before" are read against them.
+    const history = await this.pageHistory(job, page);
+    const onResearch = (research) => { TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $set: { research } }).catch(() => {}); };
+    const onIntent = (intent) => { TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $set: { intent } }).catch(() => {}); };
     for (let attemptNo = 1; attemptNo <= HEAL_TRIES; attemptNo += 1) {
       const attemptInstruction = (text) => (lastProblem ? `${text}\n\n(A previous try at this same instruction failed: ${lastProblem}. Take a different, simpler and safer way to make the same change: keep every import and component name valid, make sure every opening tag has its closing tag and the code builds. If the failure was a syntax or build error, return the complete file with "modify" instead of patches.)` : text);
       try {
-        result = await generator.regeneratePage({ template, page, pages, files, instruction: attemptInstruction(baseInstruction), attachments: photos, deps: this.deps, signal, onState: this.onState(job), onTiming: (entry) => { TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $push: { callTimings: { $each: [entry], $slice: -40 } } }).catch(() => {}); }, siteContext: siteContextFor(site, pages, [], { mode: (job.rewrite || adapted) ? 'website' : 'edit' }) });
+        result = await generator.regeneratePage({ template, page, pages, files, instruction: attemptInstruction(baseInstruction), attachments: photos, deps: this.deps, signal, onState: this.onState(job), onTiming: (entry) => { TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $push: { callTimings: { $each: [entry], $slice: -40 } } }).catch(() => {}); }, siteContext: siteContextFor(site, pages, [], { mode: (job.rewrite || adapted) ? 'website' : 'edit' }), history, onIntent, onResearch });
         break;
       } catch (error) {
         if (signal?.aborted || !isHealable(error) || attemptNo === HEAL_TRIES) throw error;
@@ -469,7 +506,7 @@ class TemplateJobManager {
     await this.progress(job.jobId, 'validating', 'Checks passed');
     // From here the result is stored on the job before anything else is written: whatever happens next, saving can be finished.
     const assets = await collectAssets(result.files, result.changedPaths);
-    const pendingCommit = { pageId: String(page._id), changed: result.changed, previous: result.previous, assets, validation: { mode: result.report?.validationMode || null, status: result.report?.status || null, attempts: result.attempts, functional: result.report?.functional || null }, usage: result.usage, entity: result.entity };
+    const pendingCommit = { pageId: String(page._id), changed: result.changed, previous: result.previous, assets, validation: { mode: result.report?.validationMode || null, status: result.report?.status || null, attempts: result.attempts, functional: result.report?.functional || null }, usage: result.usage, entity: result.entity, intent: result.intent || null, research: result.research || null };
     await this.progress(job.jobId, 'committing', 'Saving the new version');
     await TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $set: { pendingCommit, usage: result.usage } });
     await this.finishCommit(await TemplateGenerationJob.findOne({ jobId: job.jobId }));
@@ -551,7 +588,7 @@ class TemplateJobManager {
     const fresh = page ? await TemplatePage.findById(page._id) : null;
     const done = await this.move(job.jobId, 'completed', {
       stepName: 'Completed', completedAt: new Date(), leaseOwner: null, leaseExpiresAt: null, pendingCommit: null,
-      result: { changedPaths: pending.changed.map((file) => file.path), revision: fresh?.currentRevision ?? null, pageId: pending.pageId || null, validation: pending.validation, entity: pending.entity || null }
+      result: { changedPaths: pending.changed.map((file) => file.path), revision: fresh?.currentRevision ?? null, pageId: pending.pageId || null, validation: pending.validation, entity: pending.entity || null, intent: pending.intent || null, research: pending.research || null }
     });
     if (!done) throw new ConflictError('The job was no longer committing when it finished.');
   }

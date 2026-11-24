@@ -45,7 +45,7 @@ export default function ImageViewer({ image, onClose }) {
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
           <div>
             <div className={`relative flex h-[min(60vh,520px)] items-center justify-center overflow-auto rounded-md border ${line} bg-[#EFEBE1]`}>
-              {src ? <img src={src} alt={live.alt || live.name} draggable={false} className="select-none transition-[width] duration-150" style={zoom === 1 ? { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' } : { width: `${zoom * 100}%`, maxWidth: 'none', margin: 'auto' }} /> : failed ? <p className={`px-6 text-center text-sm ${muted}`}>The picture could not be loaded. It is still stored with your site.</p> : <Skeleton className="h-full w-full" />}
+              {src && live.kind === 'video' ? <video src={src} controls muted loop playsInline className="max-h-full max-w-full" aria-label={live.name} /> : src ? <img src={src} alt={live.alt || live.name} draggable={false} className="select-none transition-[width] duration-150" style={zoom === 1 ? { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' } : { width: `${zoom * 100}%`, maxWidth: 'none', margin: 'auto' }} /> : failed ? <p className={`px-6 text-center text-sm ${muted}`}>The picture could not be loaded. It is still stored with your site.</p> : <Skeleton className="h-full w-full" />}
             </div>
             <div className="mt-2 flex items-center justify-between">
               <div className="flex items-center gap-1">
@@ -54,7 +54,7 @@ export default function ImageViewer({ image, onClose }) {
                 <IconButton label="Zoom in" disabled={zoom >= 4} onClick={() => setZoom((value) => Math.min(4, +(value + 0.5).toFixed(1)))}><ZoomIn className="h-4 w-4" /></IconButton>
                 <IconButton label="Fit to window" onClick={() => setZoom(1)}><Maximize2 className="h-4 w-4" /></IconButton>
               </div>
-              <p className={`text-[11px] ${muted}`}>{dimensionsOf(live)} · {formatBytes(live.size)} · {String(live.mime || '').replace('image/', '').toUpperCase()}</p>
+              <p className={`text-[11px] ${muted}`}>{dimensionsOf(live)} · {formatBytes(live.size)} · {String(live.mime || '').replace(/^(?:image|video)\//, '').toUpperCase()}</p>
             </div>
           </div>
 
@@ -95,7 +95,7 @@ export default function ImageViewer({ image, onClose }) {
               {activePageId ? <GhostButton onClick={() => toggleImage(live.id)} aria-pressed={chosen}>{chosen ? 'Selected for this page' : 'Use on this page'}</GhostButton> : null}
             </div>
             <div className={`flex items-center gap-2 border-t ${line} pt-3`}>
-              <GhostButton onClick={() => fileInput.current?.click()} disabled={working}>{working && progress !== null ? <Spinner className="h-3 w-3" /> : <Replace className="h-3.5 w-3.5" />}Replace</GhostButton>
+              {live.kind === 'video' ? null : <GhostButton onClick={() => fileInput.current?.click()} disabled={working}>{working && progress !== null ? <Spinner className="h-3 w-3" /> : <Replace className="h-3.5 w-3.5" />}Replace</GhostButton>}
               <GhostButton onClick={() => setConfirm(true)} disabled={working} className="!text-[#A4493A]"><Trash2 className="h-3.5 w-3.5" />Remove</GhostButton>
             </div>
           </div>
