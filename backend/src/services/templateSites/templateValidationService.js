@@ -274,7 +274,19 @@ function untouchedSectionProblem({ baselineSource, candidateSource, numbers, pag
   if (!blocks.length || numbers.some((n) => n > total)) return null;
   const squash = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const after = squash(candidateSource);
-  const changed = blocks.filter((block) => !block.numbers.some((n) => numbers.includes(n)) && !after.includes(squash(block.source)));
+  // A section's source runs up to where the NEXT section starts, so when the next one is the owner's, the tail of this one is the code that
+  // opens the container around it (`<div className="grid">{results.map((l) => (`). Changing the ticked section changes that tail (a renamed
+  // loop variable, another list), so only what is before the last complete element of the block must stay exactly as it was.
+  const sameAsBefore = (block, index) => {
+    let source = squash(block.source);
+    const next = blocks[index + 1];
+    if (next && next.numbers.some((n) => numbers.includes(n))) {
+      const closed = Math.max(source.lastIndexOf('/>') >= 0 ? source.lastIndexOf('/>') + 2 : -1, source.lastIndexOf('</') >= 0 ? source.indexOf('>', source.lastIndexOf('</')) + 1 : -1);
+      if (closed > 40) source = source.slice(0, closed);
+    }
+    return after.includes(source);
+  };
+  const changed = blocks.filter((block, index) => !block.numbers.some((n) => numbers.includes(n)) && !sameAsBefore(block, index));
   if (!changed.length) return null;
   const names = changed.slice(0, 6).map((block) => `${String(block.number).padStart(2, '0')} "${block.name}"`).join(', ');
   return issue('preserve', `Section${changed.length > 1 ? 's' : ''} ${names} ${changed.length > 1 ? 'were' : 'was'} changed, but the owner selected only section${numbers.length > 1 ? 's' : ''} ${numbers.map((n) => String(n).padStart(2, '0')).join(', ')}.`, { path: page.componentPath, route: page.route, cause: 'Sections that were not ticked must stay exactly as they are.', action: `Start again from the ORIGINAL page code. Change ONLY section${numbers.length > 1 ? 's' : ''} ${numbers.map((n) => String(n).padStart(2, '0')).join(', ')}; copy every other section character for character (same JSX, same text, same images).` });
