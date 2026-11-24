@@ -371,6 +371,9 @@ class TemplateJobManager {
    */
   async adaptToCategory({ job, site, pages, files, template, page, signal }) {
     if (job.rewrite || !planner.isEnabled(this.deps)) return false;
+    // The owner ticked one section (or wrote "In section 04 ..."): that is a change to that section. It never turns the whole website into another
+    // kind of website (a new plan, new pictures, a rewritten brand and menu), whatever the words say.
+    if (job.focusSection || require('./templateValidationService').namedSections(job.instruction).length) return false;
     const owner = require('./templateValidationService').ownerWords(job.instruction);
     if (!intent.mayChangeCategory(owner) && !(await this.namesNewSubject({ job, page, pages, files, site, signal }))) return false;
     await this.progress(job.jobId, 'processing', 'Understanding the website you want', { progress: 5 });
@@ -429,7 +432,14 @@ class TemplateJobManager {
       const context = generator.intentContext({ page, pages, files, instruction: job.instruction, siteContext: siteContextFor(site, pages), history });
       const result = await engine.understand({ instruction: job.instruction, context, deps: this.deps, signal });
       if (result.usage) await this.noteExtraTokens(job, Number(result.usage.total_tokens ?? result.usage.totalTokens ?? 0) || 0);
-      return engine.changesSubject(result.intent);
+      if (!engine.changesSubject(result.intent)) return false;
+      // A subject that is the website's own (the college the site is already about, even misspelt: "Savitam" for "Saveetha") is not a new one.
+      const known = [site.name, generator.brandOf(files), site.plan?.identity?.name, site.plan?.identity?.category].filter(Boolean).join(' ');
+      if (require('./templateWebResearch').samesOrganisation(result.intent.subject, known)) {
+        logger.info(`Template job ${job.jobId}: "${result.intent.subject}" is what the website is already about; the website is not adapted.`);
+        return false;
+      }
+      return true;
     } catch (error) {
       if (signal?.aborted) throw error;
       logger.warn(`Template job ${job.jobId}: the subject check was skipped: ${error.message}`);

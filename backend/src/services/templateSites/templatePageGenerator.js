@@ -388,4 +388,4 @@ function intentContext({ page, pages, files, instruction, siteContext, history }
 
 const textOfFile = (file) => (file && file.encoding !== 'base64' && typeof file.content === 'string' ? file.content : '');
 
-module.exports = { regeneratePage, PageGenerationError, applyAnswer, defaultCallModel, sumUsage, intentContext };
+module.exports = { regeneratePage, PageGenerationError, applyAnswer, defaultCallModel, sumUsage, intentContext, brandOf };
