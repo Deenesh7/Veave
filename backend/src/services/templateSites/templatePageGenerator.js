@@ -162,7 +162,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
 
   const promptFor = (repair, current = files) => buildPageMessages({
     template, page, otherPages, instruction: text, ownedFiles: scope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
-    entityBlock: entity?.block || '', researchBlock: research?.block || '', attachments, repair, siteContext, intent: intentResult?.intent || null, policy
+    entityBlock: entity?.block || '', researchBlock: research?.block || '', sectionFiles: scope.sectionFiles || [], attachments, repair, siteContext, intent: intentResult?.intent || null, policy
   });
 
   /* ---- generate, check, repair (static stages) ---- */
@@ -229,7 +229,8 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     if (research?.found && research.items.length >= 3 && !problems.length) {
       // What the page shows: its own files and the files the AI created for it (a new data file holding the list is the usual way).
       const known = new Set(baseline.map((file) => file.path));
-      const paths = new Set([...(scope.pageFiles || scope.ownedList).filter((path) => scope.owned.has(path)), ...candidate.filter((file) => !known.has(file.path) && /^src\//.test(file.path)).map((file) => file.path)]);
+      // The list must be in the data or the page: written inside a card component it would be repeated on every card.
+      const paths = new Set([...(scope.pageFiles || scope.ownedList).filter((path) => scope.owned.has(path)), ...candidate.filter((file) => !known.has(file.path) && /^src\//.test(file.path)).map((file) => file.path)].filter((path) => !/^src\/components\//.test(path)));
       const onPage = [...paths].map((path) => validation.visibleWording((candidate.find((file) => file.path === path) || {}).content)).join('\n');
       const seen = webResearch.coverage(research.items, onPage);
       if (seen.share < 0.7) problems.push(validation.issue('research', `The page shows ${seen.covered} of the ${seen.total} items found online. Missing: ${seen.missing.slice(0, 14).join('; ')}${seen.missing.length > 14 ? '; ...' : ''}.`, { path: page.componentPath, route: page.route, cause: 'Items found online were left out or merged into general ones.', action: `Add one entry for EACH missing item (${seen.missing.length}), with its facts exactly as in WEB RESEARCH. Do not group or summarise items. Keep the entries that are already there.` }));

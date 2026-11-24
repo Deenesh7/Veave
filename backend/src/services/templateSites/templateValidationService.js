@@ -81,6 +81,7 @@ function pageScope({ files, page, pages, template, siteWide = false, includeShar
   }
   const reachable = pageDistinctness.reachableFiles(page.componentPath, byPath, 2).filter((path) => byPath.has(path) && SOURCE.test(path));
   const owned = reachable.filter((path) => path === page.componentPath || (!locked.has(path) && !usedElsewhere.has(path) && path.startsWith('src/')));
+  const sectionFiles = [];
   // A rewrite of the page covers what the page DISPLAYS: the cards and the sample records it renders are often components and data that
   // other pages use as well. They are changeable for a rewrite (the build and the route test of every page then prove nothing broke).
   if (includeSharedContent) {
@@ -94,9 +95,10 @@ function pageScope({ files, page, pages, template, siteWide = false, includeShar
     for (const name of sectionNames.map(squash).filter((item) => item.length >= 4)) {
       const component = reachable.find((path) => !locked.has(path) && /^src\/components\//.test(path) && squash(path.split('/').pop().replace(/\.[jt]sx?$/, '')) === name);
       if (!component) continue;
+      sectionFiles.push(component);
       if (!owned.includes(component)) owned.push(component);
       // The records the cards show come from the component's own data or, as often, from the data the PAGE imports and maps over.
-      for (const data of [...pageDistinctness.reachableFiles(component, byPath, 1), ...pageDistinctness.reachableFiles(page.componentPath, byPath, 1)]) if (/^src\/data\//.test(data) && SOURCE.test(data) && !locked.has(data) && !owned.includes(data) && byPath.has(data)) owned.push(data);
+      for (const data of [...pageDistinctness.reachableFiles(component, byPath, 1), ...pageDistinctness.reachableFiles(page.componentPath, byPath, 1)]) if (/^src\/data\//.test(data) && SOURCE.test(data) && !locked.has(data) && byPath.has(data)) { sectionFiles.push(data); if (!owned.includes(data)) owned.push(data); }
     }
   }
   if (siteWide) {
@@ -110,7 +112,7 @@ function pageScope({ files, page, pages, template, siteWide = false, includeShar
     }
   }
   const shared = reachable.filter((path) => !owned.includes(path));
-  return { siteWide, pageFiles: reachable, owned: new Set(owned), ownedList: owned, sharedList: shared, locked, canCreate: (path) => CREATE_PREFIXES.some((prefix) => path.startsWith(prefix)) && !byPath.has(path) && SOURCE.test(path) };
+  return { siteWide, sectionFiles: [...new Set(sectionFiles)], pageFiles: reachable, owned: new Set(owned), ownedList: owned, sharedList: shared, locked, canCreate: (path) => CREATE_PREFIXES.some((prefix) => path.startsWith(prefix)) && !byPath.has(path) && SOURCE.test(path) };
 }
 
 /** Splits operations into those inside the scope and those that are dropped (with the reason, which goes into the repair prompt). */

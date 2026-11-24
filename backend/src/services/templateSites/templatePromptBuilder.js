@@ -125,7 +125,7 @@ RULES:
  * @param {string} p.entityBlock   verified named-entity images (optional)
  * @param {object} p.repair        { diagnostics: string[], candidate: [{path, content}] } when a previous attempt was rejected
  */
-function buildPageMessages({ template, page, otherPages = [], instruction, ownedFiles, sharedFiles = [], entityBlock = '', attachments = [], repair = null, siteContext = null, siteWide = false, intent = null, policy = null, researchBlock = '' }) {
+function buildPageMessages({ template, page, otherPages = [], instruction, ownedFiles, sharedFiles = [], entityBlock = '', attachments = [], repair = null, siteContext = null, siteWide = false, intent = null, policy = null, researchBlock = '', sectionFiles = [] }) {
   const mode = siteContext?.mode === 'website' && siteContext?.plan ? 'website' : 'edit';
   const system = `${mode === 'website' ? `${TRANSFORM_PREAMBLE}\n\n` : ''}${siteWide ? SITE_WIDE_RULES : rulesFor(mode)}
 
@@ -153,6 +153,7 @@ ${tokenSummary(template)}`;
     attachments.length ? photoBlock(attachments) : '',
     entityBlock ? `${entityBlock}` : '',
     researchBlock || '',
+    sectionFiles.length ? `THE TICKED SECTION IS SHOWN BY THESE FILES (they are listed under FILES YOU MAY CHANGE; other pages may use them too): ${sectionFiles.join(', ')}.\nChange the section by changing what those files hold: write the new RECORDS in the data file(s) (keep each export's name, the field names the page reads such as id, title, price, beds, type, image, and keep an id on every record) and change the card component to show them. The page file (${page.componentPath}) belongs to the sections the owner did NOT tick: do not edit it, do not rename its variables (results, listings, filters ...) and do not change its headings or counts, unless the ticked section's own markup cannot work without it. A page whose records changed still reads them through the same names.` : '',
     where ? `WHERE THE TEXT THE OWNER IS LOOKING AT IS WRITTEN IN THE CODE (the section content quoted in the instruction was found in these files; the code that produces what the owner sees, and so the code to change, is there):\n${where}` : '',
     policy ? require('../ai/intentUnderstandingService').planBlock(intent, policy) : '',
     `USER INSTRUCTION:\n${String(instruction).trim()}`
