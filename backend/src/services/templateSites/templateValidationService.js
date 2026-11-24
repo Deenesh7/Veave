@@ -465,6 +465,21 @@ const PLAN_PATH = 'veave.validation.json';
  * The production build and a browser test of every route, through the shared gate. `repair(files, diagnostics, history)` is the
  * page-scoped repair (it may only change this page's files). Returns { files, report }; throws a PipelineError when it still fails.
  */
+/* ------------------------------------------------ a faulty browser test must not fail the page ------------------------------------------------ */
+
+const isPlanDiagnostic = (item) => item?.path === 'veave.validation.json' || /veave\.validation\.json/.test(String(item?.message || ''));
+/** Did ONLY the AI-written behaviour tests fail (the build, every route and the error checks passed)? */
+function behaviourFailureOnly(diagnostics = []) {
+  const list = Array.isArray(diagnostics) ? diagnostics : [];
+  return list.some(isPlanDiagnostic) && list.every((item) => isPlanDiagnostic(item) || /^Error: Browser validation failed/.test(String(item?.message || '')));
+}
+/** "strict mode violation: locator resolved to 3 elements": the test's selector was ambiguous, which is a fault of the test, not of the page. */
+const strictModeProblem = (diagnostics = []) => (Array.isArray(diagnostics) ? diagnostics : []).some((item) => isPlanDiagnostic(item) && /strict mode violation|resolved to \d+ elements/i.test(String(item?.message || '')));
+/** The same tests, each selector made to mean its FIRST match (a count or a style check keeps its exact meaning). */
+function relaxSelectors(tests = []) {
+  return tests.map((test) => ({ ...test, steps: (test.steps || []).map((step) => (!step?.selector || / >> nth=/.test(step.selector) || (step.action === 'assert' && (step.count !== undefined || step.style !== undefined)) ? step : { ...step, selector: `${step.selector} >> nth=0` })) }));
+}
+
 async function runBuildGate(files, { routes, extraTests = [], signal, onProgress, repair, maxRepairs }) {
   const { validateAndRepair } = require('../ai/validationGate');
   const { executeProject, isDockerAvailable } = require('../ai/executionRunner');
@@ -525,4 +540,4 @@ function finalSiteChecks(files, pages) {
   return found;
 }
 
-module.exports = { wantsRemoval, finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, routeMatches, videoUseProblem, namedSections, ownedWordSet, keptShareOwned, visibleWording, wordingOf, issue, sha, MIN_PAGE_WORDS };
+module.exports = { wantsRemoval, finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, routeMatches, videoUseProblem, namedSections, behaviourFailureOnly, strictModeProblem, relaxSelectors, ownedWordSet, keptShareOwned, visibleWording, wordingOf, issue, sha, MIN_PAGE_WORDS };

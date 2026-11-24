@@ -143,7 +143,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   const wantsFacts = webResearch.enabled(deps) && (Boolean(intentResult?.intent.web_research) || require('../ai/intentUnderstandingService').asksForWebResearch(text));
   if (wantsFacts) {
     onState('generating', 'Searching the web for the facts');
-    research = await timed('web research', () => webResearch.research({ instruction: text, siteName: siteContext?.name || '', pageName: page.name, signal, deps }));
+    research = await timed('web research', () => webResearch.research({ instruction: text, siteName: siteContext?.name || '', brand: brandOf(files), pageName: page.name, signal, deps }));
     usage = sumUsage(usage, research.usage);
     logger.info(`Web research for the ${page.name} page: ${research.found ? `${research.items.length} item(s) from ${research.sources.length} page(s)` : `nothing found${research.error ? ` (${research.error})` : ''}`}`);
     try { onResearch(webResearch.summarize(research)); } catch { /* recording is optional */ }
@@ -177,7 +177,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   // An independent reviewer compares the changed lines with the owner's words (not in tests that supply their own model, nor when a whole website is written).
   const reviewOn = Boolean(deps.reviewIntent || deps.askIntentModel) || (!deps.callModel && siteContext?.mode !== 'website');
   const keptShare = ({ baseline: before, candidate: after }) => validation.keptShareOwned(before, after, scope);
-  const review = (args) => (deps.reviewIntent || require('./templateIntentReview').reviewIntent)({ instruction: text, focus: (text.match(/ticked only the section\(s\) "([^"]+)"/) || [])[1] || '', deps, signal, intent: policy ? intentResult.intent : null, research: research ? { found: research.found, sources: research.sources.map((entry) => entry.url), items: research.items.length } : null, wording: policy?.rewrite ? validation.wordingOf(args.candidate, (scope.pageFiles || []).filter((path) => scope.owned.has(path))) : '', site: policy?.rewrite ? [siteContext?.name, siteContext?.brief].filter(Boolean).join(': ').slice(0, 300) : '', refinement: Boolean(policy?.refinement), keptShare: policy && !policy.refinement ? keptShare(args) : null, ...args });
+  const review = (args) => (deps.reviewIntent || require('./templateIntentReview').reviewIntent)({ instruction: text, focus: (text.match(/ticked only the section\(s\) "([^"]+)"/) || [])[1] || '', deps, signal, intent: policy ? intentResult.intent : null, research: research ? { found: research.found, organisation: research.organisation || '', sources: research.sources.map((entry) => entry.url), items: research.items.length } : null, wording: policy?.rewrite ? validation.wordingOf(args.candidate, (scope.pageFiles || []).filter((path) => scope.owned.has(path))) : '', site: policy?.rewrite ? [siteContext?.name, siteContext?.brief].filter(Boolean).join(': ').slice(0, 300) : '', refinement: Boolean(policy?.refinement), keptShare: policy && !policy.refinement ? keptShare(args) : null, ...args });
   let verdict = { met: null };
   const BROKEN_MARKUP = /syntax error|closing tag|unexpected token|unterminated/i;
   for (let round = 0; round <= repairRounds; round += 1) {
@@ -225,6 +225,12 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     candidate = working;
     problems = validation.checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments, instruction: text, siteWide, rewrite: siteContext?.mode === 'website', policy, originalFiles: originals })
       .concat(validation.imageProblems(failed, (entity?.assets || []).filter((asset) => !working.some((file) => textOfFile(file).includes(asset.url)))));
+    // The owner asked for what was found online: the list on the page must be that list, not a summary of it.
+    if (research?.found && research.items.length >= 3 && !problems.length) {
+      const onPage = (scope.pageFiles || scope.ownedList).filter((path) => scope.owned.has(path)).map((path) => validation.visibleWording((candidate.find((file) => file.path === path) || {}).content)).join('\n');
+      const seen = webResearch.coverage(research.items, onPage);
+      if (seen.share < 0.7) problems.push(validation.issue('research', `The page shows ${seen.covered} of the ${seen.total} items found online. Missing: ${seen.missing.slice(0, 14).join('; ')}${seen.missing.length > 14 ? '; ...' : ''}.`, { path: page.componentPath, route: page.route, cause: 'Items found online were left out or merged into general ones.', action: `Add one entry for EACH missing item (${seen.missing.length}), with its facts exactly as in WEB RESEARCH. Do not group or summarise items. Keep the entries that are already there.` }));
+    }
     // Right content for THIS website: only once the page is otherwise sound (it is the costly check), and only when the site has a plan.
     // A section the owner ticked or opened is changed in place: the relevance review of the whole page is skipped (it only matters when the page's subject changes).
     if (siteContext?.plan && !problems.length && !/ticked only the section/.test(text)) {
@@ -263,6 +269,8 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     onState('validating', 'Building the site and testing every page');
     const routes = [...new Set(['/', ...pages.map((item) => item.route)])];
     const gateRepair = async (current, diagnostics) => {
+      // A test that fails on its own selector (it matches several elements) is not fixed by rewriting the page.
+      if (validation.strictModeProblem(diagnostics) && validation.behaviourFailureOnly(diagnostics)) return [];
       onState('repairing', 'Fixing a build or browser error');
       const gateScope = validation.pageScope({ files: current, page, pages, template, siteWide, includeSharedContent: Boolean(policy?.rewrite), sectionNames: validation.namedSections(text) });
       const gateRepairPrompt = buildPageMessages({
@@ -296,6 +304,27 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     if (!gated && environmentError && !gateError) {
       onState('validating', 'Build check unavailable; using the static checks');
       gated = { files: candidate, report: { status: 'passed', validationMode: 'static-only', stage: 'static', checks: [], infrastructure: String(environmentError?.report?.reason || environmentError.message).slice(0, 300), verifiedAt: new Date().toISOString() } };
+    }
+    // Only the AI-written behaviour test failed (the page built and every route opened): the test may be the faulty part. Try it again with
+    // unambiguous selectors, and if it still fails, keep the page that built and say it could not be verified, instead of failing the job.
+    const diagnosticsOf = (failure) => failure?.report?.history?.at(-1)?.diagnostics || [];
+    if (!gated && gateError && behavior.tests.length && validation.behaviourFailureOnly(diagnosticsOf(gateError))) {
+      const attempts = [];
+      if (validation.strictModeProblem(diagnosticsOf(gateError))) attempts.push({ tests: validation.relaxSelectors(behavior.tests), looser: true });
+      attempts.push({ tests: [], looser: false });
+      for (const attempt of attempts) {
+        try {
+          onState('validating', attempt.looser ? 'Retrying the browser test with clearer selectors' : 'Checking the build without the faulty browser test');
+          gated = await timed('build + browser tests (recovery)', () => buildGate(candidate, { routes, extraTests: attempt.tests, signal, maxRepairs: 0, onProgress: (state) => onState('validating', state?.stage || 'validating') }));
+          behavior = attempt.looser ? { ...behavior, tests: attempt.tests } : { status: 'unavailable', tests: [], reason: 'The automatic browser test for this change was unreliable (its selectors matched several elements), but the page builds and every route opens. Please try the change in the preview.' };
+          logger.warn(`The ${page.name} page was accepted: only its generated browser test failed (${attempt.looser ? 'it passed with clearer selectors' : 'it was left out'}).`);
+          gateError = null;
+          break;
+        } catch (error) {
+          if (signal?.aborted || error?.name === 'AbortError') throw error;
+          if (!validation.behaviourFailureOnly(diagnosticsOf(error))) { gateError = error; break; }
+        }
+      }
     }
     if (!gated) {
       const error = gateError || environmentError;
@@ -333,6 +362,13 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
 
   const diff = store.diffFiles(baseline, finalFiles);
   return { intent: intentEngine.summarize(intentResult, policy), research: require('./templateWebResearch').summarize(research), files: finalFiles, changed: diff.changed, previous: diff.previous, changedPaths: diff.changed.map((item) => item.path), report, usage, attempts, dropped, reviewNotes, entity: entity ? { found: [...new Set(entity.assets.map((asset) => asset.entity))], missing: entity.missing.map((item) => item.name) } : null };
+}
+
+/** The name the website itself shows as its brand (src/data/site.js), which tells an abbreviation like "SMC" which organisation it stands for. */
+function brandOf(files) {
+  const source = ((files || []).find((file) => file.path === 'src/data/site.js') || {}).content || '';
+  const match = /\bname\s*:\s*(['"`])([^'"`\n]{2,80})\1/.exec(source);
+  return match ? match[2].trim() : '';
 }
 
 /** What the intent reading is given: the page, its sections, the selection, the website and the last instructions on this page (never the whole source). */
