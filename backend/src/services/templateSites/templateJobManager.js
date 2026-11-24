@@ -480,6 +480,8 @@ class TemplateJobManager {
 
   async runRegenerate(job, signal) {
     let { site, pages, files, template } = await this.context(job);
+    // A detail page whose sample record is gone opens on "not found": it is moved to a record that exists before it is written.
+    if ((await require('./templatePageService').healSampleRoutes(site, { pages, files }).catch(() => [])).length) ({ site, pages, files, template } = await this.context(job));
     const page = pages.find((item) => String(item._id) === String(job.pageId));
     if (!page) throw new NotFoundError('Page');
     let adapted = false;
@@ -609,6 +611,8 @@ class TemplateJobManager {
     if (pending.pageId && !page) throw new NotFoundError('Page');
 
     await this.applyChange({ job, site, page, pending, revisionJobId: job.jobId });
+    // The change may have rewritten the records a detail page shows (its sample /listings/k-1001 is gone): that page is moved to one that exists.
+    await require('./templatePageService').healSampleRoutes(site).catch((error) => logger.warn(`Template job ${job.jobId}: sample routes were not checked: ${error.message}`));
     if (page) await setGeneration(page._id, 'completed');
     for (const entry of pending.pageRevisions || []) {
       const target = await TemplatePage.findOne({ _id: entry.pageId, siteId: site._id });

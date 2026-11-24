@@ -195,6 +195,28 @@ async function listPagesFor(site) {
   return TemplatePage.find({ siteId: site._id }).sort({ order: 1, createdAt: 1 });
 }
 
+/**
+ * A detail page is one sample of a dynamic route (/listings/k-1001 for /listings/:id). When the records were rewritten and that record is
+ * gone, the page would open on "not found": it is moved to a record that exists (/listings/mbbs). The router is not touched; only the
+ * address the studio opens and tests for the page changes. Returns [{ pageId, from, to }].
+ */
+async function healSampleRoutes(site, { pages = null, files = null } = {}) {
+  const list = pages || await TemplatePage.find({ siteId: site._id });
+  if (!list.some((item) => String(item.route || '').split('/').filter(Boolean).length >= 2)) return [];
+  const current = files || (await store.readSite(site)).files;
+  const moved = [];
+  for (const item of list) {
+    const to = require('./templateDataContract').sampleRoute(current, item);
+    if (!to || list.some((other) => String(other._id) !== String(item._id) && other.route === to)) continue;
+    const updated = await TemplatePage.updateOne({ _id: item._id, route: item.route }, { $set: { route: to } });
+    if (!updated.modifiedCount) continue;
+    logger.info(`Page ${item._id} of site ${site._id}: its sample record is gone, so it now opens ${to} instead of ${item.route}.`);
+    moved.push({ pageId: String(item._id), from: item.route, to });
+    item.route = to;
+  }
+  return moved;
+}
+
 /** The section headings of a page's source, in document appearance order. */
 function extractHeadings(source) {
   const matches = [];
@@ -440,4 +462,4 @@ async function describeSections(site, page) {
   return (await describeSectionItems(site, page)).map((item) => item.name);
 }
 
-module.exports = { extractHeadings, extractSections, sectionBlocks, jsxElementEnd, describeSectionItems, describeSections, listPagesFor, addPage, renamePage, deletePage, reorderPages, MAX_PAGES, assertNoRunningJob, changeFiles, undoFiles, bumpSite, reindex };
+module.exports = { extractHeadings, extractSections, sectionBlocks, jsxElementEnd, describeSectionItems, describeSections, listPagesFor, healSampleRoutes, addPage, renamePage, deletePage, reorderPages, MAX_PAGES, assertNoRunningJob, changeFiles, undoFiles, bumpSite, reindex };

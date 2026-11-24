@@ -294,7 +294,9 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     usage = sumUsage(usage, planned.usage);
     behavior = planned;
     onState('validating', 'Building the site and testing every page');
-    const routes = [...new Set(['/', ...pages.map((item) => item.route)])];
+    // A detail page is tested at a record that exists in the NEW records (a sample route whose record is gone would only show "not found").
+    const sampleRoute = (item) => { try { return require('./templateDataContract').sampleRoute(candidate, item) || item.route; } catch { return item.route; } };
+    const routes = [...new Set(['/', ...pages.map(sampleRoute)])];
     const gateRepair = async (current, diagnostics) => {
       // A test that fails on its own selector (it matches several elements) is not fixed by rewriting the page.
       if (validation.strictModeProblem(diagnostics) && validation.behaviourFailureOnly(diagnostics)) return [];

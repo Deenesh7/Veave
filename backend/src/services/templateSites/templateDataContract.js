@@ -26,11 +26,15 @@ function recordShapes(source) {
   const ast = parseModule(source);
   if (!ast) return shapes;
   const record = (name, node) => {
+    // [ ... ].map((l) => ({ ...l, image: img(l.img) })): the records are the array literal; the call may add fields, never remove them.
+    if (node?.type === 'CallExpression' && node.callee?.type === 'MemberExpression' && /^(?:map|filter|slice|sort|concat)$/.test(node.callee.property?.name || '')) node = node.callee.object;
     if (!node || node.type !== 'ArrayExpression' || !node.elements.length) return;
     const objects = node.elements.filter((item) => item && item.type === 'ObjectExpression');
     if (!objects.length || objects.length !== node.elements.length) return;
     let all = null;
     const any = new Set();
+    const ids = [];
+    const byKey = { id: [], slug: [] };
     let open = false;
     for (const object of objects) {
       const keys = new Set();
@@ -38,11 +42,13 @@ function recordShapes(source) {
         if (prop.type === 'SpreadElement' || prop.computed) { open = true; continue; }
         const key = prop.key?.type === 'Identifier' ? prop.key.name : prop.key?.type === 'StringLiteral' ? prop.key.value : null;
         if (key) keys.add(key);
+        if ((key === 'id' || key === 'slug') && (prop.value?.type === 'StringLiteral' || prop.value?.type === 'NumericLiteral')) byKey[key].push(String(prop.value.value));
       }
       keys.forEach((key) => any.add(key));
       all = all ? new Set([...all].filter((key) => keys.has(key))) : keys;
     }
-    shapes.set(name, { all: all || new Set(), any, count: objects.length, open });
+    ids.push(...byKey.id);
+    shapes.set(name, { all: all || new Set(), any, ids, keys: byKey, count: objects.length, open });
   };
   for (const node of ast.program.body) {
     const declaration = node.type === 'ExportNamedDeclaration' ? node.declaration : null;
@@ -207,4 +213,41 @@ function usageNotes(files, ownedPaths) {
   return `OTHER FILES THAT USE THE FILES YOU MAY CHANGE (keep them working):\n${lines.join('\n')}\nKeep every export they import. When you change the records of a data file, every file that reads them must still work: either keep the fields it reads (with values that make sense for the new records), or, if that file is one you may change, change its filters, sorting and search to the new fields in the same answer. A filter on a field the records no longer have (for example \`l.mode !== filters.mode\`) hides every record and leaves the page empty.`;
 }
 
-module.exports = { recordShapes, fieldsRead, importersOf, exportNames, brokenReads, brokenExports, usageNotes };
+/**
+ * A detail page of a template is one SAMPLE of a dynamic route: the "Program Detail" page is /listings/k-1001, served by /listings/:id.
+ * When the records are rewritten, the record k-1001 may be gone: the page then opens on "not found" (and its build check still passes,
+ * because a not-found page opens too). Returns the route the page should use now (the same place in the route, an id that exists),
+ * or null when the route is fine or cannot be judged.
+ */
+function sampleRoute(files, page) {
+  const route = String(page?.route || '');
+  if (!route || !page?.componentPath) return null;
+  const routeMatches = require('./templateValidationService').routeMatches;
+  const pattern = pageDistinctness.extractRoutes(files).find((item) => /\/:/.test(item.path) && routeMatches(item.path, route) && (!item.target || item.target === page.componentPath));
+  if (!pattern) return null;
+  const parts = pattern.path.split('/').filter(Boolean);
+  const actual = route.split('/').filter(Boolean);
+  const at = parts.findIndex((part) => part.startsWith(':'));
+  if (at < 0 || parts.filter((part) => part.startsWith(':')).length !== 1) return null;
+  const value = decodeURIComponent(actual[at] || '');
+  // The record is looked up by the route's own parameter: /listings/:id by its id, /neighbourhoods/:slug by its slug.
+  const key = /^:slug$/i.test(parts[at]) ? 'slug' : /^:id$/i.test(parts[at]) ? 'id' : null;
+  if (!key || !value) return null;
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const data = pageDistinctness.reachableFiles(page.componentPath, byPath, 1).filter((path) => DATA.test(path));
+  // Still written in one of the files the page reads (as a record of another kind, a slug, a link): the record is not gone.
+  const literal = new RegExp(`(['"\`])${escape(value)}\\1`);
+  if (data.some((path) => literal.test(textOf(byPath.get(path))))) return null;
+  // Exactly one data file holds records with that key: otherwise it cannot be told which records the page shows.
+  const withKey = data.map((path) => ({ path, ids: [...recordShapes(textOf(byPath.get(path))).values()].flatMap((shape) => shape.keys[key]) })).filter((item) => item.ids.length);
+  // Several files hold such records (neighbourhoods and agents both have slugs): the one named like the route (/neighbourhoods/:slug).
+  const named = withKey.filter((item) => item.path.split('/').pop().replace(/\.[jt]sx?$/, '').toLowerCase() === String(parts[0] || '').toLowerCase());
+  const source = withKey.length === 1 ? withKey[0] : named.length === 1 ? named[0] : null;
+  if (!source) return null;
+  const ids = source.ids;
+  const next = [...actual];
+  next[at] = encodeURIComponent(ids[0]);
+  return `/${next.join('/')}`;
+}
+
+module.exports = { sampleRoute, recordShapes, fieldsRead, importersOf, exportNames, brokenReads, brokenExports, usageNotes };

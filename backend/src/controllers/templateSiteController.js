@@ -3,6 +3,7 @@ const pageService = require('../services/templateSites/templatePageService');
 const revisionService = require('../services/templateSites/templateRevisionService');
 const jobs = require('../services/templateSites/templateJobManager');
 const TemplateGenerationJob = require('../models/TemplateGenerationJob');
+const logger = require('../utils/logger');
 const TemplateRevision = require('../models/TemplateRevision');
 const uploads = require('../services/templateSites/templateUploadService');
 const assets = require('../services/templateSites/templateAssetService');
@@ -60,6 +61,8 @@ exports.getSite = wrap(async (req, res) => {
   const doc = await siteService.getSite(req.user, req.params.siteId);
   const pages = await pageService.listPagesFor(doc);
   const active = await TemplateGenerationJob.findOne({ siteId: doc._id, status: { $in: TemplateGenerationJob.ACTIVE_STATUSES } }).sort({ createdAt: -1 });
+  // A detail page whose sample record was rewritten away would open on "not found": it is moved to a record that exists.
+  if (!active) await pageService.healSampleRoutes(doc, { pages }).catch((error) => logger.warn(`Sample routes of site ${doc._id} were not checked: ${error.message}`));
   send(res, { site: site(doc, pages.length), pages: pages.map(page), activeJob: active ? job(active) : null });
 });
 
