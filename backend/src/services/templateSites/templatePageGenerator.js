@@ -620,7 +620,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
       const error = gateError || environmentError;
       const lastDiagnostics = (error?.report?.history?.at(-1)?.diagnostics || []).slice(0, 4);
       const detail = lastDiagnostics.map((item) => `${item.path || ''}${item.line ? `:${item.line}` : ''} ${String(item.message || '').replace(/\s+/g, ' ').slice(0, 240)}`.trim()).filter(Boolean).join(' | ');
-      if (detail) logger.warn(`Build/browser error for the ${page.name} page: ${detail}`);
+      if (detail) logger.warn(`Build/browser error for the ${page.name} page: ${require('./templateJobLog').cleanDetail(detail, 320)}`);
       const reason = `${error?.report?.reason || error.message}${detail ? ` Last error: ${detail}` : ''}`;
       throw new PageGenerationError(`The new version of the ${page.name} page failed the build or browser test: ${reason}`, { code: 'BUILD_VALIDATION_FAILED', report: error?.report || null, issues: (error?.report?.history?.at(-1)?.diagnostics || []).slice(0, 6).map((item) => validation.issue('code', `${item.path || ''} ${String(item.message || '').slice(0, 200)}`.trim(), { path: item.path })) });
     }

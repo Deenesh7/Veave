@@ -139,7 +139,8 @@ function inspectFilePreValidation(file) {
     anomalies.push('JSON wrapper');
   }
 
-  logger.info(`[ValidationGate Pre-Static Inspection] File: ${file.path}, Size: ${size}B, Lines: ${lineCount}, Hash: ${hash.slice(0, 16)}, Status: ${anomalies.length ? 'ANOMALIES (' + anomalies.join(', ') + ')' : 'CLEAN'}, First200: ${JSON.stringify(first200)}, Last200: ${JSON.stringify(last200)}`);
+  // One line per file for every build was the most common line in the log and said nothing: it is shown only when something is wrong with the file.
+  if (anomalies.length) logger.warn(`Code check: ${file.path} has ${anomalies.length} oddit${anomalies.length === 1 ? 'y' : 'ies'} (${anomalies.join(', ')}); first 120 characters: ${JSON.stringify(first200.slice(0, 120))}`);
 
   return { path: file.path, size, lineCount, hash, anomalies };
 }

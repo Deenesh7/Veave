@@ -409,7 +409,15 @@ class TemplateJobManager {
     // The owner is told the real reason in plain words (the checks' own sentences are written to be read), not only "could not apply safely".
     const reason = String(error?.issues?.[0]?.message || '').replace(/\s+/g, ' ').trim().slice(0, 260);
     const shown = !timedOut && !leaseLost && FRIENDLY_CODES.has(code) ? `${FRIENDLY_MESSAGE}${reason ? ` What stopped it: ${reason}` : ''}` : message;
-    logger.warn(`Template job ${job.jobId} failed (${code}): ${message}`);
+    try {
+      const fresh = await TemplateGenerationJob.findOne({ jobId: job.jobId }).lean();
+      const page = job.pageId ? await TemplatePage.findById(job.pageId).select('name route').lean() : null;
+      const pages = await TemplatePage.find({ siteId: job.siteId }).select('name route').lean();
+      const first = (fresh?.timeline || [])[0]?.at || fresh?.createdAt || job.createdAt;
+      logger.warn(require('./templateJobLog').failureReport({ job: { ...(fresh || job), stepName: (fresh || job).stepName }, code, error, pageName: page?.name || '', pageRoute: page?.route || '', pages, elapsedMs: Date.now() - new Date(first).getTime(), timedOut: Boolean(timedOut) }));
+    } catch (reportError) {
+      logger.warn(`Template job ${job.jobId} failed (${code}): ${message.slice(0, 400)}`);
+    }
     // A website run that saved nothing puts the site back BEFORE it is reported as failed, so what the owner sees afterwards is the working website.
     if (job.type === 'site-customize') await rollbackIfUseless(job);
     const updated = await this.move(job.jobId, 'failed', { error: shown, errorCode: code, stepName: 'Failed', completedAt: new Date(), leaseOwner: null, leaseExpiresAt: null, result: { detail: message.slice(0, 600), ...(error?.issues?.length ? { issues: error.issues.slice(0, 8).map((item) => ({ stage: item.stage, path: item.path, message: String(item.message || '').slice(0, 300) })) } : {}) } });
@@ -632,7 +640,7 @@ class TemplateJobManager {
         }
         lastSignature = signature;
         lastProblem = String(error?.message || error).replace(/\s+/g, ' ').slice(0, 400);
-        logger.warn(`Template job ${job.jobId}: try ${attemptNo} of ${HEAL_TRIES} failed (${error?.code || 'error'}); trying again. ${lastProblem}`);
+        logger.warn(require('./templateJobLog').retryLine({ jobId: job.jobId, attemptNo, tries: HEAL_TRIES, code: error?.code, error }));
         await this.progress(job.jobId, 'processing', `Improving the result (try ${attemptNo + 1} of ${HEAL_TRIES})`);
         if (/RATE_LIMIT|TIMEOUT/.test(error?.code || '')) await new Promise((resolve) => setTimeout(resolve, 5000));
       }
