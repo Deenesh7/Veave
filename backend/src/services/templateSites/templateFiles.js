@@ -95,9 +95,25 @@ function indentOf(source, index) {
 
 /* ------------------------------------------------------------------------------------------------------------------ */
 
-function pageStub({ name, description }) {
+function pageStub({ name, description, files = [] }) {
   const title = JSON.stringify(name);
   const text = JSON.stringify(description || `Everything about ${name} will appear here. Describe what this page should contain and regenerate it.`);
+  // Not every template has Section and SectionHeading in src/components/Section.jsx: the stub uses them only when they are really exported.
+  const shared = textOf(files.find((file) => file.path === 'src/components/Section.jsx'));
+  if (!(/export\s+default\b/.test(shared) && /export\s+(?:const|function)\s+SectionHeading\b|export\s*\{[^}]*\bSectionHeading\b/.test(shared))) {
+    return `import React from 'react';
+
+export default function ${'__NAME__'}() {
+  return (
+    <section className="mx-auto max-w-5xl px-4 py-16 sm:px-6">
+      <p className="text-sm font-semibold uppercase tracking-wide opacity-70">{${title}}</p>
+      <h1 className="mt-2 text-3xl font-bold sm:text-4xl">{${title}}</h1>
+      <p className="mt-4 max-w-2xl text-base opacity-80">{${text}}</p>
+    </section>
+  );
+}
+`;
+  }
   return `import React from 'react';
 import Section, { SectionHeading } from '../components/Section';
 
@@ -154,7 +170,7 @@ function addPage(files, { name, route, componentName, description = '' }) {
     } else warnings.push('src/data/site.js has no nav list; the page was added without a navigation link.');
   } else warnings.push('src/data/site.js is missing; the page was added without a navigation link.');
 
-  next = [...next, { path: componentPath, content: pageStub({ name, description }).replace('__NAME__', componentName), language: 'javascript', encoding: 'utf8' }];
+  next = [...next, { path: componentPath, content: pageStub({ name, description, files }).replace('__NAME__', componentName), language: 'javascript', encoding: 'utf8' }];
   return { files: next, componentPath, warnings };
 }
 
