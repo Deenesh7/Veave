@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { validateFilePaths } = require('./generationPipeline');
+const dependencyCache = require('./dependencyCache');
 
 // The worker returns the built site inside its result line (base64), so the limit must exceed 1.4x the artifact limit.
 const OUTPUT_LIMIT = Number.parseInt(process.env.VEAVE_WORKER_OUTPUT_LIMIT_BYTES, 10) || 128 * 1024 * 1024;
@@ -93,7 +94,7 @@ function decodeVisualReference(value) {
 
 // mode "validate" (default): build + preview + browser checks, artifacts returned in the result (5 MB limit).
 // mode "build": build only for publishing; the site is written to `outputDirectory` (mounted at /output).
-async function executeProject(files, { signal, onEvent, visualReference, visualThreshold, mode: pipelineMode = 'validate', outputDirectory } = {}) {
+async function executeProject(files, { signal, onEvent, visualReference, visualThreshold, mode: pipelineMode = 'validate', outputDirectory, viewports = null, maxRoutes = null } = {}) {
   const paths = validateFilePaths(files);
   if (paths.length) return { ok: false, diagnostics: paths };
   try { dependencyPolicy(files); }
@@ -102,6 +103,7 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
   let directory;
   let referenceDirectory;
   let resourcesCreated = false;
+  let savingPackages = null;
   let activeMode = 'setup';
   const name = `veave-validation-${randomUUID()}`;
   const volume = `${name}-files`;
@@ -110,6 +112,9 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
   try {
     const available = await docker(['image', 'inspect', image], { signal });
     if (available.code !== 0) throw new Error(`Validation worker unavailable. Start Docker Desktop and run npm run runner:build in backend.\n${available.output}`);
+    // The packages of the same package.json / lock file are restored from the cache instead of being installed again.
+    const depsKey = dependencyCache.dependencyKey(files, image);
+    const reuseDeps = pipelineMode !== 'build' && await dependencyCache.isReady({ docker, image, key: depsKey });
     directory = await fs.mkdtemp(path.join(os.tmpdir(), 'veave-validation-'));
     // mkdtemp makes the folder private (0700). The worker container runs as another user (pwuser) and must be able to read it.
     await fs.chmod(directory, 0o755);
@@ -131,6 +136,7 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
     const created = await docker(['volume', 'create', volume], { signal });
     if (created.code !== 0) throw new Error(created.output);
     resourcesCreated = true;
+    if (!reuseDeps) {
     const net = await docker(['network', 'create', '--internal', network], { signal });
     if (net.code !== 0) throw new Error(net.output);
     const proxyStart = await docker(['run', '-d', '--rm', '--name', proxy, '--network', 'bridge', '--read-only',
@@ -139,6 +145,7 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
     if (proxyStart.code !== 0) throw new Error(proxyStart.output);
     const connected = await docker(['network', 'connect', '--alias', 'registry-proxy', network, proxy], { signal });
     if (connected.code !== 0) throw new Error(connected.output);
+    }
     let installed;
     for (const mode of ['install', pipelineMode]) {
       activeMode = mode;
@@ -147,7 +154,10 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
         '--shm-size=256m', '--tmpfs', '/tmp:rw,nosuid,nodev,size=512m',
         '--tmpfs', '/home/pwuser:rw,nosuid,nodev,size=64m,uid=1000,gid=1000',
         '--mount', `type=volume,source=${volume},target=/workspace`,
-        '--network', mode === 'install' ? network : 'none'];
+        '--network', mode === 'install' && !reuseDeps ? network : 'none'];
+      if (mode === 'install' && reuseDeps) args.push('--mount', `type=volume,source=${dependencyCache.volumeFor(depsKey)},target=/deps,readonly`, '-e', 'VEAVE_DEPS_REUSE=1');
+      if (mode === 'validate' && Array.isArray(viewports) && viewports.length) args.push('-e', `VEAVE_VIEWPORTS=${viewports.filter((name) => name === 'desktop' || name === 'mobile').join(',')}`);
+      if (mode === 'validate' && Number.isInteger(maxRoutes) && maxRoutes >= 0) args.push('-e', `VEAVE_MAX_ROUTES=${maxRoutes}`);
       if (mode !== 'install') args.push('-e', `VEAVE_ARTIFACT_LIMIT_BYTES=${Number.parseInt(process.env.VEAVE_ARTIFACT_LIMIT_BYTES, 10) || 48 * 1024 * 1024}`);
       if (mode === 'install') args.push('--mount', `type=bind,source=${directory},target=/input,readonly`);
       if (mode === 'build') {
@@ -175,8 +185,10 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
       if (required.some((name) => !result.checks.some((check) => check.name === name && check.status === 'passed'))) {
         throw new Error('Worker omitted a required validation stage.');
       }
-      if (mode === 'install') installed = result;
-      else return { ...result, checks: [...installed.checks, ...result.checks] };
+      if (mode === 'install') {
+        installed = result;
+        if (!reuseDeps && pipelineMode !== 'build') savingPackages = dependencyCache.save({ docker, image, key: depsKey, workspaceVolume: volume, log: (message) => onEvent?.({ type: 'cache', message }) });
+      } else return { ...result, checks: [...installed.checks, ...result.checks] };
     }
   } catch (error) {
     if (error.name === 'AbortError') throw error;
@@ -187,6 +199,7 @@ async function executeProject(files, { signal, onEvent, visualReference, visualT
     return { ok: false, blocked: true, infrastructure: true, diagnostics: [{ category: 'infrastructure', stage: activeMode, path: null, message: error.message }] };
   } finally {
     // Remove by our unique name even if the docker CLI was cancelled or timed out.
+    await (savingPackages || Promise.resolve()).catch(() => {});
     if (resourcesCreated) {
       await docker(['rm', '-f', name, proxy], { timeout: 10000 }).catch(() => {});
       await docker(['volume', 'rm', '-f', volume], { timeout: 10000 }).catch(() => {});

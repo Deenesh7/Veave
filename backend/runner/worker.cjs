@@ -254,6 +254,13 @@ async function main() {
   });
   if (mode === 'install') {
     await stage('install', async () => {
+      // The same package.json and lock file were installed before: the packages are restored from the (read-only) cache, with no network.
+      if (process.env.VEAVE_DEPS_REUSE === '1') {
+        await fs.cp('/deps/node_modules', path.join(WORKSPACE, 'node_modules'), { recursive: true, verbatimSymlinks: true });
+        if (await fs.stat('/deps/package-lock.json').then(() => true, () => false)) await fs.copyFile('/deps/package-lock.json', path.join(WORKSPACE, 'package-lock.json'));
+        result.lockfile = await readRegular('package-lock.json', 8 * 1024 * 1024);
+        return;
+      }
       const locked = await exists('package-lock.json');
       if (locked) {
         const lock = JSON.parse(await readRegular('package-lock.json', 8 * 1024 * 1024));
@@ -344,9 +351,13 @@ async function main() {
       if (visualReferencePath && visualReferencePath !== '/reference/reference-image') {
         throw new Error('Visual reference must use the fixed trusted runner path.');
       }
+      // Which screens to test, and how many linked pages to follow beyond the planned ones (set by the server; the default is everything).
+      const screens = String(process.env.VEAVE_VIEWPORTS || '').split(',').map((name) => name.trim()).filter((name) => name === 'desktop' || name === 'mobile');
+      const crawl = Number.parseInt(process.env.VEAVE_MAX_ROUTES, 10);
       const browserResult = await validateBrowserParallel('http://127.0.0.1:4173/', {
         plan: result.plan,
-        maxRoutes: Math.min(1000, Math.max(100, result.plan?.tests?.length || 0)),
+        ...(screens.length ? { viewports: [...new Set(screens)] } : {}),
+        maxRoutes: Number.isInteger(crawl) && crawl >= 0 ? Math.min(1000, crawl) : Math.min(1000, Math.max(100, result.plan?.tests?.length || 0)),
         timeoutMs: Math.min(900000, Math.max(180000, (result.plan?.tests?.length || 0) * 5000)),
         visualReferencePath,
         visualThreshold: process.env.VEAVE_VISUAL_THRESHOLD

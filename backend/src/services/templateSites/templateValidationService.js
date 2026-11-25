@@ -600,6 +600,37 @@ function relaxSelectors(tests = []) {
   return tests.map((test) => ({ ...test, steps: (test.steps || []).map((step) => (!step?.selector || / >> nth=/.test(step.selector) || (step.action === 'assert' && (step.count !== undefined || step.style !== undefined)) ? step : { ...step, selector: `${step.selector} >> nth=0` })) }));
 }
 
+/**
+ * What a build check covers. "page" (the default): the pages the change can affect, on the desktop screen, without following every link
+ * of the home page. "full": every page, desktop and mobile, and the link crawl, as before (VALIDATION_SCOPE=full). The screens can be set
+ * with VALIDATION_VIEWPORTS (for example "desktop,mobile").
+ */
+function gateScope() {
+  const full = String(process.env.VALIDATION_SCOPE || 'page').toLowerCase() === 'full';
+  const named = String(process.env.VALIDATION_VIEWPORTS || '').split(',').map((name) => name.trim()).filter((name) => name === 'desktop' || name === 'mobile');
+  const viewports = named.length ? [...new Set(named)] : (full ? ['desktop', 'mobile'] : ['desktop']);
+  return { full, viewports, maxRoutes: full ? null : 0 };
+}
+
+const CODE_FILE = /^(?:src\/.+\.(?:jsx?|tsx?|css|json)|index\.html|package\.json|(?:vite|tailwind|postcss)\.config\.[cm]?js)$/;
+/**
+ * The routes to test for a change: the edited page and the home page, plus every other page that uses a file the change touched (so a
+ * rewritten data file or shared component still tests the pages that read it). When the change touches something no page imports (the
+ * router, the menu, the shared layout, the styles, package.json) every page can be affected, so every route is returned.
+ */
+function affectedRoutes({ files, changedPaths = [], page, pages = [], routeOf = (item) => item.route }) {
+  const everything = [...new Set(['/', ...pages.map(routeOf)])];
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const code = changedPaths.filter((path) => CODE_FILE.test(path));
+  const reach = pages.map((item) => ({ item, files: new Set(pageDistinctness.reachableFiles(item.componentPath, byPath, 4)) }));
+  if (code.some((path) => !reach.some((entry) => entry.files.has(path)))) return everything;
+  const out = ['/'];
+  const add = (item) => { const route = routeOf(item); if (!out.includes(route)) out.push(route); };
+  if (page) add(page);
+  for (const entry of reach) if (!page || String(entry.item._id) !== String(page._id)) if (code.some((path) => entry.files.has(path))) add(entry.item);
+  return out;
+}
+
 async function runBuildGate(files, { routes, extraTests = [], signal, onProgress, repair, maxRepairs }) {
   const { validateAndRepair } = require('../ai/validationGate');
   const { executeProject, isDockerAvailable } = require('../ai/executionRunner');
@@ -608,14 +639,15 @@ async function runBuildGate(files, { routes, extraTests = [], signal, onProgress
   if (process.env.ENABLE_DOCKER_VALIDATION === 'true') useDocker = true;
   else if (process.env.ENABLE_DOCKER_VALIDATION === 'false') useDocker = false;
   else useDocker = await isDockerAvailable();
-  const tests = routes.map((path) => ({ name: `Route ${path}`, path, viewports: ['desktop', 'mobile'], steps: [{ action: 'assert', selector: '#root', visible: true }] })).concat(extraTests);
+  const scope = gateScope();
+  const tests = routes.map((path) => ({ name: `Route ${path}`, path, viewports: scope.viewports, steps: [{ action: 'assert', selector: '#root', visible: true }] })).concat(extraTests);
   const withPlan = tests.length ? [...files.filter((file) => file.path !== PLAN_PATH), { path: PLAN_PATH, language: 'json', content: JSON.stringify({ version: 1, tests }, null, 2) }] : files;
   const validated = await validateAndRepair(withPlan, {
     signal, onProgress, repair, requireExecution: true, requireArtifacts: useDocker,
     maxRepairs: maxRepairs ?? (Number.parseInt(process.env.TEMPLATE_BUILD_REPAIRS, 10) || 3),
     run: useDocker
       ? async (current, options) => {
-          const outcome = await executeProject(current, options);
+          const outcome = await executeProject(current, { ...options, viewports: scope.viewports, maxRoutes: scope.maxRoutes });
           if (outcome?.infrastructure) {
             const local = await verifyPreviewRuntime(current, options);
             return { ...local, degradedExecution: true, infrastructure: outcome.diagnostics, checks: [{ name: 'build', status: 'skipped', reason: 'Isolated build runner unavailable; only the local browser runtime check ran.' }, ...(local.checks || [])] };
@@ -699,4 +731,4 @@ function finalSiteChecks(files, pages) {
   return found;
 }
 
-module.exports = { appConnectionProblems, internalLinks, genericWords, isTickedEdit, wantsRemoval, finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, routeMatches, videoUseProblem, namedSections, behaviourFailureOnly, strictModeProblem, relaxSelectors, ownedWordSet, keptShareOwned, visibleWording, wordingOf, issue, sha, MIN_PAGE_WORDS };
+module.exports = { appConnectionProblems, internalLinks, genericWords, isTickedEdit, wantsRemoval, finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, routeMatches, videoUseProblem, namedSections, behaviourFailureOnly, strictModeProblem, relaxSelectors, ownedWordSet, keptShareOwned, visibleWording, wordingOf, issue, sha, MIN_PAGE_WORDS, affectedRoutes, gateScope };

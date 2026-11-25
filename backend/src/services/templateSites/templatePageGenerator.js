@@ -490,7 +490,8 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     usage = sumUsage(usage, planned.usage);
     behavior = planned;
     onState('validating', 'Building the site and testing every page');
-    const routes = [...new Set(['/', ...pages.map(sampleRoute)])];
+    // Only the pages this change can affect are tested (VALIDATION_SCOPE=full tests them all): the edited page, and any page that uses a file the change touched.
+    const routes = validation.gateScope().full ? [...new Set(['/', ...pages.map(sampleRoute)])] : validation.affectedRoutes({ files: candidate, changedPaths, page, pages, routeOf: sampleRoute });
     const gateRepair = async (current, diagnostics) => {
       // A test that fails on its own selector (it matches several elements) is not fixed by rewriting the page.
       if (validation.strictModeProblem(diagnostics) && validation.behaviourFailureOnly(diagnostics)) return [];
