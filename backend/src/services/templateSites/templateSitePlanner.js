@@ -42,11 +42,13 @@ function isEnabled(deps = {}) {
 function defaultCallPlanner() {
   const openrouterService = require('../ai/openrouterService');
   const model = process.env.TEMPLATE_PLANNER_MODEL || process.env.TEMPLATE_OPENROUTER_MODEL || process.env.INCREMENTAL_OPENROUTER_MODEL || process.env.CLONE_OPENROUTER_MODEL || undefined;
+  const { withTransientRetry } = require('../ai/jobSupport/retry');
   return async (messages, { signal } = {}) => {
-    const response = await openrouterService.generateCompletion(messages, {
+    // A rate limit, a 5xx or a dropped connection is retried with backoff (as every incremental-editor call is); a timeout is not.
+    const response = await withTransientRetry(() => openrouterService.generateCompletion(messages, {
       model, temperature: 0.3, max_tokens: 6000, timeout: Number.parseInt(process.env.OPENROUTER_GENERATION_TIMEOUT_MS, 10) || 300000,
       response_format: { type: 'json_object' }, reasoning: { effort: 'low', exclude: true }, signal
-    });
+    }), { signal, retryTimeouts: false });
     return { content: response?.content || '', usage: response?.usage || null };
   };
 }
@@ -243,7 +245,7 @@ function normalizePlan(raw, { template, pages, brief, files, ownerName = '' }) {
   const type = clean(identityRaw.organizationType, 40) || category;
   // One consistent temporary name for the whole website when nobody gave one (never a made-up institution, never the template's brand).
   const name = ownerName || (needsTemporaryName ? `Your ${type.replace(/\b\w/g, (char) => char.toUpperCase())}` : clean(identityRaw.name, 60)) || clean(template.name, 60);
-  return {
+  return consistentPlan({
     version: 1, templateId: template.id, brief: clean(brief, 4000), matchesTemplate,
     identity: {
       category, organizationType: clean(identityRaw.organizationType, 80), name, namePlaceholder: ownerName ? false : (identityRaw.namePlaceholder === true || !clean(identityRaw.name, 60)),
@@ -251,7 +253,7 @@ function normalizePlan(raw, { template, pages, brief, files, ownerName = '' }) {
       tone: clean(identityRaw.tone, 120), designDirection: clean(identityRaw.designDirection, 200)
     },
     pages: planned, pageLimit: { ...limit, requested: request.names }, theme: normalizeTheme(raw.theme), navigation, cta, footerGroups, images, terminology, avoidTerms: avoidTerms.slice(0, 40), requirements: list(raw.requirements, 10, 160)
-  };
+  });
 }
 
 /** A blank website has one page, so its limit is a generous sitemap, not the template's page count. */
@@ -346,21 +348,46 @@ function restrictToExisting(plan, pages, current) {
   const forPage = (page) => planned.find((item) => item.reuse === page.route) || (page.route === '/' ? planned.find((item) => item.route === '/') : null);
   const entries = pages.map((page) => {
     const match = forPage(page);
-    return { name: match?.name || page.name, route: page.route, purpose: match?.purpose || page.description || '', sections: match?.sections || [], reuse: page.route, contentNeeds: match?.contentNeeds || '', imageNeeds: match?.imageNeeds || '', plannedRoute: match?.route || null };
+    // A page the planner did not map keeps its template name, said in this website's words ("Mortgage calculator" -> "Fees calculator").
+    return { name: match?.name || withTerminology(page.name, plan.terminology), route: page.route, purpose: match?.purpose || page.description || '', sections: match?.sections || [], reuse: page.route, contentNeeds: match?.contentNeeds || '', imageNeeds: match?.imageNeeds || '', plannedRoute: match?.route || null };
   });
   const navigation = entries.slice(0, MAX_NAV).map((entry) => ({ label: entry.name.slice(0, 30), route: entry.route }));
   const routes = new Set(entries.map((entry) => entry.route));
   const ctaEntry = entries.find((entry) => entry.plannedRoute && entry.plannedRoute === plan.cta?.route) || entries.find((entry) => /contact|enquir|admission|appoint|book|apply/.test(entry.route)) || entries[entries.length - 1];
   const mine = entries.find((entry) => entry.route === current.route);
   const images = (plan.images || []).filter((image) => image.page === null || image.page === (mine?.plannedRoute || current.route)).map((image) => ({ ...image, page: image.page === null ? null : current.route }));
-  return {
+  return consistentPlan({
     ...plan,
     pages: entries.map(({ plannedRoute, ...entry }) => entry),
     navigation: navigation.filter((item) => routes.has(item.route)),
     cta: { label: plan.cta?.label || 'Contact us', route: ctaEntry.route },
     footerGroups: [{ title: 'Explore', links: navigation.slice(0, 6) }],
     images, theme: null, pageLimit: { max: entries.length, reason: 'existing', requested: [] }, scope: 'page'
-  };
+  });
 }
 
-module.exports = { restrictToExisting, normalizeTheme, ownerNameFor, PlanError, isEnabled, createPlan, normalizePlan, applySitemap, templateSampleTerms, normalizeRoute, MAX_PLAN_PAGES };
+const escapeRegex = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** A label in the website's own words: each template word of `terminology` replaced (whole words, case of the original kept). */
+function withTerminology(label, terminology = []) {
+  let out = String(label || '');
+  for (const item of [...(terminology || [])].filter((entry) => entry?.from && entry?.to).sort((a, b) => b.from.length - a.from.length)) {
+    out = out.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRegex(item.from)}(?![A-Za-z0-9])`, 'gi'), (found) => (found[0] === found[0].toLowerCase() ? item.to[0].toLowerCase() + item.to.slice(1) : item.to[0].toUpperCase() + item.to.slice(1)));
+  }
+  return out;
+}
+
+/**
+ * A plan must never ask for something and forbid it at once: a menu label, page name or call to action is required word for word, so a
+ * word to avoid that one of them still contains ("mortgage" with a "Mortgage calculator" menu item) is dropped from the words to avoid.
+ * Without this the identity step could not succeed whatever the model wrote.
+ */
+function consistentPlan(plan) {
+  const required = [...(plan.navigation || []).map((item) => item.label), plan.cta?.label, ...(plan.pages || []).map((page) => page.name), ...(plan.footerGroups || []).flatMap((group) => [group.title, ...(group.links || []).map((link) => link.label)])].filter(Boolean).join('\n');
+  const conflicts = (plan.avoidTerms || []).filter((term) => new RegExp(`(?<![A-Za-z0-9])${escapeRegex(String(term).trim())}(?:s|es)?(?![A-Za-z0-9])`, 'i').test(required));
+  if (!conflicts.length) return plan;
+  logger.warn(`Website plan: ${conflicts.map((term) => `"${term}"`).join(', ')} ${conflicts.length === 1 ? 'is' : 'are'} used by the planned menu or page names, so ${conflicts.length === 1 ? 'it is' : 'they are'} no longer a word to avoid.`);
+  return { ...plan, avoidTerms: plan.avoidTerms.filter((term) => !conflicts.includes(term)) };
+}
+
+module.exports = { consistentPlan, withTerminology, restrictToExisting, normalizeTheme, ownerNameFor, PlanError, isEnabled, createPlan, normalizePlan, applySitemap, templateSampleTerms, normalizeRoute, MAX_PLAN_PAGES };

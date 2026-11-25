@@ -82,12 +82,32 @@ const slug = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g,
  * as attachments for the page writer (placed in their section, with their alt text).
  */
 const entriesFor = (pictures, page, jobId) => pictures.map((item, index) => ({ key: `${slug(page.name)}-${slug(item.record || item.subject)}-${String(jobId).slice(-6)}-${index + 1}`, page: page.route, subject: item.subject, aspect: item.aspect, alt: item.alt, section: item.section, record: item.record || '', recordsPath: item.recordsPath || '', status: 'pending' }));
+const escapeXml = (value) => String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const SIZES = { '16:9': [1600, 900], '4:3': [1200, 900], '1:1': [1000, 1000] };
+
+/**
+ * A neutral picture slot for a picture that could not be made (provider error, no credits, picture generation switched off): a soft
+ * gradient with a landscape icon and the subject written on it, in the shape that was asked for. The page uses it exactly where the
+ * picture was wanted, so the layout is right and the owner can swap in a real photo later with the image button.
+ */
+function placeholderFile(entry) {
+  const [width, height] = SIZES[entry.aspect] || SIZES['4:3'];
+  const subject = escapeXml(String(entry.subject || entry.alt || 'Picture').slice(0, 70));
+  const cx = width / 2;
+  const cy = height / 2;
+  const unit = Math.min(width, height) / 10;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${subject}"><title>${subject}</title><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E7E2D6"/><stop offset="1" stop-color="#CFC8B6"/></linearGradient></defs><rect width="${width}" height="${height}" fill="url(#g)"/><g fill="none" stroke="#8F8878" stroke-width="${Math.max(4, unit / 8)}" stroke-linecap="round" stroke-linejoin="round" transform="translate(${cx - unit * 1.5} ${cy - unit * 1.6})"><rect x="0" y="0" width="${unit * 3}" height="${unit * 2.2}" rx="${unit / 5}"/><circle cx="${unit * 0.9}" cy="${unit * 0.8}" r="${unit * 0.28}"/><path d="M0 ${unit * 1.9} L${unit * 1.0} ${unit * 1.2} L${unit * 1.8} ${unit * 1.7} L${unit * 2.3} ${unit * 1.3} L${unit * 3} ${unit * 1.9}"/></g><text x="${cx}" y="${cy + unit * 1.6}" text-anchor="middle" font-family="system-ui,Arial,sans-serif" font-size="${Math.round(unit * 0.42)}" fill="#6B6557">${subject}</text></svg>`;
+  return { path: `public/images/placeholder-${entry.key}.svg`, content: svg, language: 'svg', encoding: 'utf8' };
+}
+
 const asAttachments = (entries) => entries.filter((entry) => entry.status === 'ready' && entry.path).map((entry) => ({
-  path: entry.path, name: entry.alt || entry.subject, kind: 'image', mime: 'image/jpeg', width: entry.width || 0, height: entry.height || 0, alt: entry.alt, caption: entry.subject, tags: [],
+  path: entry.path, name: entry.alt || entry.subject, kind: 'image', mime: entry.placeholder ? 'image/svg+xml' : 'image/jpeg', width: entry.width || 0, height: entry.height || 0, alt: entry.alt, caption: entry.subject, tags: [],
   placement: entry.section ? `section:${entry.section}` : '', record: entry.record || '', recordsPath: entry.recordsPath || '',
-  note: entry.record
+  note: entry.placeholder
+    ? `PLACEHOLDER: the real picture (${entry.subject}) could not be made, so this neutral placeholder stands in for it. Use it exactly where that picture was asked for${entry.record ? `, as the picture field (image) of the record "${entry.record}" of ${entry.recordsPath || 'its data file'}` : (entry.section ? `, in the "${entry.section}" section` : '')}, with alt="${String(entry.alt || '').replace(/"/g, "'")}". Keep the layout exactly as it would be with the real picture.`
+    : entry.record
     ? `Made for the record "${entry.record}" of ${entry.recordsPath || 'its data file'} (${entry.subject}). Set THAT record's picture field (image) to this path, so its card shows it; alt="${String(entry.alt || '').replace(/"/g, "'")}".`
     : `Made for this change: ${entry.subject}. Use alt="${String(entry.alt || '').replace(/"/g, "'")}"${entry.section ? `, in the "${entry.section}" section` : ', where the instruction asks for it'}.`
 }));
 
-module.exports = { wantsPictures, planPictures, entriesFor, asAttachments, maxPictures, SYSTEM };
+module.exports = { wantsPictures, planPictures, entriesFor, asAttachments, placeholderFile, maxPictures, SYSTEM };

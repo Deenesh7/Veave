@@ -25,6 +25,60 @@ class PageGenerationError extends Error {
   }
 }
 
+/**
+ * The incremental editor's free, deterministic fixes (validationGate runs them before every check): import path case and extensions,
+ * missing exports, stray text in code. Here they run on the model's answer before the page checks, so a small slip costs no paid repair
+ * round. Only fixes inside what this page may change (its files and the files the change created) are kept; nothing else is touched.
+ */
+function freeFixes(files, baseline, scope, page) {
+  try {
+    const fixed = require('../ai/autoFix').autoFix(files, { stubMissing: false });
+    if (!fixed.fixes.length) return files;
+    const known = new Set(baseline.map((file) => file.path));
+    const mayChange = (path) => scope.owned.has(path) || (!known.has(path) && /^src\/(?:components|data)\//.test(path));
+    const byPath = new Map(fixed.files.map((file) => [file.path, file]));
+    let kept = 0;
+    const out = files.map((file) => {
+      const next = byPath.get(file.path);
+      if (!next || next.content === file.content || !mayChange(file.path)) return file;
+      kept += 1;
+      return { ...file, content: next.content };
+    });
+    if (kept) logger.info(`The ${page.name} page: ${kept} file(s) corrected without the model (${fixed.fixes.filter((item) => mayChange(String(item).split(':')[0])).slice(0, 4).join(' | ')})`);
+    return out;
+  } catch (error) {
+    logger.warn(`Free fixes were skipped for the ${page.name} page: ${error.message}`);
+    return files;
+  }
+}
+
+const signatureOf = (item) => require('../ai/validationGate').diagnosticSignature([item]);
+const summarize = (diagnostics = []) => diagnostics.slice(0, 2).map((item) => `${item.path || ''}${item.line ? `:${item.line}` : ''} ${String(item.message || '').replace(/\s+/g, ' ').slice(0, 140)}`.trim()).join(' | ') || 'unknown error';
+
+// The build errors of a site as it was before a change, by source hash (the same site is not built again for every try of a job).
+// Kept per build checker (the real gate, or a test's), then by source hash and routes.
+const baselineCaches = new WeakMap();
+const BASELINE_CACHE_MS = 30 * 60 * 1000;
+async function baselineFailures(baseline, { buildGate, routes, signal }) {
+  if (!baselineCaches.has(buildGate)) baselineCaches.set(buildGate, new Map());
+  const baselineCache = baselineCaches.get(buildGate);
+  const key = `${require('../ai/validationGate').sourceHash(baseline)}|${routes.join(',')}`;
+  const cached = baselineCache.get(key);
+  if (cached && Date.now() - cached.at < BASELINE_CACHE_MS) return cached.diagnostics;
+  let diagnostics = [];
+  try { await buildGate(baseline, { routes, extraTests: [], signal, maxRepairs: 0 }); }
+  catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError') throw error;
+    if (error?.report?.failureKind === 'infrastructure' || error?.report?.failureKind === 'timeout') throw error;
+    diagnostics = error?.report?.history?.at(-1)?.diagnostics || [];
+  }
+  baselineCache.set(key, { at: Date.now(), diagnostics });
+  for (const [entry, value] of baselineCache) if (Date.now() - value.at >= BASELINE_CACHE_MS) baselineCache.delete(entry);
+  return diagnostics;
+}
+
+// Answers a build repair may take before the repair gives up (the first may patch, the next must return complete files).
+const GATE_REPAIR_TRIES = 3;
 // Repairs in a row that may end in exactly the same problem before the repairs stop (the 3rd identical answer ends the loop).
 const MAX_SAME_PROBLEM = 2;
 // Problems judged by a model (relevance review, intent review) are worded differently every time: only deterministic ones are compared.
@@ -57,6 +111,30 @@ function defaultCallModel(mode = 'edit') {
     const first = await jobManager.withTransientRetry(() => openrouterService.generateCompletion(messages, options), { signal, retryTimeouts: false });
     return jobManager.completeOpenRouterResponse(messages, first, { model, structured: true, signal, continuationInstruction: 'Continue the interrupted file-operation arguments exactly where they stopped. Complete all files and close the structured response.' });
   };
+}
+
+// The same writer, asked for plain <FILE>/<PATCH> delimiters instead of a tool call (the incremental editor's fallback format).
+function defaultCallText(mode = 'edit') {
+  const openrouterService = require('../ai/openrouterService');
+  const jobManager = require('../ai/jobManager');
+  const model = (mode === 'edit' && process.env.TEMPLATE_EDIT_MODEL) || process.env.TEMPLATE_OPENROUTER_MODEL || process.env.INCREMENTAL_OPENROUTER_MODEL || process.env.CLONE_OPENROUTER_MODEL || undefined;
+  return async (messages, { signal, maxTokens = 32000 } = {}) => {
+    const options = { model, temperature: 0.1, max_tokens: maxTokens, timeout: Number.parseInt(process.env.OPENROUTER_GENERATION_TIMEOUT_MS, 10) || 300000, reasoning: { effort: 'low', exclude: true }, response_format: false, ...(signal ? { signal } : {}) };
+    let answer = await jobManager.withTransientRetry(() => openrouterService.generateCompletion(messages, options), { signal, retryTimeouts: false });
+    // A cut-off delimiter answer is continued (twice at most), like the incremental editor does.
+    for (let more = 0; more < 2 && answer?.finishReason === 'length' && !aiProtocol.hasCompleteStructuredResponse(answer); more += 1) {
+      const next = await openrouterService.generateCompletion([...messages, { role: 'assistant', content: String(answer.content || '') }, { role: 'user', content: 'Continue exactly where the interrupted response stopped. Do not repeat earlier text. Output only the remaining delimiter content, close every open FILE, PATCH, SEARCH and REPLACE tag, then stop.' }], { ...options, temperature: 0, max_tokens: 16000 });
+      answer = { ...next, content: aiProtocol.appendResponseContinuation(String(answer.content || ''), next?.content) };
+    }
+    if (answer?.reasoning && answer.content === answer.reasoning) answer = { ...answer, content: '' };
+    return answer;
+  };
+}
+
+/** Is this answer readable as file operations at all (a malformed tool call, an empty or reasoning-only reply is not)? */
+function readable(response, componentPath) {
+  try { const parsed = aiProtocol.parseAIResponse(response, componentPath); return Boolean(parsed.files?.length); }
+  catch { return false; }
 }
 
 async function defaultLocalizeImages(baseline, candidate, changedPaths, signal) {
@@ -129,6 +207,7 @@ const describe = (problems) => problems.map((item) => `[${item.stage}] ${item.me
  */
 async function regeneratePage({ template, page, pages, files, instruction, attachments = [], deps = {}, signal, onState = () => {}, onTiming = () => {}, repairRounds = REPAIR_ROUNDS(), siteContext = null, history = [], onIntent = () => {}, onResearch = () => {} }) {
   const callModel = deps.callModel || defaultCallModel(siteContext?.mode === 'website' ? 'website' : 'edit');
+  const callText = deps.callText || (deps.callModel ? null : defaultCallText(siteContext?.mode === 'website' ? 'website' : 'edit'));
   const localizeImages = deps.localizeImages || defaultLocalizeImages;
   const discoverImages = deps.discoverImages === undefined ? defaultDiscoverImages : deps.discoverImages;
   const buildGate = deps.buildGate === undefined ? validation.runBuildGate : deps.buildGate;
@@ -211,6 +290,32 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     entityBlock: entity?.block || '', researchBlock: research?.block || '', sectionFiles: scope.sectionFiles || [], attachments, repair, siteContext, intent: intentResult?.intent || null, policy, usageBlock, workList, conversionBlock
   });
 
+  // An answer that cannot be read (a cut-off or malformed tool call, an empty or reasoning-only reply) is asked for again the way the
+  // incremental editor does: in the plain <FILE>/<PATCH> format, then with a compact prompt (only this page's own files) and a larger budget.
+  const DELIMITER_RETRY = `${aiProtocol.DELIMITER_INSTRUCTIONS}\n\nRETRY REQUIREMENT: your previous answer could not be read as file operations. Answer ONLY with <FILE path="..."> blocks holding COMPLETE files (or <PATCH> blocks whose SEARCH text is copied exactly from the files shown). No explanations, no thinking out loud, no code fences.`;
+  // The compact request: only this page's own files, no shared sources, research or usage notes (also the answer to "request too large").
+  const compactMessages = (current) => buildPageMessages({ template, page, otherPages: [], instruction: text, ownedFiles: (scope.ownOnly || [page.componentPath]).map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles: [], siteWide, attachments, siteContext, intent: intentResult?.intent || null, policy, workList, conversionBlock, repair: repair ? { ...repair, candidate: null } : null });
+  const askUsable = async (messages, current) => {
+    let first;
+    try { first = await callModel(messages, { signal }); }
+    catch (error) {
+      // The request was too large for the model: asked once more with the compact request instead of ending the job.
+      if (!(error?.contextTooLong || error?.code === 'OPENROUTER_CONTEXT_TOO_LONG') || signal?.aborted) throw error;
+      logger.warn(`The request for the ${page.name} page was too large for the model; asking with only the page's own files.`);
+      const compact = compactMessages(current);
+      return callText ? callText([{ role: 'system', content: `${compact[0].content}\n\n${DELIMITER_RETRY}` }, compact[1]], { signal, maxTokens: 32000 }) : callModel(compact, { signal });
+    }
+    if (!callText || readable(first, page.componentPath)) return first;
+    usage = sumUsage(usage, first.usage);
+    logger.warn(`The answer for the ${page.name} page could not be read (finish ${first?.finishReason || 'n/a'}, ${String(first?.content || '').length} chars); asking again in the plain file format.`);
+    const second = await callText([{ role: 'system', content: `${messages[0].content}\n\n${DELIMITER_RETRY}` }, messages[1]], { signal });
+    if (readable(second, page.componentPath)) return second;
+    usage = sumUsage(usage, second.usage);
+    logger.warn(`The plain-format answer for the ${page.name} page could not be read either; asking with a compact prompt.`);
+    const compact = compactMessages(current);
+    return callText([{ role: 'system', content: `${compact[0].content}\n\n${DELIMITER_RETRY}` }, compact[1]], { signal, maxTokens: 32000 });
+  };
+
   /* ---- generate, check, repair (static stages) ---- */
   let candidate = null;
   let changedPaths = [];
@@ -237,6 +342,8 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   let lastSignature = '';
   let repeats = 0;
   const autoCorrected = [];
+  // What the owner should know about a page that was kept (another page's problem, a check that could not run).
+  const notices = [];
   const BROKEN_MARKUP = /syntax error|closing tag|unexpected token|unterminated/i;
   for (let round = 0; round <= repairRounds; round += 1) {
     signal?.throwIfAborted();
@@ -244,7 +351,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     attempts += 1;
     let applied;
     try {
-      const response = await timed(round === 0 ? 'write page' : `repair ${round}`, () => callModel(promptFor(repair, startFrom), { signal }));
+      const response = await timed(round === 0 ? 'write page' : `repair ${round}`, () => askUsable(promptFor(repair, startFrom), startFrom));
       usage = sumUsage(usage, response.usage);
       applied = applyAnswer(startFrom, response, scope, page, { allowPatch, shownLimit: OWNED_FILE_LIMIT });
     } catch (error) {
@@ -260,7 +367,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     }
     dropped = dropped.concat(applied.dropped);
     // Pictures the page now links to are downloaded into the site; a dead link is recovered from the verified spares or reported.
-    let working = applied.files;
+    let working = freeFixes(applied.files, baseline, scope, page);
     let localized = await localizeImages(baseline, working, applied.changedPaths, signal);
     working = localized.files;
     let failed = localized.failed;
@@ -283,6 +390,24 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     candidate = working;
     problems = validation.checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments, instruction: text, siteWide, rewrite: siteContext?.mode === 'website', policy, originalFiles: originals })
       .concat(validation.imageProblems(failed, (entity?.assets || []).filter((asset) => !working.some((file) => textOfFile(file).includes(asset.url)))));
+    // A picture link that cannot be downloaded, still there after a repair: like the incremental editor (which drops unsaveable images),
+    // the picture becomes the neutral photo placeholder instead of failing the page, and the owner is told which link was dead.
+    if (round >= 1 && failed.length && problems.length && problems.every((item) => item.stage === 'asset' && /could not be downloaded/.test(item.message))) {
+      const dead = [...new Set(failed.map((item) => item.url).filter(Boolean))];
+      // The site's own neutral photo slot when it has one (every converted site does); otherwise the dead <img> is taken out.
+      const slot = candidate.some((file) => file.path === 'public/images/slot-1.svg') ? '/images/slot-1.svg' : null;
+      const withoutDead = (content) => dead.reduce((text, url) => (slot ? text.split(url).join(slot) : text.replace(new RegExp(`<img\\b[^>]*${url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^>]*?/?>\\s*`, 'gi'), '')), content);
+      const next = candidate.map((file) => (textOfFile(file) && dead.some((url) => file.content.includes(url)) && changedPaths.includes(file.path) ? { ...file, content: withoutDead(file.content) } : file));
+      const nextChanged = store.diffFiles(baseline, next).changed.map((item) => item.path);
+      const again = validation.checkCandidate({ baseline, candidate: next, scope, page, pages, template, changedPaths: nextChanged, attachments, instruction: text, siteWide, rewrite: siteContext?.mode === 'website', policy, originalFiles: originals });
+      if (!again.length) {
+        logger.warn(`The ${page.name} page: ${dead.length} picture link(s) could not be downloaded and were replaced by the photo placeholder.`);
+        notices.push(`${dead.length === 1 ? 'A picture link' : `${dead.length} picture links`} could not be downloaded (${dead.slice(0, 2).join(', ')}), ${slot ? "so a neutral photo placeholder is shown instead" : "so that picture was left out"}. Upload a photo to add it.`);
+        candidate = next;
+        changedPaths = nextChanged;
+        problems = [];
+      }
+    }
     // The owner asked for what was found online: the list on the page must be that list, not a summary of it.
     if (research?.found && research.items.length >= 3 && !problems.length) {
       // What the page shows: its own files and the files the AI created for it (a new data file holding the list is the usual way).
@@ -371,15 +496,27 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
       if (validation.strictModeProblem(diagnostics) && validation.behaviourFailureOnly(diagnostics)) return [];
       onState('repairing', 'Fixing a build or browser error');
       const gateScope = validation.pageScope({ files: current, page, pages, template, siteWide, includeSharedContent: Boolean(policy?.rewrite), sectionNames: validation.namedSections(text), sectionPhrases });
-      const gateRepairPrompt = buildPageMessages({
-        template, page, otherPages, instruction: text, ownedFiles: gateScope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
-        entityBlock: '', attachments, repair: { diagnostics: [generationPipeline.formatDiagnostics(diagnostics)], candidate: null }, siteContext, intent: intentResult?.intent || null, policy, researchBlock: research?.block || '', usageBlock, workList, conversionBlock
-      });
-      const response = await callModel(gateRepairPrompt, { signal });
-      usage = sumUsage(usage, response.usage);
-      const result = applyAnswer(current, response, gateScope, page);
-      const changed = result.changedPaths.map((path) => result.files.find((file) => file.path === path)).filter(Boolean);
-      return changed;
+      // Like the incremental editor's code repair: an answer that cannot be applied (a patch that does not match, a malformed answer) is
+      // asked for again, the second time as complete files, instead of ending the build check.
+      const notes = [];
+      for (let tryNumber = 1; tryNumber <= GATE_REPAIR_TRIES; tryNumber += 1) {
+        const gateRepairPrompt = buildPageMessages({
+          template, page, otherPages, instruction: text, ownedFiles: gateScope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
+          entityBlock: '', attachments, repair: { diagnostics: [generationPipeline.formatDiagnostics(diagnostics), ...notes], candidate: null }, siteContext, intent: intentResult?.intent || null, policy, researchBlock: research?.block || '', usageBlock, workList, conversionBlock
+        });
+        try {
+          const response = await callModel(gateRepairPrompt, { signal });
+          usage = sumUsage(usage, response.usage);
+          const result = applyAnswer(current, response, gateScope, page, { allowPatch: tryNumber === 1 });
+          const fixed = freeFixes(result.files, baseline, gateScope, page);
+          return result.changedPaths.map((path) => fixed.find((file) => file.path === path)).filter(Boolean);
+        } catch (error) {
+          if (signal?.aborted || error?.permanent || error?.name === 'OpenRouterAuthError' || /OPENROUTER_(AUTH|INSUFFICIENT)/.test(error?.code || '') || tryNumber === GATE_REPAIR_TRIES) throw error;
+          logger.warn(`Build repair answer for the ${page.name} page could not be used (try ${tryNumber} of ${GATE_REPAIR_TRIES}): ${String(error.message).slice(0, 200)}`);
+          notes.push(`[repair] Your last answer could not be applied (${String(error.message).slice(0, 200)}). Return the COMPLETE corrected file(s) with operation "modify"; do not use patches.`);
+        }
+      }
+      return [];
     };
     let gated;
     // A problem of the build machine (permissions, disk, Docker busy) is not a problem of the page: the build is tried again after a
@@ -440,6 +577,45 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
         gateError = null;
       }
     }
+    // The build check tests EVERY route of the website, but this change may only repair its own page: an error that was already on another
+    // page (a crash, a missing picture) can never be fixed here and used to fail every rewrite of this page. Like the incremental editor, a
+    // change is judged by what it broke: (1) the check is run for this page (and Home) only; if that passes, the page is verified and the
+    // other page's problem is reported. (2) Otherwise the site as it was before the change is checked (once, cached); when every error of
+    // the change was already there, the change broke nothing and is kept. An error the change introduced still fails it.
+    if (!gated && gateError && !environmental(gateError) && !deps.noPreexistingCheck) {
+      const ownRoutes = [...new Set(['/', sampleRoute(page)])];
+      const failing = diagnosticsOf(gateError);
+      try {
+        if (routes.length > ownRoutes.length) {
+          onState('validating', 'Checking this page on its own');
+          gated = await timed('build + browser tests (this page)', () => buildGate(candidate, { routes: ownRoutes, extraTests: behavior.tests, signal, repair: gateRepair, onProgress: gateProgress(onState) }));
+          notices.push(`This page passed every check. Another page of the website has a problem that this change did not cause and could not fix: ${summarize(failing)}`);
+          logger.warn(`The ${page.name} page passed on its own routes; the full check failed elsewhere: ${summarize(failing)}`);
+          gateError = null;
+        }
+      } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') throw error;
+      }
+      if (!gated) {
+        try {
+          const before = await baselineFailures(baseline, { buildGate, routes, signal });
+          const known = new Set(before.map(signatureOf));
+          const latest = diagnosticsOf(gateError);
+          // An error in a file this change wrote, or on this page's own route, is never "already there": the change must fix it.
+          const ours = (item) => changedPaths.includes(item.path) || item.path === page.route || item.path === sampleRoute(page);
+          if (before.length && latest.length && latest.every((item) => known.has(signatureOf(item)) && !ours(item))) {
+            logger.warn(`The ${page.name} page is kept: every build error was already in the site before this change (${summarize(latest)}).`);
+            notices.push(`The website already had a problem before this change, so the full build check could not pass: ${summarize(latest)}. This change did not add any new problem.`);
+            gated = { files: candidate, report: { ...(gateError?.report || {}), status: 'passed', validationMode: 'static-only', stage: 'static', checks: [], preexisting: latest.slice(0, 6).map((item) => `${item.path || ''} ${String(item.message || '').slice(0, 160)}`.trim()), verifiedAt: new Date().toISOString() } };
+            behavior = { status: 'unavailable', tests: [], reason: 'The site had build errors before this change, so the change could only be checked for new problems.' };
+            gateError = null;
+          }
+        } catch (error) {
+          if (signal?.aborted || error?.name === 'AbortError') throw error;
+          logger.warn(`The site before the change could not be checked: ${error.message}`);
+        }
+      }
+    }
     if (!gated) {
       const error = gateError || environmentError;
       const lastDiagnostics = (error?.report?.history?.at(-1)?.diagnostics || []).slice(0, 4);
@@ -475,7 +651,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   }
 
   const diff = store.diffFiles(baseline, finalFiles);
-  return { workList, intent: intentEngine.summarize(intentResult, policy), research: require('./templateWebResearch').summarize(research), files: finalFiles, changed: diff.changed, previous: diff.previous, changedPaths: diff.changed.map((item) => item.path), report, usage, attempts, dropped, reviewNotes, autoCorrected, entity: entity ? { found: [...new Set(entity.assets.map((asset) => asset.entity))], missing: entity.missing.map((item) => item.name) } : null };
+  return { workList, intent: intentEngine.summarize(intentResult, policy), research: require('./templateWebResearch').summarize(research), files: finalFiles, changed: diff.changed, previous: diff.previous, changedPaths: diff.changed.map((item) => item.path), report, usage, attempts, dropped, reviewNotes, autoCorrected, notices, entity: entity ? { found: [...new Set(entity.assets.map((asset) => asset.entity))], missing: entity.missing.map((item) => item.name) } : null };
 }
 
 // The build machine reports many small stages, some in parallel ("manifest", "install", "syntax"...): the owner sees a few plain steps

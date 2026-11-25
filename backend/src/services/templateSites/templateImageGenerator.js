@@ -3,8 +3,8 @@
  * the photo enhancement (IMAGE_GENERATE_MODEL, falling back to IMAGE_ENHANCE_MODEL). A picture is only accepted when the model
  * really returned a picture that passes the checks; otherwise the page keeps its neutral photo slot.
  */
-const axios = require('axios');
 const sharp = require('sharp');
+const openrouterImages = require('./openrouterImages');
 const enhancer = require('./templateImageEnhancer');
 const remoteImageLocalizer = require('../ai/remoteImageLocalizer');
 const logger = require('../../utils/logger');
@@ -61,14 +61,13 @@ Style: natural light, authentic documentary photography, clean composition with 
 Strict rules: the picture must fill the whole frame: no borders, frames, bars, letterboxing, blurred or mirrored padding, no collage; no text, no letters or numbers, no printed material such as brochures, posters, signs or notice boards, no readable screens, no logos, no signs with writing, no watermarks, no certificates, seals or badges, no screenshots or user-interface mock-ups, no recognisable real people or celebrities; if people appear they are small, natural and not identifiable. It must look like a real photograph, not an illustration.`;
 }
 
-async function requestModel({ prompt, signal }) {
-  const headers = { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': process.env.CLIENT_URL || 'http://localhost:5173', 'X-Title': 'VEAVE Template Studio', 'Content-Type': 'application/json' };
+async function requestModel({ prompt, signal, aspect }) {
   const body = { model: model(), modalities: ['image', 'text'], messages: [{ role: 'user', content: prompt }] };
   let last;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const { data } = await axios.post(`${process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1'}/chat/completions`, body, { headers, timeout: timeoutMs(), signal, maxBodyLength: Infinity, maxContentLength: 80 * 1024 * 1024 });
-      return data;
+      // A dedicated image-generation model is served by /images, not /chat/completions (see openrouterImages).
+      return await openrouterImages.requestPicture({ model: model(), chatBody: body, prompt, aspect, signal, timeout: timeoutMs() });
     } catch (error) {
       last = enhancer.providerError(error);
       if (signal?.aborted || !['RATE_LIMIT', 'NETWORK', 'PROVIDER_ERROR'].includes(last.code) || attempt === 1) break;

@@ -29,6 +29,7 @@ const versions = require('./templateVersionService');
 const versionRestore = require('./templateVersionRestore');
 const semantic = require('./templateSemanticValidator');
 const { NotFoundError, ValidationError, ConflictError } = require('../../utils/errors');
+const { mergeText } = require('../ai/threeWayMerge');
 const TemplateAsset = require('../../models/TemplateAsset');
 const { dehydrateFiles } = require('../storage/s3BlobStorage');
 const logger = require('../../utils/logger');
@@ -131,6 +132,8 @@ async function rollbackIfUseless(job, user) {
 
 // Errors that stop a whole-website run (every later page would fail the same way): the AI provider refused, or the account is out of credits.
 const FATAL_PROVIDER = ['OPENROUTER_INSUFFICIENT_CREDITS', 'OPENROUTER_AUTH_ERROR', 'PLAN_LIMIT_REACHED'];
+// Tries per page of a whole-website run (the first, and one more told what went wrong).
+const WEBSITE_PAGE_TRIES = Number(process.env.TEMPLATE_WEBSITE_PAGE_TRIES) > 0 ? Number(process.env.TEMPLATE_WEBSITE_PAGE_TRIES) : 2;
 
 class JobCancelled extends Error { constructor() { super('Cancelled'); this.name = 'JobCancelled'; } }
 
@@ -148,6 +151,10 @@ function isHealable(error) {
 const FRIENDLY_CODES = new Set(['PAGE_VALIDATION_FAILED', 'BUILD_VALIDATION_FAILED', 'FINAL_CHECK_FAILED', 'MODEL_ANSWER_UNUSABLE', 'NO_USABLE_CHANGES']);
 const FRIENDLY_MESSAGE = 'The AI tried several times but could not apply this change safely, so your page is exactly as it was. Please try again, describe the change in smaller steps, or tick the section you mean.';
 
+/** What a finished job tells the owner besides "done": a part that was skipped and why (a picture that could not be made, the menu kept). */
+const noticesOf = (job) => [...new Set((job?.timeline || []).filter((entry) => entry?.state === 'notice').map((entry) => entry.step))];
+const addNotice = (job, message) => TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $push: { timeline: { $each: [{ state: 'notice', step: String(message).slice(0, 400), at: new Date() }], $slice: -60 } } }).catch(() => {});
+
 function failureCode(error, { timedOut = false } = {}) {
   if (timedOut) return 'JOB_TIMEOUT';
   if (error?.code && /^[A-Z_]+$/.test(error.code) && ['PAGE_VALIDATION_FAILED', 'BUILD_VALIDATION_FAILED', 'FINAL_CHECK_FAILED', 'MODEL_ANSWER_UNUSABLE', 'NO_USABLE_CHANGES', 'INTENT_NOT_MET', 'NO_EFFECTIVE_CHANGE', 'EMPTY_INSTRUCTION', 'PAGE_FILE_MISSING', 'SITE_CHANGED', 'UNDO_USES_VERSIONS', 'PLAN_FAILED', 'PLAN_UNUSABLE', 'IDENTITY_FAILED', 'PLAN_LIMIT_REACHED'].includes(error.code)) return error.code;
@@ -157,7 +164,8 @@ function failureCode(error, { timedOut = false } = {}) {
   if (error?.code === 'OPENROUTER_MODEL_UNAVAILABLE') return 'PROVIDER_MODEL';
   if (error?.code === 'OPENROUTER_TIMEOUT') return 'PROVIDER_TIMEOUT';
   if (error?.code === 'OPENROUTER_CONTEXT_TOO_LONG') return 'PROVIDER_CONTEXT_TOO_LONG';
-  return 'JOB_FAILED';
+  // The rest is classified the way the incremental editor classifies it (malformed answers, repairs used up, validation kinds).
+  return require('../ai/jobSupport/failureCode').failureCode(error, { timedOut });
 }
 
 class TemplateJobManager {
@@ -453,11 +461,26 @@ class TemplateJobManager {
       sitePlan.images = outcome.images;
       sitePlan.imagesApplied = true;
       await TemplateSite.updateOne({ _id: site._id }, { $set: { plan: sitePlan } });
+      // A picture that could not be made leaves a neutral photo slot; the owner is told which and why.
+      for (const failed of outcome.images.filter((item) => item.status === 'failed')) await addNotice(job, `The picture "${failed.alt || failed.key}" could not be made, so a neutral photo placeholder is shown instead (${String(failed.error || 'unknown reason').slice(0, 200)}).`);
     }
     signal.throwIfAborted();
     await this.progress(job.jobId, 'processing', 'Writing the website identity', { progress: 12 });
     const ctx = await this.context(job);
-    const rewritten = await identity.transformIdentity({ template: ctx.template, plan: sitePlan, files: ctx.files, deps: this.deps, signal, onState: () => {} });
+    let rewritten;
+    try {
+      rewritten = await identity.transformIdentity({ template: ctx.template, plan: sitePlan, files: ctx.files, deps: this.deps, signal, onState: () => {} });
+    } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError' || error?.code !== 'IDENTITY_FAILED') throw error;
+      // Self-healing: the shared brand, menu and sample records could not be made to match the plan. That is no reason to give up the page
+      // the owner asked for: the page is still written for the new website (website mode, the same checks), the shared parts stay as they
+      // were, and the owner is told what was kept and why. A later job retries the identity (identityApplied stays false).
+      logger.warn(`Template job ${job.jobId}: the website identity was kept as it was; the page is written anyway. ${error.message}`);
+      await addNotice(job, `The menu, footer and sample records were kept as they were: ${String(error.message).replace(/^The website identity (did not match the plan|could not be written):\s*/, '').slice(0, 240)}`);
+      await TemplateSite.updateOne({ _id: site._id }, { $set: { plan: sitePlan } });
+      await this.noteExtraTokens(job, spent);
+      return true;
+    }
     spent += Number(rewritten.usage?.totalTokens ?? rewritten.usage?.total_tokens ?? 0) || 0;
     if (ctx.site.theme) rewritten.files = require('./templateTheme').applyTheme(rewritten.files, ctx.site.theme, ctx.template);
     const diff = store.diffFiles(ctx.files, rewritten.files);
@@ -522,7 +545,7 @@ class TemplateJobManager {
     }
     // A detail page whose sample record is gone opens on "not found": it is moved to a record that exists before it is written.
     if ((await require('./templatePageService').healSampleRoutes(site, { pages, files }).catch(() => [])).length) ({ site, pages, files, template } = await this.context(job));
-    const page = pages.find((item) => String(item._id) === String(job.pageId));
+    let page = pages.find((item) => String(item._id) === String(job.pageId));
     if (!page) throw new NotFoundError('Page');
     this.placeNamedSection(job, files, page);
     let adapted = false;
@@ -531,7 +554,14 @@ class TemplateJobManager {
     } catch (error) {
       // Nothing is left half-changed: the site goes back to the version saved before this job.
       await rollbackIfUseless(job).catch(() => {});
-      throw error;
+      if (signal?.aborted || error instanceof JobCancelled || error?.name === 'AbortError' || !isHealable(error)) throw error;
+      // Self-healing: adapting the whole website (plan, pictures, menu) is a help for the page, not the page itself. When it fails the page
+      // is still written, as an edit of this page, and the owner is told the website itself was not adapted and why.
+      logger.warn(`Template job ${job.jobId}: adapting the website failed (${error?.code || 'error'}); the page is written as an edit of this page. ${error.message}`);
+      await addNotice(job, `The website as a whole (menu, footer, sample records) was not adapted to the new subject this time: ${String(error.message).slice(0, 240)}. Only this page was changed.`);
+      ({ site, pages, files, template } = await this.context(job));
+      page = pages.find((item) => String(item._id) === String(job.pageId)) || page;
+      adapted = false;
     }
     if (adapted) ({ site, pages, files, template } = await this.context(job));
     try { await this.writePage({ job, signal, site, pages, files, template, page, adapted }); }
@@ -592,6 +622,7 @@ class TemplateJobManager {
       }
     }
     signal.throwIfAborted();
+    for (const note of result.notices || []) await addNotice(job, note);
     await this.progress(job.jobId, 'validating', 'Checks passed');
     // From here the result is stored on the job before anything else is written: whatever happens next, saving can be finished.
     const assets = await collectAssets(result.files, result.changedPaths);
@@ -605,7 +636,20 @@ class TemplateJobManager {
    * Writes a validated change to the site: files, pictures, and the page's revision. Repeating it is safe (a file already saved is skipped,
    * the revision is unique per `revisionJobId`). Used for a single-page job and, page by page, for a whole-website job.
    */
-  async applyChange({ job, site, page, pending, revisionJobId, instruction }) {
+  async applyChange(args) {
+    // Another job (another page, a picture) saved the site between reading and writing: the site is read again and the change saved on
+    // top of it, like the incremental editor does, instead of failing a page that passed every check.
+    for (let tryNumber = 1; ; tryNumber += 1) {
+      try { return await this.applyChangeOnce(args); }
+      catch (error) {
+        if (!(error instanceof ConflictError) || error.code === 'SITE_CHANGED' || tryNumber >= 3) throw error;
+        logger.warn(`Template job ${args.job.jobId}: the site changed while saving (try ${tryNumber} of 3); saving again on top of it.`);
+        await new Promise((resolve) => setTimeout(resolve, 150 * tryNumber));
+      }
+    }
+  }
+
+  async applyChangeOnce({ job, site, page, pending, revisionJobId, instruction }) {
     const { files: current, projectRevision } = await store.readSite(site);
     const byPath = new Map(current.map((file) => [file.path, file]));
     const textOf = (file) => (file ? file.content : undefined);
@@ -618,9 +662,16 @@ class TemplateJobManager {
       if (change.deleted) { if (now) toWrite.push(change); continue; }
       if (textOf(now) === change.content) continue; // already saved by an earlier, interrupted attempt
       const expected = previousByPath.get(change.path);
-      // Rebase: the page may be saved even if other pages changed meanwhile, but never over someone else's edit of the same file.
+      // Rebase: the page may be saved even if other pages changed meanwhile, but never over someone else's edit of the same file. Edits of
+      // different parts of the same file are merged (the incremental editor's three-way merge); only overlapping edits are refused.
       if ((expected && now && now.content !== expected.content) || (!expected && now)) {
-        throw Object.assign(new ConflictError(`${change.path} was changed while the new version was being prepared. Nothing was saved; regenerate the page again.`), { code: 'SITE_CHANGED' });
+        // The page's own component edited elsewhere at the same time is never merged into (someone is working on this page).
+        const mergeable = expected && change.path !== page?.componentPath && typeof now.content === 'string' && typeof expected.content === 'string';
+        const merged = mergeable ? mergeText(expected.content, now.content, change.content) : null;
+        if (merged === null) throw Object.assign(new ConflictError(`${change.path} was changed while the new version was being prepared. Nothing was saved; regenerate the page again.`), { code: 'SITE_CHANGED' });
+        logger.info(`Template job ${job.jobId}: ${change.path} was changed by another job meanwhile; both changes were merged.`);
+        toWrite.push({ ...change, content: merged });
+        continue;
       }
       toWrite.push(change);
     }
@@ -643,7 +694,8 @@ class TemplateJobManager {
     }
     try {
       if (page) {
-        await revisions.recordPageRevision({ site, page, userId: job.userId, kind: 'regenerate', instruction: instruction ?? job.instruction, changed: pending.changed, previous: pending.previous, jobId: revisionJobId, validation: pending.validation });
+        const written = new Map(toWrite.map((change) => [change.path, change]));
+        await revisions.recordPageRevision({ site, page, userId: job.userId, kind: 'regenerate', instruction: instruction ?? job.instruction, changed: pending.changed.map((change) => written.get(change.path) || change), previous: pending.previous, jobId: revisionJobId, validation: pending.validation });
       } else {
         await bumpSite(site._id);
       }
@@ -670,6 +722,7 @@ class TemplateJobManager {
     // The change may have rewritten the records a detail page shows (its sample /listings/k-1001 is gone): that page is moved to one that exists.
     await require('./templatePageService').healSampleRoutes(site).catch((error) => logger.warn(`Template job ${job.jobId}: sample routes were not checked: ${error.message}`));
     if (page) await setGeneration(page._id, 'completed');
+    const flaggedPages = await this.flagOtherPages(job, site, page, pending);
     for (const entry of pending.pageRevisions || []) {
       const target = await TemplatePage.findOne({ _id: entry.pageId, siteId: site._id });
       if (!target) continue;
@@ -679,7 +732,7 @@ class TemplateJobManager {
     const fresh = page ? await TemplatePage.findById(page._id) : null;
     const done = await this.move(job.jobId, 'completed', {
       stepName: 'Completed', completedAt: new Date(), leaseOwner: null, leaseExpiresAt: null, pendingCommit: null,
-      result: { changedPaths: pending.changed.map((file) => file.path), revision: fresh?.currentRevision ?? null, pageId: pending.pageId || null, validation: pending.validation, entity: pending.entity || null, intent: pending.intent || null, research: pending.research || null }
+      result: { changedPaths: pending.changed.map((file) => file.path), revision: fresh?.currentRevision ?? null, pageId: pending.pageId || null, flaggedPages, validation: pending.validation, entity: pending.entity || null, intent: pending.intent || null, research: pending.research || null, notices: noticesOf(job) }
     });
     if (!done) throw new ConflictError('The job was no longer committing when it finished.');
   }
@@ -730,6 +783,50 @@ class TemplateJobManager {
     await require('../billing/usageService').assertCanUseAI(job.userId, { projectId: owner?.projectId });
   }
 
+  /**
+   * After a page change was saved: does any OTHER page now have a broken link or a missing picture because of it? The change is never
+   * undone for that (it passed its own checks). Each page that got worse is marked "Needs review" with the reason, so the owner edits
+   * that page later; a page that was marked this way earlier and is fine again is cleared. Returns [{ pageId, name, messages }].
+   */
+  async flagOtherPages(job, site, editedPage, pending) {
+    try {
+      const { files: after } = await store.readSite(site);
+      const previous = new Map((pending.previous || []).map((file) => [file.path, file]));
+      const added = new Set((pending.changed || []).filter((file) => !file.deleted && !previous.has(file.path)).map((file) => file.path));
+      const removed = (pending.changed || []).filter((file) => file.deleted && previous.has(file.path)).map((file) => previous.get(file.path));
+      const before = [...after.filter((file) => !added.has(file.path)).map((file) => (previous.has(file.path) && file.encoding !== 'base64' ? { ...file, content: previous.get(file.path).content } : file)), ...removed.map((file) => ({ ...file, encoding: file.encoding || 'utf8' }))];
+      const pages = await TemplatePage.find({ siteId: site._id });
+      const checks = require('./templateValidationService').finalSiteChecks;
+      const nowProblems = checks(after, pages);
+      const wasKeys = new Set(checks(before, pages).map((item) => `${item.pageId}|${item.message}`));
+      const editedId = editedPage ? String(editedPage._id) : null;
+      const byPage = new Map();
+      for (const item of nowProblems) {
+        if (item.pageId === editedId || wasKeys.has(`${item.pageId}|${item.message}`)) continue;
+        byPage.set(item.pageId, [...(byPage.get(item.pageId) || []), item.message]);
+      }
+      const lead = editedPage ? `After a change to the ${editedPage.name} page: ` : 'After a change to the website: ';
+      const flagged = [];
+      for (const [pageId, messages] of byPage) {
+        const target = pages.find((item) => String(item._id) === pageId);
+        const state = target?.generation?.state;
+        if (!target || state === 'generating' || state === 'queued') continue;
+        await setGeneration(pageId, 'needs-review', `${lead}${[...new Set(messages)].slice(0, 3).join(' ')} Edit this page to fix it.`);
+        flagged.push({ pageId, name: target.name, messages: [...new Set(messages)].slice(0, 3) });
+      }
+      // A page marked this way before that has no problem any more (a later change fixed it) is cleared.
+      const stillBroken = new Set(nowProblems.map((item) => item.pageId));
+      for (const target of pages) {
+        if (target.generation?.state === 'needs-review' && /^After a change to the /.test(target.generation?.error || '') && !stillBroken.has(String(target._id)) && !byPage.has(String(target._id))) await setGeneration(target._id, 'completed');
+      }
+      if (flagged.length) await addNotice(job, `This change affected ${flagged.length} other page${flagged.length === 1 ? '' : 's'} (${flagged.map((item) => item.name).join(', ')}). ${flagged.length === 1 ? 'It is' : 'They are'} marked "Needs review" in the page list so you can edit ${flagged.length === 1 ? 'it' : 'them'} later.`);
+      return flagged;
+    } catch (error) {
+      logger.warn(`Template job ${job.jobId}: the other pages were not checked after the change: ${error.message}`);
+      return [];
+    }
+  }
+
   /** Saves one finished picture into the site (right away, so an interrupted run keeps what it already paid for). */
   async persistPicture(job, file) {
     const fresh = await this.context(job);
@@ -759,7 +856,8 @@ class TemplateJobManager {
   async makePagePictures({ job, site, files, page, photos, signal }) {
     const pictures = require('./templatePagePictures');
     const owner = require('./templateValidationService').ownerWords(job.instruction);
-    if (!require('./templateImageGenerator').isEnabled(this.deps) || !pictures.wantsPictures(owner, photos)) return [];
+    // Wanted pictures are planned even when picture generation is off or fails: what cannot be made becomes a placeholder below.
+    if (!pictures.wantsPictures(owner, photos)) return [];
     let sections = [];
     try { sections = require('./templatePageService').extractSections((files.find((file) => file.path === page.componentPath) || {}).content || '').map((item) => item.name); } catch { /* sections are optional */ }
     const brand = generator.brandOf(files);
@@ -774,7 +872,21 @@ class TemplateJobManager {
     const identity = site.plan?.identity || { category: brand || site.name, name: brand || site.name };
     const outcome = await siteImages.generateSiteImages({ userId: job.userId, projectId: site.projectId, plan: { identity, images: pictures.entriesFor(planned.pictures, page, job.jobId) }, deps: this.deps, signal, persist: ({ file }) => this.persistPicture(job, file) });
     logger.info(`Template job ${job.jobId}: ${outcome.ready} of ${planned.pictures.length} picture(s) made for the ${page.name} page${outcome.notes.length ? ` (${outcome.notes.join('; ')})` : ''}.`);
-    return pictures.asAttachments(outcome.images);
+    // A picture that could not be made (nothing came back, no credits, generation off) is not dropped: a neutral placeholder takes its place,
+    // in the shape that was asked for, so the page still has the picture where the owner wanted it and the owner can swap a real one in later.
+    const images = [];
+    for (const entry of outcome.images) {
+      if (entry.status === 'ready') { images.push(entry); continue; }
+      try {
+        const file = pictures.placeholderFile(entry);
+        await this.persistPicture(job, file);
+        images.push({ ...entry, status: 'ready', placeholder: true, path: file.path.replace(/^public/, ''), width: 0, height: 0 });
+        await addNotice(job, `The picture "${entry.alt || entry.subject}" could not be made (${String(entry.error || 'no picture came back').slice(0, 120)}), so a placeholder was put there. Change it later with the image button.`);
+      } catch (error) {
+        logger.warn(`Template job ${job.jobId}: the placeholder for "${entry.key}" could not be saved: ${error.message}`);
+      }
+    }
+    return pictures.asAttachments(images);
   }
 
   /** The pictures the owner tied to this page (and only those), as inputs for resolveAttachments. */
@@ -860,17 +972,27 @@ class TemplateJobManager {
     if (sitePlan && !sitePlan.identityApplied) {
       signal.throwIfAborted();
       await this.progress(job.jobId, 'processing', 'Writing the website identity', { progress: 14 });
-      const rewritten = await identity.transformIdentity({ template: ctx.template, plan: sitePlan, files: ctx.files, deps: this.deps, signal, onState: () => {} });
-      tokens += tokensOf(rewritten.usage);
-      // The model rewrites index.html and the data files; the owner's theme (fonts link, theme block) is put back exactly.
-      if (ctx.site.theme) rewritten.files = require('./templateTheme').applyTheme(rewritten.files, ctx.site.theme, ctx.template);
-      const diff = store.diffFiles(ctx.files, rewritten.files);
-      if (diff.changed.length) {
-        await this.applyChange({ job, site: ctx.site, page: null, pending: { changed: diff.changed, previous: diff.previous, assets: await collectAssets(rewritten.files, diff.changed.map((file) => file.path)), validation: { mode: 'identity' } }, revisionJobId: `${job.jobId}:identity`, instruction: 'Website identity' });
+      let rewritten = null;
+      try {
+        rewritten = await identity.transformIdentity({ template: ctx.template, plan: sitePlan, files: ctx.files, deps: this.deps, signal, onState: () => {} });
+      } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError' || error?.code !== 'IDENTITY_FAILED') throw error;
+        // Self-healing: the pages are still written for the new website; the shared menu and records stay as they were (a retry tries again).
+        logger.warn(`Website job ${job.jobId}: the website identity was kept as it was; the pages are written anyway. ${error.message}`);
+        await addNotice(job, `The menu, footer and sample records were kept as they were: ${String(error.message).replace(/^The website identity (did not match the plan|could not be written):\s*/, '').slice(0, 240)}`);
       }
-      sitePlan.identityApplied = true;
-      await savePlanState();
-      ctx = await this.context(job);
+      if (rewritten) {
+        tokens += tokensOf(rewritten.usage);
+        // The model rewrites index.html and the data files; the owner's theme (fonts link, theme block) is put back exactly.
+        if (ctx.site.theme) rewritten.files = require('./templateTheme').applyTheme(rewritten.files, ctx.site.theme, ctx.template);
+        const diff = store.diffFiles(ctx.files, rewritten.files);
+        if (diff.changed.length) {
+          await this.applyChange({ job, site: ctx.site, page: null, pending: { changed: diff.changed, previous: diff.previous, assets: await collectAssets(rewritten.files, diff.changed.map((file) => file.path)), validation: { mode: 'identity' } }, revisionJobId: `${job.jobId}:identity`, instruction: 'Website identity' });
+        }
+        sitePlan.identityApplied = true;
+        await savePlanState();
+        ctx = await this.context(job);
+      }
     }
 
     for (const entry of plan) if (entry.state === 'generating') entry.state = 'queued'; // an interrupted page starts again
@@ -897,10 +1019,25 @@ class TemplateJobManager {
           const file = done && ctx.files.find((candidate) => candidate.path === done.componentPath);
           return { name: item.name, headings: file ? extractHeadings(String(file.content || '')).slice(0, 4) : [] };
         }).filter((item) => item.headings.length);
-        const result = await generator.regeneratePage({
-          template: ctx.template, page, pages: ctx.pages, files: ctx.files, instruction: pagePrompt(ctx.site, page), attachments: photos,
-          deps: { ...this.deps, buildGate: null }, signal, onState: () => {}, siteContext: siteContextFor(ctx.site, ctx.pages, written, { plan: sitePlan, mode: 'website' })
-        });
+        // Self-healing per page, like a single-page job: a page that failed in a way a new try can fix is written once more, told what
+        // went wrong; a rate limit is waited out first. The same problem twice is not tried a third time.
+        let result;
+        let lastProblem = '';
+        for (let tryNumber = 1; ; tryNumber += 1) {
+          try {
+            result = await generator.regeneratePage({
+              template: ctx.template, page, pages: ctx.pages, files: ctx.files, instruction: lastProblem ? `${pagePrompt(ctx.site, page)}\n\n(A previous try at this page failed: ${lastProblem}. Take a different, simpler and safer way: keep every import valid, close every tag, and fix exactly what was named.)` : pagePrompt(ctx.site, page), attachments: photos,
+              deps: { ...this.deps, buildGate: null }, signal, onState: () => {}, siteContext: siteContextFor(ctx.site, ctx.pages, written, { plan: sitePlan, mode: 'website' })
+            });
+            break;
+          } catch (error) {
+            if (signal.aborted || tryNumber >= WEBSITE_PAGE_TRIES || !isHealable(error) || FATAL_PROVIDER.includes(error?.code)) throw error;
+            logger.warn(`Website job ${job.jobId}: page ${page.name} try ${tryNumber} failed (${error?.code || 'error'}); trying once more.`);
+            lastProblem = String(error?.message || error).replace(/\s+/g, ' ').slice(0, 400);
+            await this.progress(job.jobId, 'processing', `Improving ${page.name} (try ${tryNumber + 1} of ${WEBSITE_PAGE_TRIES})`);
+            if (/RATE_LIMIT/.test(error?.code || '')) await new Promise((resolve) => setTimeout(resolve, 10000));
+          }
+        }
         signal.throwIfAborted();
         const assets = await collectAssets(result.files, result.changedPaths);
         const pending = { pageId: String(page._id), changed: result.changed, previous: result.previous, assets, validation: { mode: result.report?.validationMode || null, status: result.report?.status || null, attempts: result.attempts } };
@@ -1005,7 +1142,7 @@ class TemplateJobManager {
     }
 
     const attention = plan.filter((entry) => entry.state === 'failed' || entry.state === 'needs-review');
-    const result = { pages: plan.map(({ pageId, name, route, state, error, revision }) => ({ pageId, name, route, state, error, revision })), completed: doneCount(), total, needsAttention: attention.length, validation, ...(imageSummary ? { images: imageSummary } : {}) };
+    const result = { pages: plan.map(({ pageId, name, route, state, error, revision }) => ({ pageId, name, route, state, error, revision })), completed: doneCount(), total, needsAttention: attention.length, validation, ...(imageSummary ? { images: imageSummary } : {}), notices: noticesOf(await TemplateGenerationJob.findOne({ jobId: job.jobId }).select('timeline').lean()) };
     // The finished website is saved as a version of its own (after every page is saved and checked). A failure here never undoes the pages.
     let resultVersion = null;
     try {

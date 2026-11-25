@@ -500,6 +500,8 @@ export const useTemplateStudioStore = create((set, get) => ({
         });
       }
       set((state) => ({ previewKey: state.previewKey + 1 }));
+      // Other pages this change left with a broken link or picture are marked "Needs review" by the server: the page list is read again.
+      if (job.result?.flaggedPages?.length) { const names = job.result.flaggedPages.map((item) => item.name).join(', '); get().refreshPages().catch(() => {}); setTimeout(() => get().flash('info', `This change left a broken link or picture on: ${names}. They are marked "Needs review" in the page list; edit them later.`), 600); }
       const pageId = job.pageId || get().activePageId;
       if (pageId && pageId === get().activePageId) { get().loadRevisions(pageId); get().loadSections(pageId); }
       get().loadImages();

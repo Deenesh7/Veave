@@ -635,6 +635,25 @@ async function runBuildGate(files, { routes, extraTests = [], signal, onProgress
  *   - internal links on the page point at routes that exist
  *   - pictures the page shows (/assets/...) exist in the site
  */
+/** Links to a section of a page: href="#team" / to="/about#team" -> [{ route, id }] (a "#..." alone means the page itself). */
+function anchorLinksOf(source, page) {
+  const out = [];
+  for (const match of String(source || '').matchAll(/\b(?:to|href)\s*(?:=|:)\s*\{?\s*["'](\/?[^"'#?\s]*)#([A-Za-z][\w-]*)["']/g)) out.push({ route: match[1] ? match[1].replace(/\/+$/, '') || '/' : page.route, id: match[2] });
+  return out;
+}
+const hasSectionId = (source, id) => {
+  const text = String(source || '');
+  // An id written out (id="team", id: 'team'), or ids built in code (id={section.id}) when the name appears in that code as a quoted word.
+  if (new RegExp(`\\bid\\s*=\\s*(?:\\{\\s*)?["'\`]${id}["'\`]|\\bid\\s*:\\s*["']${id}["']`).test(text)) return true;
+  return /\bid\s*=\s*\{\s*[^"'`\s}]/.test(text) && new RegExp(`["'\`]${id}["'\`]`).test(text);
+};
+/** The page a link to "route#id" lands on, with everything it shows (its own source and what it imports). */
+function anchorTarget(route, fromPage, pages, byPath) {
+  const target = route === fromPage.route ? fromPage : pages.find((item) => item.route === route);
+  if (!target || !byPath.has(target.componentPath)) return null;
+  return { name: target.name, source: pageDistinctness.pageSource(target.componentPath, byPath, 2) };
+}
+
 function finalSiteChecks(files, pages) {
   const found = [];
   const byPath = new Map(files.map((file) => [file.path, file]));
@@ -651,10 +670,30 @@ function finalSiteChecks(files, pages) {
       const target = match[1].replace(/\/+$/, '') || '/';
       if (seen.has(target) || /\.[a-z0-9]{2,5}$/i.test(target)) continue;
       seen.add(target);
-      if (!known.has(target)) found.push({ pageId: String(page._id), message: `A link goes to ${target}, which is not a page of this website.` });
+      if (!known.has(target) && !routes.some((route) => route.path && !route.path.includes('*') && routeMatches(route.path, target))) found.push({ pageId: String(page._id), message: `A link goes to ${target}, which is not a page of this website.` });
     }
-    for (const match of source.matchAll(/(?:\bsrc=|\bimage\s*:\s*)["'](\/(?:assets|images)\/[^"']+)["']/g)) {
+    for (const link of anchorLinksOf(source, page)) {
+      const target = anchorTarget(link.route, page, pages, byPath);
+      if (target && !hasSectionId(target.source, link.id)) found.push({ pageId: String(page._id), message: `A link goes to ${link.route === page.route ? '' : link.route}#${link.id}, but ${target.name} has no section with that id.` });
+    }
+    for (const match of source.matchAll(/(?:\bsrc=|\bimage\s*:\s*)["'](\/(?:assets|images)\/[^"']+)["'](?!\s*\+)/g)) {
       if (!byPath.has(`public${match[1]}`) && !byPath.has(match[1].slice(1))) found.push({ pageId: String(page._id), message: `The picture ${match[1]} is not in the site.` });
+    }
+  }
+  // The menu and footer links of src/data/site.js (to: '/#campus', to: '/mortgage') are shown on every page: they are judged here, on the home page.
+  const home = pages.find((item) => item.route === '/');
+  const menu = byPath.get('src/data/site.js');
+  if (home && menu && typeof menu.content === 'string') {
+    const seen = new Set();
+    for (const match of menu.content.matchAll(/\b(?:to|href)\s*:\s*["'](\/[^"'\s]*)["']/g)) {
+      const [path, id] = match[1].split('#');
+      const target = path.replace(/\/+$/, '') || '/';
+      const key = `${target}#${id || ''}`;
+      if (seen.has(key) || /\.[a-z0-9]{2,5}$/i.test(target)) continue;
+      seen.add(key);
+      if (!known.has(target) && !routes.some((route) => route.path && !route.path.includes('*') && routeMatches(route.path, target))) { found.push({ pageId: String(home._id), message: `The menu links to ${target}, which is not a page of this website.` }); continue; }
+      const landing = id && anchorTarget(target, home, pages, byPath);
+      if (landing && !hasSectionId(landing.source, id)) found.push({ pageId: String(home._id), message: `The menu links to ${target === '/' ? '' : target}#${id}, but ${landing.name} has no section with that id.` });
     }
   }
   return found;

@@ -50,7 +50,7 @@ function providerError(error) {
   if (status === 429) return new EnhanceError('RATE_LIMIT', 'The AI service is busy right now. Try again in a minute.');
   if (status === 402) return new EnhanceError('PROVIDER_CREDITS', 'The AI service has run out of credit. Please contact support.', { retryable: false });
   if (status === 401 || status === 403) return new EnhanceError('PROVIDER_AUTH', 'The AI service is not set up correctly. Please contact support.', { retryable: false });
-  if (status === 400 || status === 404) return new EnhanceError('PROVIDER_REJECTED', `The AI could not process this photo${detail ? `: ${String(detail).slice(0, 120)}` : '.'}`);
+  if (status === 400 || status === 404) return new EnhanceError('PROVIDER_REJECTED', `The AI could not process this photo${detail ? `: ${String(detail).slice(0, 300)}` : '.'}`);
   if (status >= 500) return new EnhanceError('PROVIDER_ERROR', 'The AI service had a problem. Try again.');
   if (!error?.response) return new EnhanceError('NETWORK', 'The connection to the AI service was interrupted. Try again.');
   return new EnhanceError('PROVIDER_ERROR', 'The AI enhancement failed. Try again.');
@@ -91,12 +91,11 @@ async function requestModel({ buffer, mime, signal }) {
       ] }
     ]
   };
-  const headers = { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'HTTP-Referer': process.env.CLIENT_URL || 'http://localhost:5173', 'X-Title': 'VEAVE Template Studio', 'Content-Type': 'application/json' };
   let last;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const { data } = await axios.post(`${baseUrl()}/chat/completions`, body, { headers, timeout: timeoutMs(), signal, maxBodyLength: Infinity, maxContentLength: 80 * 1024 * 1024 });
-      return data;
+      // A dedicated image model is served by /images: the same instruction goes there with the photo as its reference picture.
+      return await require('./openrouterImages').requestPicture({ model: model(), chatBody: body, prompt: `${IMAGE_ENHANCE_SYSTEM_PROMPT}\n\n${IMAGE_ENHANCE_USER_PROMPT}`, references: [`data:${mime};base64,${buffer.toString('base64')}`], signal, timeout: timeoutMs() });
     } catch (error) {
       last = providerError(error);
       if (signal?.aborted || !['RATE_LIMIT', 'NETWORK', 'PROVIDER_ERROR'].includes(last.code) || attempt === 1) break;
@@ -110,6 +109,8 @@ async function requestModel({ buffer, mime, signal }) {
 async function pictureFrom(data) {
   const message = data?.choices?.[0]?.message || {};
   const candidates = [];
+  // POST /images answers with { data: [{ b64_json | url }] }.
+  for (const item of Array.isArray(data?.data) ? data.data : []) candidates.push(item?.b64_json ? `data:${item.media_type || 'image/png'};base64,${item.b64_json}` : item?.url);
   for (const item of message.images || []) candidates.push(item?.image_url?.url || item?.url || item?.b64_json || item);
   if (Array.isArray(message.content)) for (const part of message.content) if (part?.type === 'image_url' || part?.type === 'output_image' || part?.type === 'image') candidates.push(part.image_url?.url || part.url || part.b64_json);
   if (typeof message.content === 'string') { const found = message.content.match(/data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+/); if (found) candidates.push(found[0]); }

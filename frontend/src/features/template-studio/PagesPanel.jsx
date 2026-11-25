@@ -103,6 +103,7 @@ export default function PagesPanel({ className = '' }) {
                         <span className={`truncate font-serif text-sm ${ink}`}>{page.name}</span>
                       </span>
                       <span className="mt-1 block"><GenerationBadge page={page} /></span>
+                      {stateOfPage(page) === 'needs-review' && page.generation?.error ? <span className="mt-1 block text-[11px] leading-snug text-[#7A5A1E]">{page.generation.error}</span> : null}
                       {page.description ? <span className={`mt-0.5 line-clamp-2 text-[11px] leading-snug ${muted}`}>{page.description}</span> : null}
                       <span className={`mt-1 block font-mono text-[10px] ${muted}`}>{page.route}</span>
                     </button>
