@@ -231,7 +231,17 @@ async function validateBrowser(url, options = {}) {
               }
               // continue() can follow redirects without invoking the route handler again.
               // Fetch without redirects, inspect Location, and never release a redirect to the browser.
-              const response = await route.fetch({ maxRedirects: 0, timeout: navigationTimeout });
+              // The preview server may drop one connection under load (a small machine building and testing at once): that is not a
+              // problem of the website. A page or picture request (GET/HEAD) is simply asked again, a couple of times, before it counts as an error.
+              let response;
+              for (let attempt = 0; ; attempt += 1) {
+                try { response = await route.fetch({ maxRedirects: 0, timeout: navigationTimeout }); break; }
+                catch (fetchError) {
+                  const transient = /ECONNRESET|socket hang up|EPIPE|ECONNREFUSED|read ECONN/i.test(String(fetchError && fetchError.message || fetchError));
+                  if (!transient || attempt >= 2 || expired || !['GET', 'HEAD'].includes(request.method())) throw fetchError;
+                  await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
+                }
+              }
               const location = response.headers().location;
               if (response.status() >= 300 && response.status() < 400 && location) {
                 const target = new URL(location, request.url()).href;

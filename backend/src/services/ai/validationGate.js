@@ -99,9 +99,15 @@ function structureChecks(checks = [], diagnostics = [], outcome = {}) {
 }
 
 // Stable identity of a failure, used to detect a repair loop that keeps producing the same error.
+// The address of the test server (its port) and the file name of a built bundle (index-CdcRU4WJ.js) differ on every build, so the same
+// crash in the site before a change and in the site after it must not look like two different errors.
+const withoutBuildNoise = (text) => String(text || '')
+  .replace(/https?:\/\/(?:127\.0\.0\.1|localhost):\d+/g, '')
+  .replace(/(\/assets\/[\w.@-]*?)-[A-Za-z0-9_-]{6,}\.(js|mjs|css)\b/g, '$1-#.$2');
+
 function diagnosticSignature(diagnostics = []) {
   return diagnostics
-    .map((item) => `${item.category || ''}|${item.path || ''}|${String(item.message || '').split('\n')[0].replace(/\d+/g, '#').slice(0, 160)}`)
+    .map((item) => `${item.category || ''}|${withoutBuildNoise(item.path)}|${withoutBuildNoise(String(item.message || '').split('\n')[0]).replace(/\d+/g, '#').slice(0, 160)}`)
     .sort().join('\n');
 }
 
