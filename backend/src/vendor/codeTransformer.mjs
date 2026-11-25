@@ -401,7 +401,10 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
     // and history.pushState throws), so every route rendered Home. Keep a virtual
     // path instead and route history/location reads through it.
     (function() {
+      // A rebuilt preview of one page of a site starts on that page (the studio sets window.__veaveInitialRoute before this runs).
       var virtualPath = '/';
+      // Do not change the line above: the server's render check replaces it to open a given route.
+      if (typeof window.__veaveInitialRoute === 'string' && window.__veaveInitialRoute.charAt(0) === '/' && window.__veaveInitialRoute.charAt(1) !== '/') virtualPath = window.__veaveInitialRoute.split(/[?#]/)[0];
       window.__veavePathname = function() { return virtualPath; };
       // A page opened by navigation starts at its top, also when the scrolling happens in a container instead of the window.
       function scrollPageToTop() {

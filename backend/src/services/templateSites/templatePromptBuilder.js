@@ -133,7 +133,7 @@ RULES:
  */
 function buildPageMessages({ template, page, otherPages = [], instruction, ownedFiles, sharedFiles = [], entityBlock = '', attachments = [], repair = null, siteContext = null, siteWide = false, intent = null, policy = null, researchBlock = '', sectionFiles = [], usageBlock = '', workList = [], conversionBlock = '' }) {
   const mode = siteContext?.mode === 'website' && siteContext?.plan ? 'website' : 'edit';
-  const system = `${mode === 'website' ? `${TRANSFORM_PREAMBLE}\n\n` : ''}${siteWide ? SITE_WIDE_RULES : rulesFor(mode)}
+  const system = `${mode === 'website' ? `${TRANSFORM_PREAMBLE}\n\n` : ''}${siteWide && mode !== 'website' ? SITE_WIDE_RULES : rulesFor(mode)}
 
 DESIGN SYSTEM (${template.name}):
 ${tokenSummary(template)}`;
