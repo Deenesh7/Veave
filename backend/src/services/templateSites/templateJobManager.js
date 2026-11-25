@@ -155,6 +155,19 @@ const FRIENDLY_MESSAGE = 'The AI tried several times but could not apply this ch
 const noticesOf = (job) => [...new Set((job?.timeline || []).filter((entry) => entry?.state === 'notice').map((entry) => entry.step))];
 const addNotice = (job, message) => TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $push: { timeline: { $each: [{ state: 'notice', step: String(message).slice(0, 400), at: new Date() }], $slice: -60 } } }).catch(() => {});
 
+/**
+ * What a failed try is "about", to tell whether the next try failed the same way. A validation failure is compared by its problems; a build
+ * or browser failure by its errors with the test server's port and the bundle's file name left out (they differ on every build). A dropped
+ * connection or a timeout is the build machine's, not the page's: it is never "the same problem", so it is simply tried again.
+ */
+function repeatSignature(error, generator) {
+  if (error?.code === 'PAGE_VALIDATION_FAILED') return generator.problemSignature(error.issues);
+  if (error?.code !== 'BUILD_VALIDATION_FAILED') return '';
+  const issues = Array.isArray(error.issues) ? error.issues : [];
+  if (!issues.length || issues.some((item) => /ECONNRESET|socket hang up|EPIPE|ECONNREFUSED|timed? ?out|Timeout/i.test(String(item?.message || '')))) return '';
+  return `build|${require('../ai/validationGate').diagnosticSignature(issues)}`;
+}
+
 function failureCode(error, { timedOut = false } = {}) {
   if (timedOut) return 'JOB_TIMEOUT';
   if (error?.code && /^[A-Z_]+$/.test(error.code) && ['PAGE_VALIDATION_FAILED', 'BUILD_VALIDATION_FAILED', 'FINAL_CHECK_FAILED', 'MODEL_ANSWER_UNUSABLE', 'NO_USABLE_CHANGES', 'INTENT_NOT_MET', 'NO_EFFECTIVE_CHANGE', 'EMPTY_INSTRUCTION', 'PAGE_FILE_MISSING', 'SITE_CHANGED', 'UNDO_USES_VERSIONS', 'PLAN_FAILED', 'PLAN_UNUSABLE', 'IDENTITY_FAILED', 'PLAN_LIMIT_REACHED'].includes(error.code)) return error.code;
@@ -609,7 +622,7 @@ class TemplateJobManager {
         if (signal?.aborted || !isHealable(error) || attemptNo === HEAL_TRIES) throw error;
         // A whole new try only helps when the last one failed differently: the same deterministic problem twice means the page cannot get
         // past it this way, and a third try would only repeat it (and its cost).
-        const signature = error?.code === 'PAGE_VALIDATION_FAILED' ? generator.problemSignature(error.issues) : '';
+        const signature = repeatSignature(error, generator);
         if (signature && signature === lastSignature) {
           logger.warn(`Template job ${job.jobId}: try ${attemptNo} failed with the same problem as the try before; not trying again.`);
           throw error;
@@ -1202,4 +1215,4 @@ module.exports = new TemplateJobManager();
 module.exports.TemplateJobManager = TemplateJobManager;
 module.exports.INSTANCE_ID = INSTANCE_ID;
 module.exports.FROM = FROM;
-module.exports.__test = { briefIsInstruction, siteContextFor, briefFromPlan };
+module.exports.__test = { briefIsInstruction, siteContextFor, briefFromPlan, repeatSignature };
