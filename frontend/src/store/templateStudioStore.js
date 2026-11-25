@@ -31,7 +31,7 @@ const initialContentWidth = () => {
 
 export const PHOTO_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif'];
 // What the page panel, the library and the section pop-up accept: pictures, and MP4 / WebM videos that play behind a section.
-export const MEDIA_TYPES = [...PHOTO_TYPES, 'video/mp4', 'video/webm'];
+export const MEDIA_TYPES = [...PHOTO_TYPES, 'video/mp4', 'video/webm', 'video/quicktime', 'video/x-m4v', '.mov', '.m4v'];
 export const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 export const MAX_ATTACH = 8;
 export const PLACEMENTS = [['', 'Let the page decide'], ['hero', 'Hero image'], ['about', 'About section'], ['gallery', 'Gallery'], ['project', 'Project cover'], ['background', 'Background image'], ['section', 'A section I name below']];

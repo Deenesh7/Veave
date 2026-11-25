@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Pencil, X, Sparkles, ImagePlus, ImageOff, Film } from 'lucide-react';
+import { Pencil, X, Sparkles, ImagePlus, ImageOff, Film, Layers } from 'lucide-react';
 import { useTemplateStudioStore, MEDIA_TYPES } from '../../store/templateStudioStore';
 import { templateSiteService, apiMessage } from '../../services/templateSiteService';
 import { PrimaryButton, GhostButton, Spinner, ink, muted, line } from './ui';
 import VoiceInputButton from './VoiceInputButton';
 import { sectionEditScript } from './sectionEditScripts';
 import { sectionOutline } from './sectionOutline';
-import { pagePhotos, matchSection } from './panelLogic';
+import { pagePhotos, matchSection, firstPictureOf, wholeSectionNote } from './panelLogic';
 import { useImageSrc } from './imageUtils';
+import { IMAGE_BUTTON_SCRIPT } from './previewScripts';
+import ImageChangeModal from './ImageChangeModal';
 
 const MAX_TEXT = 4000;
 // What the owner may type: the rest of the 4000 characters is room for the section's name and the notes put around it.
@@ -20,7 +22,7 @@ const pad = (n) => String(n).padStart(2, '0');
 function buildDocument(payload) {
   return `<!doctype html><html class="${esc(payload.htmlClass)}"><head><meta charset="utf-8">${payload.head}
 <style>html,body{margin:0;background:transparent}[data-studio-edit]{outline:1px dashed rgba(94,123,95,.65);outline-offset:2px;cursor:text;min-width:1ch}[data-studio-edit]:hover{background:rgba(94,123,95,.08)}[data-studio-edit]:focus{outline:2px solid #5E7B5F;background:rgba(94,123,95,.12)}[style*="opacity: 0"]{opacity:1!important}</style></head>
-<body class="${esc(payload.bodyClass)}"><div id="studio-edit-root">${payload.html}</div><script>(${sectionEditScript.toString()})();</script></body></html>`;
+<body class="${esc(payload.bodyClass)}"><div id="studio-edit-root">${payload.html}</div><script>(${sectionEditScript.toString()})();</script>${IMAGE_BUTTON_SCRIPT}</body></html>`;
 }
 
 /**
@@ -55,6 +57,10 @@ export default function SectionEditModal({ payload, onClose }) {
   const chosenPhotos = pagePhotos((activePageId && selection[activePageId]) || {}, images).ids.map((id) => images.find((image) => image.id === id));
   const pageUploads = uploads.filter((item) => item.pageId === activePageId && (item.status === 'queued' || item.status === 'uploading' || item.status === 'error'));
   const uploading = pageUploads.some((item) => item.status === 'queued' || item.status === 'uploading');
+  const [imageEdit, setImageEdit] = useState(null);   // a picture of this section opened with its image button
+  const [bgPicker, setBgPicker] = useState(false);     // choosing a picture or video to play behind this section
+  const [bgMedia, setBgMedia] = useState(null);        // the chosen background: a library entry
+  const [reloading, setReloading] = useState(0);       // bumped after a picture was swapped: the section is read again from the rebuilt website
   const [applying, setApplying] = useState(false); // the AI is changing this section; the popup stays open on it until that is done
   const [fresh, setFresh] = useState(null);         // the section as it is after the AI changed it: { html, head, htmlClass, bodyClass }
   const [updated, setUpdated] = useState(false);
@@ -82,6 +88,7 @@ export default function SectionEditModal({ payload, onClose }) {
       if (data.type === 'sec-edit-change') setEdits(Array.isArray(data.edits) ? data.edits.map((item) => ({ old: String(item.old || ''), next: String(item.next || '') })) : []);
       if (data.type === 'sec-edit-height') setHeight(Math.max(120, Math.min(Number(data.height) || 160, 4000)));
       if (data.type === 'sec-edit-ready') setReady(true);
+      if (data.type === 'studio-image-edit') setImageEdit({ src: String(data.src || ''), alt: String(data.alt || ''), width: Number(data.width) || 0, height: Number(data.height) || 0 });
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
@@ -123,14 +130,37 @@ export default function SectionEditModal({ payload, onClose }) {
     return () => { stop = true; };
   }, [applying, job?.status, previewKey]);
 
+  // A swapped picture: once the website has rebuilt, the section is read again so the popup shows the new picture.
   useEffect(() => {
-    const onKey = (event) => { if (event.key === 'Escape' && !saving && !applying) onClose(); };
+    if (!reloading) return undefined;
+    let stop = false;
+    const read = () => new Promise((resolve) => {
+      const key = `${Date.now()}-${Math.random()}`;
+      const on = (event) => { if (event.detail?.key === key) { window.removeEventListener('studio-section-html', on); clearTimeout(timer); resolve(event.detail.html ? event.detail : null); } };
+      const timer = setTimeout(() => { window.removeEventListener('studio-section-html', on); resolve(null); }, 1200);
+      window.addEventListener('studio-section-html', on);
+      window.dispatchEvent(new CustomEvent('studio-get-section', { detail: { key, domId: payload.domId || '', name: payload.name || '' } }));
+    });
+    (async () => {
+      const squash = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const before = squash(current.html);
+      for (let attempt = 0; attempt < 16 && !stop; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 900 : 700));
+        const got = await read();
+        if (got && squash(got.html) !== before) { setFresh({ html: got.html, head: got.head || payload.head, htmlClass: got.htmlClass ?? payload.htmlClass, bodyClass: got.bodyClass ?? payload.bodyClass }); setReady(false); setEdits([]); break; }
+      }
+    })();
+    return () => { stop = true; };
+  }, [reloading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const onKey = (event) => { if (event.key === 'Escape' && !saving && !applying && !imageEdit && !bgPicker) onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, saving, applying]);
+  }, [onClose, saving, applying, imageEdit, bgPicker]);
 
   const changed = edits.filter((item) => item.next && item.next !== item.old);
-  const canSave = !saving && !applying && !running && !busy.regenerate && !uploading && (changed.length > 0 || prompt.trim().length > 0 || chosenPhotos.length > 0);
+  const canSave = !saving && !applying && !running && !busy.regenerate && !uploading && (changed.length > 0 || prompt.trim().length > 0 || chosenPhotos.length > 0 || Boolean(bgMedia));
 
   const save = async () => {
     if (!canSave) return;
@@ -144,22 +174,25 @@ export default function SectionEditModal({ payload, onClose }) {
     }
     if (saved.length) { useTemplateStudioStore.setState((state) => ({ previewKey: state.previewKey + 1 })); useTemplateStudioStore.getState().loadRevisions?.(activePageId); }
     let started = true;
-    const text = prompt.trim() || (chosenPhotos.length ? `Use the uploaded photo${chosenPhotos.length === 1 ? '' : 's'} in this section where ${chosenPhotos.length === 1 ? 'it fits' : 'they fit'} best, replacing the current picture if there is one.` : '');
+    const bgText = bgMedia ? `Use the ${bgMedia.kind === 'video' ? 'video' : 'picture'} "${bgMedia.name}" as the BACKGROUND of this section only (behind its text, covering the whole section, with the text kept readable${bgMedia.kind === 'video' ? '; the video is muted, loops and plays automatically' : ''}).` : '';
+    const whole = bgMedia ? wholeSectionNote(firstPictureOf(current.html)) : '';
+    const text = prompt.trim() || (bgText ? `${bgText} ${whole}` : '') || (chosenPhotos.length ? `Use the uploaded photo${chosenPhotos.length === 1 ? '' : 's'} in this section where ${chosenPhotos.length === 1 ? 'it fits' : 'they fit'} best, replacing the current picture if there is one.` : '');
     if (text) {
       const lead = match ? `In section ${pad(match.number)} ("${String(title).replace(/"/g, "'")}"): ` : `In the section "${String(title).replace(/"/g, "'")}": `;
       const notes = saved.length ? `\n\n(The owner already typed these changes into this section by hand. Keep them exactly as written: ${saved.map((item) => `"${item.old}" became "${item.next}"`).join('; ')}.)` : '';
       const head = `${lead}${text}${notes}`.slice(0, MAX_TEXT - 300);
       // What the section shows NOW: after an earlier AI change in this pop-up that is the new markup, not the one it opened with.
       const outline = sectionOutline(current.html, saved, Math.max(0, Math.min(1800, MAX_TEXT - head.length - 200)));
-      const context = outline ? `\n\nSECTION CONTENT (what the visitor sees in this section right now, with the typed changes applied; for reference, change only what the instruction asks):\n${outline}` : '';
+      const context = outline ? `\n\nSECTION CONTENT (${bgMedia ? 'this whole list is the section; the background video covers all of it' : 'what the visitor sees in this section right now, with the typed changes applied; for reference, change only what the instruction asks'}):\n${outline}` : '';
       const instruction = `${head}${context}`.slice(0, MAX_TEXT);
       startKey.current = useTemplateStudioStore.getState().previewKey;
       // A video plays behind the section it is given to; a picture is placed in it.
-      const attachments = chosenPhotos.map((image) => (image.kind === 'video'
+      const photoEntries = chosenPhotos.filter((image) => !bgMedia || image.id !== bgMedia.id).map((image) => (image.kind === 'video'
         ? { path: image.path, placement: 'background', note: `Play this video as the background of the section "${String(title).replace(/"/g, "'")}" (only that section)` }
         : { path: image.path, placement: 'section', note: `For the section "${String(title).replace(/"/g, "'")}"` }));
+      const attachments = [...(bgMedia ? [{ path: bgMedia.path, placement: 'background', note: `Background of the section "${String(title).replace(/"/g, "'")}" (only that section), behind its text. ${whole}` }] : []), ...photoEntries];
       started = await regenerate(instruction, attachments, title);
-      if (started) { clearSelection?.(); setApplying(true); setUpdated(false); }
+      if (started) { clearSelection?.(); setBgMedia(null); setApplying(true); setUpdated(false); }
     }
     setSaving(false);
     if (failed.length) { setProblems(failed); if (saved.length || !started) { setEdits((list) => list.filter((item) => failed.some((f) => f.text === item.old))); } return; }
@@ -173,7 +206,7 @@ export default function SectionEditModal({ payload, onClose }) {
           <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#5E7B5F] text-white"><Pencil className="h-3.5 w-3.5" /></span>
           <div className="min-w-0 flex-1">
             <h3 className={`truncate text-sm font-semibold ${ink}`}>Edit section{match ? ` ${pad(match.number)}` : ''}: {title}</h3>
-            <p className={`text-[11px] ${muted}`}>{applying ? 'The AI is changing this section. The rest of the page is not touched.' : 'Only this section is shown. Click any text to type over it.'}</p>
+            <p className={`text-[11px] ${muted}`}>{applying ? 'The AI is changing this section. The rest of the page is not touched.' : 'Only this section is shown. Click any text to type over it, or hover a picture to change it.'}</p>
           </div>
           <button type="button" onClick={onClose} disabled={saving || applying} aria-label="Close" className={`rounded p-1 ${muted} hover:bg-[#EAE5D9] disabled:opacity-50`}><X className="h-4 w-4" /></button>
         </div>
@@ -215,6 +248,13 @@ export default function SectionEditModal({ payload, onClose }) {
                 <span className="max-w-[16rem] truncate">{title}</span>
               </span>
             </div>
+            {bgMedia ? (
+              <div className={`flex flex-wrap items-center gap-2 border-b ${line} px-2.5 py-2`} aria-label="Background for this section">
+                <span className={`text-[10px] font-semibold uppercase tracking-wider ${muted}`}>Background</span>
+                <PhotoChip siteId={activeSiteId} image={bgMedia} disabled={saving || applying || running} onRemove={() => setBgMedia(null)} />
+                <span className={`max-w-[14rem] truncate text-[11px] ${muted}`}>{bgMedia.kind === 'video' ? 'Video plays behind this section' : 'Picture behind this section'}</span>
+              </div>
+            ) : null}
             {chosenPhotos.length || pageUploads.length ? (
               <div className={`flex flex-wrap items-center gap-2 border-b ${line} px-2.5 py-2`} aria-label="Photos for this section">
                 {chosenPhotos.map((image) => <PhotoChip key={image.id} siteId={activeSiteId} image={image} disabled={saving || applying || running} onRemove={() => toggleImage(image.id, false, activePageId)} />)}
@@ -235,6 +275,7 @@ export default function SectionEditModal({ payload, onClose }) {
                 <span className={`text-[11px] ${muted}`}>{prompt.length}/{TYPED_MAX}</span>
               </span>
               <span className="flex items-center gap-1">
+              <button type="button" disabled={saving || applying || running} onClick={() => setBgPicker(true)} title="Set a picture or video as the background of this section" className={`inline-flex h-7 items-center gap-1 rounded-full border ${line} bg-white px-2.5 text-[11px] font-medium ${muted} hover:bg-[#EFEBE1] disabled:opacity-50`}><Layers className="h-3.5 w-3.5" />Background</button>
               <input ref={fileInput} type="file" multiple accept={MEDIA_TYPES.join(',')} className="hidden" aria-label="Choose photos or videos for this section" onChange={(event) => { uploadFiles(event.target.files); event.target.value = ''; }} />
               <button type="button" disabled={saving || applying || running} onClick={() => fileInput.current?.click()} aria-label="Add a photo" title="Add a photo to this section" className={`inline-flex h-7 w-7 items-center justify-center rounded-full border ${line} bg-white ${muted} hover:bg-[#EFEBE1] disabled:opacity-50`}><ImagePlus className="h-3.5 w-3.5" /></button>
               <VoiceInputButton disabled={saving || applying || running} onText={(text) => setPrompt((value) => `${value}${value && !/\s$/.test(value) ? ' ' : ''}${text}`.slice(0, TYPED_MAX))} />
@@ -245,11 +286,13 @@ export default function SectionEditModal({ payload, onClose }) {
             <p className={`text-[11px] leading-relaxed ${muted}`}>{applying ? 'Updating this section. This window stays open until it is done.' : running ? 'A page is being generated. Wait for it to finish.' : 'Typed text is saved first. The AI then gets the content of this section together with your instruction and changes only this section; every other section stays exactly as it is.'}</p>
             <div className="flex justify-end gap-2">
               {applying ? <GhostButton onClick={cancelJob} disabled={job?.status === 'committing'}>Stop</GhostButton> : <GhostButton onClick={onClose} disabled={saving}>{updated ? 'Close' : 'Cancel'}</GhostButton>}
-              <PrimaryButton onClick={save} disabled={!canSave}>{saving ? <Spinner /> : <Sparkles className="h-4 w-4" />}{prompt.trim() || chosenPhotos.length ? (changed.length ? 'Save and apply AI' : 'Apply with AI') : 'Save text'}</PrimaryButton>
+              <PrimaryButton onClick={save} disabled={!canSave}>{saving ? <Spinner /> : <Sparkles className="h-4 w-4" />}{prompt.trim() || chosenPhotos.length || bgMedia ? (changed.length ? 'Save and apply AI' : (bgMedia && !prompt.trim() ? 'Apply background' : 'Apply with AI')) : 'Save text'}</PrimaryButton>
             </div>
           </div>
         </div>
       </div>
+      {imageEdit ? <ImageChangeModal key={imageEdit.src} target={imageEdit} zClass="z-[90]" onClose={() => setImageEdit(null)} onDone={() => setReloading((n) => n + 1)} onVideo={(media) => setBgMedia(media || null)} /> : null}
+      {bgPicker ? <ImageChangeModal key="bg" target={{ src: '' }} mode="background" zClass="z-[90]" onClose={() => setBgPicker(false)} onPick={(media) => setBgMedia(media || null)} /> : null}
     </div>,
     document.body
   );

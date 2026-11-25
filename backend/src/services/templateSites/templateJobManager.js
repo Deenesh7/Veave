@@ -52,6 +52,13 @@ const FROM = {
   cancelled: ['queued', 'processing', 'validating', 'repairing']
 };
 const PROGRESS = { queued: 5, processing: 15, validating: 60, repairing: 70, committing: 90, completed: 100 };
+// The bar for a page job, by step: writing, checking against the request, the browser tests, the build stages, saving.
+const STEP_PROGRESS = [
+  [/^Understanding/, 8], [/^Searching the web/, 12], [/^Creating the pictures|^Creating pictures/, 14], [/^Writing the page/, 18], [/^Fixing \d+ problem/, 30],
+  [/^Checking the change against/, 40], [/^Writing browser tests/, 50], [/^Building the site and testing/, 56], [/^Checking the code/, 60],
+  [/^Installing/, 64], [/^Building the website/, 70], [/^Starting the website/, 74], [/^Testing every page/, 78], [/^Fixing a build/, 80],
+  [/^Retrying the build|^Checking the build without|^Retrying the browser test/, 82], [/^Finishing the checks/, 86], [/^Checking the final result/, 88], [/^Checks passed/, 89]
+];
 
 /** New pictures of a change are stored in object storage first, so the saved change refers to them by reference (not by megabytes in the job). */
 async function collectAssets(files, changedPaths) {
@@ -75,8 +82,27 @@ function clearPending(plan = []) {
 }
 
 /** Website-level context given to every page generation: the website's name and brief, and every page with its purpose. */
+/**
+ * The website brief as the AI may read it. A brief saved from a page instruction (older sites: "rewrite the page for X and remove the rent
+ * content" followed by the studio's PAGE CONTEXT of the Listings page) is cut to the owner's own words, so no later job of another page is
+ * judged against that page's request.
+ */
+const cleanBrief = (brief) => require('./templateValidationService').ownerWords(String(brief || '')).trim();
+
+/** A website description for the brief, written from the plan (what the website is and is for), never from an instruction. */
+function briefFromPlan(plan, subject = '') {
+  const identity = plan?.identity || {};
+  const who = subject || identity.name || '';
+  const kind = [identity.organizationType, identity.category].filter(Boolean).join(', ');
+  return [`A website for ${who || 'the organisation'}${kind ? ` (${kind})` : ''}.`, identity.purpose || '', identity.audience?.length ? `Audience: ${identity.audience.join(', ')}.` : ''].filter(Boolean).join(' ').slice(0, 4000);
+}
+
+// A brief that carries the studio's page context was saved from one page's instruction, not written as a description of the website.
+const briefIsInstruction = (brief) => /\n\n(?:PAGE CONTEXT|PAGE CONTENT|SECTION(?: \d+)? CONTENT|\(The owner)/.test(String(brief || ''));
+const usableBrief = (site, plan) => (plan?.identity && briefIsInstruction(site.brief) ? briefFromPlan(plan) : cleanBrief(site.brief));
+
 function siteContextFor(site, pages, written = [], { plan = site.plan || null, mode = 'edit' } = {}) {
-  return { name: plan?.identity?.name || site.name, brief: site.brief || '', theme: site.theme || null, pages: pages.map((item) => ({ name: item.name, route: item.route, description: item.description })), written, plan, mode };
+  return { name: plan?.identity?.name || site.name, brief: usableBrief(site, plan), theme: site.theme || null, pages: pages.map((item) => ({ name: item.name, route: item.route, description: item.description })), written, plan, mode };
 }
 
 /** What each page of a whole-website run is asked to do: the brief is website-level context, this line is the page-level task. */
@@ -282,9 +308,12 @@ class TemplateJobManager {
 
   /** One atomic transition. Returns the updated job, or null when the job is not in a state that may move there. */
   move(jobId, to, extra = {}) {
+    // Progress only goes forward: a retry ("Improving the result, try 2 of 3") or a repair moves the state back, never the bar.
+    const { progress, ...rest } = extra;
+    const value = progress ?? PROGRESS[to];
     return TemplateGenerationJob.findOneAndUpdate(
       { jobId, status: { $in: FROM[to] } },
-      { $set: { status: to, progress: PROGRESS[to] ?? undefined, ...(['completed', 'failed', 'cancelled'].includes(to) ? { activeKey: null } : {}), ...extra } },
+      { $set: { status: to, ...(['completed', 'failed', 'cancelled'].includes(to) ? { activeKey: null } : {}), ...rest }, ...(Number.isFinite(value) ? { $max: { progress: value } } : {}) },
       { new: true }
     );
   }
@@ -376,7 +405,9 @@ class TemplateJobManager {
   onState(job) {
     return (state, detail) => {
       const to = state === 'generating' ? 'processing' : state;
-      this.progress(job.jobId, to, detail || state).catch(() => {});
+      // Where the step is in the whole run (the bar only ever moves forward, see move()).
+      const step = STEP_PROGRESS.find(([pattern]) => pattern.test(String(detail || '')));
+      this.progress(job.jobId, to, detail || state, step ? { progress: step[1] } : {}).catch(() => {});
     };
   }
 
@@ -397,7 +428,8 @@ class TemplateJobManager {
     await this.progress(job.jobId, 'processing', 'Understanding the website you want', { progress: 5 });
     // The planner reads what the owner typed, not the section list the studio appends (it names the OLD website's sections).
     const typed = require('./templateValidationService').ownerWords(job.instruction).trim() || job.instruction;
-    const brief = site.brief && site.brief !== typed ? `${typed}\n\n(An earlier description of this website, which the instruction above overrides where they differ: ${site.brief})` : typed;
+    const earlier = cleanBrief(site.brief);
+    const brief = earlier && earlier !== typed ? `${typed}\n\n(An earlier description of this website, which the instruction above overrides where they differ: ${earlier})` : typed;
     const created = await planner.createPlan({ template, pages, files, brief, ownerName: planner.ownerNameFor(site.name, template), deps: this.deps, signal });
     let spent = Number(created.usage?.totalTokens ?? created.usage?.total_tokens ?? 0) || 0;
     const current = site.plan?.identity?.category;
@@ -406,7 +438,8 @@ class TemplateJobManager {
     signal.throwIfAborted();
     const restricted = planner.restrictToExisting(created.plan, pages, page);
     let sitePlan = { ...restricted, jobId: job.jobId, sitemapApplied: true, identityApplied: false, imagesApplied: false };
-    await TemplateSite.updateOne({ _id: site._id }, { $set: { plan: sitePlan, ...(site.brief ? {} : { brief: job.instruction.slice(0, 4000) }) } });
+    // The brief describes the WEBSITE (from the plan), never this page's instruction: it is read by every later job of every page.
+    await TemplateSite.updateOne({ _id: site._id }, { $set: { plan: sitePlan, ...(site.brief ? {} : { brief: briefFromPlan(sitePlan, (() => { try { return require('../ai/intentUnderstandingService').namedSubject(owner) || ''; } catch { return ''; } })()) }) } });
     // The existing pages take the planner's names (routes never change), so the menu and the page list say the same thing.
     for (const entry of restricted.pages) {
       const existing = pages.find((item) => item.route === entry.route);
@@ -480,10 +513,18 @@ class TemplateJobManager {
 
   async runRegenerate(job, signal) {
     let { site, pages, files, template } = await this.context(job);
+    // A brief saved from an earlier page instruction is replaced, once, by a description of the website from its plan.
+    if (site.plan?.identity && briefIsInstruction(site.brief)) {
+      const fixed = briefFromPlan(site.plan);
+      await TemplateSite.updateOne({ _id: site._id, brief: site.brief }, { $set: { brief: fixed } });
+      logger.info(`Site ${site._id}: its brief was a page instruction; it now describes the website.`);
+      site.brief = fixed;
+    }
     // A detail page whose sample record is gone opens on "not found": it is moved to a record that exists before it is written.
     if ((await require('./templatePageService').healSampleRoutes(site, { pages, files }).catch(() => [])).length) ({ site, pages, files, template } = await this.context(job));
     const page = pages.find((item) => String(item._id) === String(job.pageId));
     if (!page) throw new NotFoundError('Page');
+    this.placeNamedSection(job, files, page);
     let adapted = false;
     try {
       adapted = await this.adaptToCategory({ job, site, pages, files, template, page, signal });
@@ -509,7 +550,13 @@ class TemplateJobManager {
       ({ site, pages, files, template } = await this.context(job));
     }
     await this.progress(job.jobId, 'processing', 'Writing the page');
-    const photos = await require('./templateUploadService').resolveAttachments(site, job.attachmentPlacements?.length ? job.attachmentPlacements : job.attachments);
+    let photos = await require('./templateUploadService').resolveAttachments(site, job.attachmentPlacements?.length ? job.attachmentPlacements : job.attachments);
+    // The owner asks for pictures that do not exist yet ("add a photo of the campus"): the image model makes them, and they are placed like
+    // uploaded photos (in the section named, every one checked to be on the page). A website adaptation made its own pictures already.
+    if (!adapted && !job.rewrite) {
+      const made = await this.makePagePictures({ job, site, files, page, photos, signal });
+      if (made.length) { photos = [...photos, ...made]; ({ site, pages, files, template } = await this.context(job)); }
+    }
     // Self-healing: a failed try (the AI's answer was unusable, a check or the build failed) is tried again, with what went wrong told to the AI
     // so it takes another way. The owner only sees a failure when every try has failed, and then in plain words.
     // Every name is quoted on its own: the names come from the instruction's "In section 01 ("A"), section 02 ("B"):" lead when it has one
@@ -522,13 +569,22 @@ class TemplateJobManager {
     const history = await this.pageHistory(job, page);
     const onResearch = (research) => { TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $set: { research } }).catch(() => {}); };
     const onIntent = (intent) => { TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $set: { intent } }).catch(() => {}); };
+    let lastSignature = '';
     for (let attemptNo = 1; attemptNo <= HEAL_TRIES; attemptNo += 1) {
-      const attemptInstruction = (text) => (lastProblem ? `${text}\n\n(A previous try at this same instruction failed: ${lastProblem}. Take a different, simpler and safer way to make the same change: keep every import and component name valid, make sure every opening tag has its closing tag and the code builds. If the failure was a syntax or build error, return the complete file with "modify" instead of patches.)` : text);
+      const attemptInstruction = (text) => (lastProblem ? `${text}\n\n(A previous try at this same instruction failed: ${lastProblem}. Take a different, simpler and safer way to make the same change: keep every import and component name valid, make sure every opening tag has its closing tag and the code builds. If the failure was a syntax or build error, return the complete file with "modify" instead of patches. If it was content of the old website, change exactly the file and text it names, or stop rendering that component on this page.)` : text);
       try {
         result = await generator.regeneratePage({ template, page, pages, files, instruction: attemptInstruction(baseInstruction), attachments: photos, deps: this.deps, signal, onState: this.onState(job), onTiming: (entry) => { TemplateGenerationJob.updateOne({ jobId: job.jobId }, { $push: { callTimings: { $each: [entry], $slice: -40 } } }).catch(() => {}); }, siteContext: siteContextFor(site, pages, [], { mode: (job.rewrite || adapted) ? 'website' : 'edit' }), history, onIntent, onResearch });
         break;
       } catch (error) {
         if (signal?.aborted || !isHealable(error) || attemptNo === HEAL_TRIES) throw error;
+        // A whole new try only helps when the last one failed differently: the same deterministic problem twice means the page cannot get
+        // past it this way, and a third try would only repeat it (and its cost).
+        const signature = error?.code === 'PAGE_VALIDATION_FAILED' ? generator.problemSignature(error.issues) : '';
+        if (signature && signature === lastSignature) {
+          logger.warn(`Template job ${job.jobId}: try ${attemptNo} failed with the same problem as the try before; not trying again.`);
+          throw error;
+        }
+        lastSignature = signature;
         lastProblem = String(error?.message || error).replace(/\s+/g, ' ').slice(0, 400);
         logger.warn(`Template job ${job.jobId}: try ${attemptNo} of ${HEAL_TRIES} failed (${error?.code || 'error'}); trying again. ${lastProblem}`);
         await this.progress(job.jobId, 'processing', `Improving the result (try ${attemptNo + 1} of ${HEAL_TRIES})`);
@@ -680,6 +736,45 @@ class TemplateJobManager {
     const next = [...fresh.files.filter((item) => item.path !== file.path), file];
     const diff = store.diffFiles(fresh.files, next);
     await this.applyChange({ job, site: fresh.site, page: null, pending: { changed: diff.changed, previous: diff.previous, assets: await collectAssets(next, [file.path]), validation: { mode: 'picture' } }, revisionJobId: `${job.jobId}:img:${file.path}`, instruction: 'Website picture' });
+  }
+
+  /**
+   * 'In the section "Anatomy and Physiology": ...' from the section pop-up names the block by its first heading, which on a grid of cards is
+   * the first CARD. The name is placed on the page's real section ('In section 02 ("Neighbourhood Tile"): ...', so the section is known,
+   * numbered and every other section locked), with a note of the card the owner opened. Changes the job in memory only.
+   */
+  placeNamedSection(job, files, page) {
+    const lead = /^In the section "([^"]+)":\s*/.exec(String(job.instruction || ''));
+    if (!lead) return;
+    let found = null;
+    try { found = require('./templatePageService').resolveSection(files, page, lead[1]); } catch { found = null; }
+    if (!found) return;
+    const note = found.record ? `\n\n(The owner opened this section on the card "${found.record}", one of the ${found.records.length || 'several'} records of ${found.dataPath} that it shows${found.records.length ? `: ${found.records.map((item) => `"${item}"`).join(', ')}` : ''}. "All", "every" or "each" means all of those records.)` : '';
+    job.instruction = `In section ${String(found.number).padStart(2, '0')} ("${found.name}"): ${job.instruction.slice(lead[0].length)}${note}`.slice(0, 6000);
+    job.focusSection = found.name;
+    logger.info(`Template job ${job.jobId}: the section "${lead[1]}" is section ${found.number} "${found.name}" of the ${page.name} page${found.record ? ` (a card of ${found.dataPath})` : ''}.`);
+  }
+
+  /** Pictures the owner's instruction asks for, made by the image model and saved to the site. Returns them as attachments ([] when none). */
+  async makePagePictures({ job, site, files, page, photos, signal }) {
+    const pictures = require('./templatePagePictures');
+    const owner = require('./templateValidationService').ownerWords(job.instruction);
+    if (!require('./templateImageGenerator').isEnabled(this.deps) || !pictures.wantsPictures(owner, photos)) return [];
+    let sections = [];
+    try { sections = require('./templatePageService').extractSections((files.find((file) => file.path === page.componentPath) || {}).content || '').map((item) => item.name); } catch { /* sections are optional */ }
+    const brand = generator.brandOf(files);
+    // A section drawn once per record (department cards): the picture planner is told the records, so "all the cards" is one picture each.
+    const named = require('./templateValidationService').namedSections(job.instruction)[0];
+    let section = null;
+    try { section = named ? require('./templatePageService').resolveSection(files, page, named) : null; } catch { section = null; }
+    const planned = await pictures.planPictures({ ownerWords: owner, page, sections, website: brand || site.name, records: section?.records || [], recordsPath: section?.dataPath || '', focus: section?.name || '', deps: this.deps, signal });
+    await this.noteExtraTokens(job, Number(planned.usage?.total_tokens ?? planned.usage?.totalTokens ?? 0) || 0);
+    if (!planned.pictures.length) return [];
+    await this.progress(job.jobId, 'processing', `Creating the pictures for this page (${planned.pictures.length})`);
+    const identity = site.plan?.identity || { category: brand || site.name, name: brand || site.name };
+    const outcome = await siteImages.generateSiteImages({ userId: job.userId, projectId: site.projectId, plan: { identity, images: pictures.entriesFor(planned.pictures, page, job.jobId) }, deps: this.deps, signal, persist: ({ file }) => this.persistPicture(job, file) });
+    logger.info(`Template job ${job.jobId}: ${outcome.ready} of ${planned.pictures.length} picture(s) made for the ${page.name} page${outcome.notes.length ? ` (${outcome.notes.join('; ')})` : ''}.`);
+    return pictures.asAttachments(outcome.images);
   }
 
   /** The pictures the owner tied to this page (and only those), as inputs for resolveAttachments. */
@@ -970,3 +1065,4 @@ module.exports = new TemplateJobManager();
 module.exports.TemplateJobManager = TemplateJobManager;
 module.exports.INSTANCE_ID = INSTANCE_ID;
 module.exports.FROM = FROM;
+module.exports.__test = { briefIsInstruction, siteContextFor, briefFromPlan };

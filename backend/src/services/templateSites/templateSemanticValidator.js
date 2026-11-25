@@ -9,31 +9,61 @@
 const BaseLLMProvider = require('../llm/baseProvider');
 const { issue } = require('./templateValidationService');
 const logger = require('../../utils/logger');
+const audit = require('./templateContentAudit');
 
-const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const STOP = new Set(['the', 'and', 'for', 'with', 'our', 'your', 'from', 'that', 'this', 'are', 'you', 'all', 'about', 'page', 'section']);
 
-/** The words a visitor can read in a source file: JSX text, text-like attributes and the strings of data objects (class names are not text). */
-function visibleText(source) {
-  const text = String(source || '').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1').replace(/^import .*$/gm, '');
-  const out = [];
-  // Text between tags. The ">" of an arrow function ("=>") or a comparison starts no text, and a run that holds code (statements, calls, array
-  // literals of strings) is code that sits between two tags, not something a visitor reads.
-  for (const match of text.matchAll(/(?<![=!-])>([^<>{}]{2,})</g)) if (!/;|=>|&&|\|\||\w\s*\(|[\[,]\s*['"`]|['"`]\s*[\],]/.test(match[1])) out.push(match[1]);
-  for (const match of text.matchAll(/\b(?:alt|title|placeholder|aria-label|label|description|eyebrow|heading|subtitle|text|cta|content)\s*=\s*(?:"([^"]+)"|\{['"`]([^'"`]+)['"`]\})/g)) out.push(match[1] || match[2]);
-  for (const match of text.matchAll(/\b(?:title|label|name|summary|description|text|heading|question|answer|category|role|quote|eyebrow|tagline|alt)\s*:\s*(?:'([^']+)'|"([^"]+)"|`([^`]+)`)/g)) out.push(match[1] || match[2] || match[3]);
-  for (const match of text.matchAll(/\{\s*['"`]([^'"`{}]{3,})['"`]\s*\}/g)) out.push(match[1]);
-  return out.map((item) => item.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
-}
+/**
+ * The words a visitor can read in a source file: JSX text, text-like attributes and the strings of data objects. Class names, routes and
+ * link targets ("/listings"), import paths, ids, slugs and identifiers are code, not text (see templateContentAudit).
+ */
+const visibleText = (source) => audit.visibleText(source);
 
 /** Which of `terms` appear in `text` as whole words (plural allowed). */
-function findAvoided(text, terms = []) {
-  const found = [];
-  for (const term of terms) {
-    const pattern = new RegExp(`(?<![A-Za-z0-9])${escapeRegex(String(term).trim())}(?:s|es)?(?![A-Za-z0-9])`, 'i');
-    if (term && pattern.test(text)) found.push(term);
+const findAvoided = (text, terms = []) => audit.findTerms(text, terms);
+
+const KIND_LABEL = { section: 'heading', visible: 'text', component: 'text', data: 'record' };
+const where = (items) => items.slice(0, 4).map((item) => `${KIND_LABEL[item.kind] || 'text'} "${item.text}" (line ${item.line})`).join('; ');
+// The findings behind a problem travel with it (not shown to the model): the generator can correct short leftovers itself.
+const withLeaks = (items, problem) => Object.defineProperty(problem, 'leaks', { value: items, enumerable: false });
+const termsOf = (items) => [...new Set(items.flatMap((item) => item.terms))];
+
+/**
+ * The old website's wording that a visitor of the page would read, one problem per kind and file so the repair goes to the right file:
+ * the page's own text and headings (one problem, as before), each rendered component, each rendered data file, and old components the
+ * page still imports without using them.
+ */
+function leakProblems({ plan, page, files, scope, baseline, conversion }) {
+  const findings = audit.auditPage({ plan, page, files, scope, baseline, conversion });
+  if (!findings.length) return [];
+  const problems = [];
+  const category = plan.identity?.category || 'new';
+  const vocabulary = (terms) => (plan.terminology || []).filter((item) => terms.some((term) => term.toLowerCase() === String(item.from).toLowerCase())).map((item) => `${item.from} -> ${item.to}`);
+  const sections = (plan.pages || []).find((item) => item.route === page.route)?.sections || [];
+  const own = findings.filter((item) => item.kind === 'visible' || item.kind === 'section');
+  if (own.length) {
+    const terms = termsOf(own);
+    const map = vocabulary(terms);
+    const headings = own.filter((item) => item.kind === 'section');
+    problems.push(withLeaks(own, issue('semantic', `The page still contains content from the template's original website: ${terms.slice(0, 8).map((term) => `"${term}"`).join(', ')}. Found in ${page.componentPath}: ${where(own)}.`, { path: page.componentPath, route: page.route, cause: `The template was made for a different kind of website; this one is ${category}.`, action: `${headings.length ? `The heading(s) ${headings.slice(0, 3).map((item) => `"${item.text}"`).join(', ')} introduce sections about the old website: replace each of those WHOLE sections (heading, text, cards and the data they show)${sections.length ? ` with sections this page needs (${sections.join('; ')})` : ''}. ` : ''}Rewrite those headings, sentences, labels and captions for the ${category} website${map.length ? ` (${map.join('; ')})` : ''}. Do not just swap one word. Routes, link targets and variable names are not wording: leave them.` })));
   }
-  return found;
+  const byFile = new Map();
+  for (const item of findings.filter((entry) => entry.kind === 'component' || entry.kind === 'data')) (byFile.get(`${item.kind}|${item.unusedImport || item.path}`) || byFile.set(`${item.kind}|${item.unusedImport || item.path}`, []).get(`${item.kind}|${item.unusedImport || item.path}`)).push(item);
+  for (const items of byFile.values()) {
+    const first = items[0];
+    if (first.unusedImport) {
+      problems.push(withLeaks(items, issue('semantic', `${page.componentPath} still imports ${first.unusedImport}, a component of the template's original website, without using it.`, { path: page.componentPath, route: page.route, cause: 'An old-industry component left behind after the page was converted.', action: `Remove the line "${first.text}" from ${page.componentPath}.` })));
+      continue;
+    }
+    const terms = termsOf(items);
+    const map = vocabulary(terms);
+    if (first.kind === 'data') {
+      problems.push(withLeaks(items, issue('semantic', `The page shows records of ${first.path} that still belong to the template's original website: ${terms.slice(0, 6).map((term) => `"${term}"`).join(', ')}. Found: ${where(items)}.`, { path: first.path, route: page.route, cause: `The page renders this data; its visible fields are about a different kind of website than ${category}.`, action: first.owned ? `Rewrite the visible fields of those records in ${first.path} for the ${category} website${map.length ? ` (${map.join('; ')})` : ''}; keep the export names, field names, ids and slugs so every page that reads them still works. Or stop showing those fields on this page.` : `Stop showing those fields on this page, or put the new content in a NEW file under src/data/.` })));
+    } else {
+      problems.push(withLeaks(items, issue('semantic', `The component ${first.path}, which this page renders, still shows wording of the template's original website: ${terms.slice(0, 6).map((term) => `"${term}"`).join(', ')}. Found: ${where(items)}.`, { path: first.path, route: page.route, cause: `A component of the old website on a ${category} page.`, action: `${first.owned ? `Rewrite that visible wording in ${first.path} for the ${category} website${map.length ? ` (${map.join('; ')})` : ''} (other pages use it too: keep its props, exports and links), or ` : ''}stop rendering ${first.path} on this page and build the section with markup in the page or a NEW component under src/components/. Its links and routes are not wording: leave them.` })));
+    }
+  }
+  return problems;
 }
 
 const STAT = /\b\d[\d,.]*\s?(?:\+|%)(?![\w])|\b\d[\d,]*\+?\s+(?:students?|faculty|alumni|graduates|recruiters|companies|patents|publications|beds|doctors|clients|customers|users|employees|countries|awards|acres|programs?|courses?)\b/gi;
@@ -63,18 +93,15 @@ function placeholders(text) {
 const words = (text) => (String(text || '').toLowerCase().match(/[a-z0-9]+/g) || []).filter((word) => word.length >= 4 && !STOP.has(word));
 
 /** Problems found without asking a model. `files` are the candidate files; `scope.ownedList` says which of them this page owns. */
-function deterministicProblems({ plan, page, files, scope, brief }) {
+function deterministicProblems({ plan, page, files, scope, brief, baseline = null, conversion = false }) {
   const problems = [];
-  const owned = scope.ownedList.map((path) => files.find((file) => file.path === path)).filter(Boolean);
+  // What the page shows now: a file it no longer imports (or imports without using) shows nothing and is not judged.
+  const owned = audit.shownFiles({ files, page, scope, baseline }).checked.map((path) => files.find((file) => file.path === path)).filter(Boolean);
   const source = owned.map((file) => String(file.content || '')).join('\n');
   const text = owned.map((file) => visibleText(file.content)).join('\n');
-  const entry = plan.pages.find((item) => item.route === page.route) || null;
+  const entry = (plan.pages || []).find((item) => item.route === page.route) || null;
 
-  const leaked = findAvoided(text, plan.avoidTerms);
-  if (leaked.length) {
-    const map = plan.terminology.filter((item) => leaked.some((term) => term.toLowerCase() === item.from.toLowerCase())).map((item) => `${item.from} -> ${item.to}`);
-    problems.push(issue('semantic', `The page still contains content from the template's original website: ${leaked.slice(0, 8).map((term) => `"${term}"`).join(', ')}.`, { path: page.componentPath, route: page.route, cause: `The template was made for a different kind of website; this one is ${plan.identity.category}.`, action: `Rewrite those headings, sentences, labels and captions for the ${plan.identity.category} website${map.length ? ` (${map.join('; ')})` : ''}. Do not just swap one word.` }));
-  }
+  problems.push(...leakProblems({ plan: { ...plan, terminology: plan.terminology || [], avoidTerms: plan.avoidTerms || [] }, page, files, scope, baseline, conversion }));
   if (!plan.matchesTemplate && /\/images\/(?:hero|card-\d)\.svg/.test(source)) {
     problems.push(issue('semantic', 'The page still uses the template\'s own pictures, which show a different kind of website.', { path: page.componentPath, route: page.route, cause: 'The template\'s illustrations are not about this website.', action: 'Use the owner\'s uploaded photos if listed, otherwise the neutral photo slots /images/slot-hero.svg, /images/slot-1.svg, /images/slot-2.svg, /images/slot-3.svg.' }));
   }
@@ -128,7 +155,7 @@ const judgeEnabled = (deps = {}) => {
 /** One short judgement: does this page serve its purpose for this kind of website? Never blocks on its own failure. */
 async function judge({ plan, page, files, scope, deps = {}, signal }) {
   if (!judgeEnabled(deps)) return { problems: [], usage: null };
-  const owned = scope.ownedList.map((path) => files.find((file) => file.path === path)).filter(Boolean);
+  const owned = audit.shownFiles({ files, page, scope }).checked.map((path) => files.find((file) => file.path === path)).filter(Boolean);
   const text = owned.map((file) => visibleText(file.content)).join('\n').slice(0, 6000);
   const entry = plan.pages.find((item) => item.route === page.route);
   const messages = [
@@ -148,8 +175,8 @@ async function judge({ plan, page, files, scope, deps = {}, signal }) {
 }
 
 /** All semantic problems of a candidate page: deterministic first, the judge only when those pass (it is the expensive one). */
-async function semanticProblems({ plan, page, files, scope, brief, deps, signal }) {
-  const found = deterministicProblems({ plan, page, files, scope, brief: brief || plan.brief });
+async function semanticProblems({ plan, page, files, scope, brief, deps, signal, baseline = null, conversion = false }) {
+  const found = deterministicProblems({ plan, page, files, scope, brief: brief || plan.brief, baseline, conversion });
   if (found.length) return { problems: found, usage: null };
   return judge({ plan, page, files, scope, deps, signal });
 }
@@ -217,4 +244,4 @@ function siteWideProblems({ plan, files, pages, originalFiles = [], brief = '' }
   return out;
 }
 
-module.exports = { placeholders, foreignBrands, siteWideProblems, visibleText, findAvoided, unprovidedFacts, deterministicProblems, semanticProblems, judge, judgeEnabled };
+module.exports = { placeholders, foreignBrands, siteWideProblems, visibleText, findAvoided, leakProblems, unprovidedFacts, deterministicProblems, semanticProblems, judge, judgeEnabled };

@@ -53,7 +53,7 @@ async function inspectImage(buffer) {
  * Is this an MP4 or a WebM that every browser can play? Decided from the bytes, never from the name. Returns { mime, extension } or null.
  * (A HEIC/AVIF picture and a QuickTime .mov also start with "ftyp", so the brand decides: only the MP4 family is accepted.)
  */
-const MP4_BRANDS = new Set(['isom', 'iso2', 'iso4', 'iso5', 'iso6', 'mp41', 'mp42', 'avc1', 'M4V ', 'M4VH', 'M4VP', 'dash', 'msdh', 'msix', 'mmp4', 'f4v ']);
+const MP4_BRANDS = new Set(['isom', 'iso2', 'iso4', 'iso5', 'iso6', 'mp41', 'mp42', 'avc1', 'M4V ', 'M4VH', 'M4VP', 'dash', 'msdh', 'msix', 'mmp4', 'f4v ', 'qt  ']);
 function sniffVideo(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 16) return null;
   if (buffer.toString('latin1', 4, 8) === 'ftyp') {

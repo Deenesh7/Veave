@@ -4,7 +4,8 @@ export const PHOTO_EXTENSIONS = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'im
 export const PHOTO_MIME_TYPES = Object.values(PHOTO_EXTENSIONS).filter((value, index, all) => all.indexOf(value) === index);
 export const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 // A video (MP4 or WebM) plays behind a section. It is bigger than a picture, so it has its own limit (the server checks the real bytes).
-export const VIDEO_EXTENSIONS = { mp4: 'video/mp4', webm: 'video/webm' };
+// QuickTime (.mov, the usual recording of a Mac or iPhone) and .m4v are accepted too: the server stores them as MP4, which every browser plays.
+export const VIDEO_EXTENSIONS = { mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', m4v: 'video/x-m4v' };
 export const VIDEO_MIME_TYPES = Object.values(VIDEO_EXTENSIONS);
 export const MAX_VIDEO_BYTES = 25 * 1024 * 1024;
 const extensionOf = (file) => String(file?.name || '').split('.').pop().toLowerCase();
@@ -24,7 +25,7 @@ export function validatePhotoFile(file, { maxBytes = MAX_PHOTO_BYTES, allowVideo
   if (!file) return allowVideo ? 'Choose a picture or a video to upload.' : 'Choose a picture to upload.';
   const extension = extensionOf(file);
   if (allowVideo && isVideoFile(file)) {
-    if (!VIDEO_MIME_TYPES.includes(file.type) && file.type) return 'Use an MP4 or WebM video. Other video formats (such as MOV or AVI) do not play in every browser.';
+    if (!VIDEO_MIME_TYPES.includes(file.type) && file.type) return 'Use an MP4 or WebM video. Other video formats (such as AVI or MKV) do not play in every browser.';
     if (file.size === 0) return 'The file is empty.';
     if (file.size > maxVideoBytes) return `The video is larger than ${Math.round(maxVideoBytes / 1048576)} MB. Shorten it or compress it, then upload it again.`;
     return null;
@@ -34,6 +35,22 @@ export function validatePhotoFile(file, { maxBytes = MAX_PHOTO_BYTES, allowVideo
   if (file.size === 0) return 'The file is empty.';
   if (file.size > maxBytes) return `The picture is larger than ${Math.round(maxBytes / 1048576)} MB.`;
   return null;
+}
+
+/** The first picture of a piece of page markup, as the path the site's code uses: { path, alt } (null when there is none). */
+export function firstPictureOf(html) {
+  try {
+    const img = new DOMParser().parseFromString(String(html || ''), 'text/html').querySelector('img');
+    if (!img) return null;
+    const src = img.getAttribute('src') || '';
+    const match = /\/api\/preview-assets\/[a-f0-9]+(\/[^?#]*)/i.exec(src);
+    return { path: match ? match[1] : src.split(/[?#]/)[0], alt: img.getAttribute('alt') || '' };
+  } catch { return null; }
+}
+
+/** What a background video must cover: the WHOLE section, not the heading or the list the AI happens to find first. */
+export function wholeSectionNote(picture, { listed = true } = {}) {
+  return `The section is EVERYTHING ${listed ? 'listed under SECTION CONTENT' : 'in the block that holds the picture (its text, headings, lists and figures)'}, from its first item to its last${picture ? ` (it begins with the picture "${picture.alt || picture.path}", src ${picture.path})` : ''}. Put ONE wrapper around all of those elements (give it relative, isolate and overflow-hidden, with the video absolutely positioned behind them), so the video sits behind the whole section and not behind only a heading or a list. Do not put the video in any other part of the page.`;
 }
 
 /** Image files from a drop or paste, by type or (when the browser gives none) by extension. */
@@ -57,7 +74,7 @@ export function normalizeSections(list) {
   if (!Array.isArray(list)) return [];
   const seen = new Map();
   return list.map((raw, order) => {
-    const name = String((raw && typeof raw === 'object' ? raw.name : raw) ?? '').replace(/\s+/g, ' ').trim();
+    const name = String((raw && typeof raw === 'object' ? raw.name : raw) ?? '').replace(/\$\{[^}]*\}|\{\{[^}]*\}\}/g, '').replace(/\s+/g, ' ').trim();
     if (!name) return null;
     const wanted = raw && typeof raw === 'object' && raw.id ? String(raw.id) : slugOf(name);
     const count = (seen.get(wanted) || 0) + 1;

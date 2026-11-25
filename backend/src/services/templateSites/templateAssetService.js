@@ -214,4 +214,26 @@ async function readAssetFile(user, siteId, assetId, { version = 'original' } = {
   return { buffer: Buffer.from(file.content || '', 'base64'), mime: asset.mime || 'application/octet-stream', name: asset.originalName || 'image' };
 }
 
-module.exports = { swapReferences, reapStale, findAsset, readAssetFile, listAssets, updateAsset, removeAsset, replaceAsset, textFiles, usageOf };
+/**
+ * Points one picture the page shows (any path or address written in the site's code: a template picture, an earlier upload, a web
+ * address) at a picture of the library. Every place that names the old one now shows the new one; each page that changed gets a revision.
+ */
+async function swapImageReference({ user, siteId, fromPath, imageId }) {
+  const site = await getSite(user, siteId);
+  const asset = await findAsset(site, imageId);
+  if (asset.deletedAt) throw new ConflictError('This picture was removed from the library. Choose or upload another one.');
+  if ((asset.kind || 'image') !== 'image') throw new ValidationError('Choose a picture, not a video.');
+  const from = String(fromPath || '').trim();
+  if (!from || from.length > 600 || /[\r\n<>"'`]/.test(from)) throw new ValidationError('That picture could not be identified.');
+  const to = uploads.toPublic(asset.projectPath);
+  if (from === to) return { photo: uploads.present(asset), replaced: false, pages: [] };
+  await assertNoRunningJob(site._id);
+  if (!(await textFiles(site)).some((file) => file.content.includes(from))) throw new ValidationError('This picture is not written in the site\'s code (it may be drawn by the page itself), so it cannot be swapped here.');
+  await require('./templateVersionService').snapshotBefore(site, user, 'Before changing a picture', { operation: 'replace-image' });
+  const touched = await swapReferences({ site, user, fromPath: from, toPath: to, instruction: `Changed a picture to "${asset.originalName || asset.projectPath}"` });
+  if (touched.length) await TemplateAsset.updateOne({ _id: asset._id }, { $addToSet: { pageIds: { $each: touched } } });
+  else await bumpSite(site._id);
+  return { photo: uploads.present(await TemplateAsset.findById(asset._id).lean()), replaced: true, pages: touched };
+}
+
+module.exports = { swapImageReference, swapReferences, reapStale, findAsset, readAssetFile, listAssets, updateAsset, removeAsset, replaceAsset, textFiles, usageOf };

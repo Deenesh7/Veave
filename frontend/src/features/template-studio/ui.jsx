@@ -67,7 +67,7 @@ export function Skeleton({ className = '' }) {
   return <div aria-hidden="true" className={`animate-pulse rounded bg-[#E9E4D7] ${className}`} />;
 }
 
-export function Modal({ open, onClose, title, children, wide = false, size = null, bare = false }) {
+export function Modal({ open, onClose, title, children, wide = false, size = null, bare = false, zClass = 'z-50' }) {
   // Escape closes the dialog.
   React.useEffect(() => {
     if (!open) return undefined;
@@ -77,7 +77,7 @@ export function Modal({ open, onClose, title, children, wide = false, size = nul
   }, [open, onClose]);
   if (!open) return null;
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#2B2823]/40 p-2 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className={`fixed inset-0 ${zClass} flex items-center justify-center bg-[#2B2823]/40 p-2 sm:p-4`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div role="dialog" aria-modal="true" aria-label={title} className={`w-full rounded-lg border ${line} bg-[#FBF9F4] shadow-xl ${size === 'studio' ? 'flex h-[min(97vh,1200px)] max-w-[1600px] flex-col overflow-hidden' : `max-h-[90vh] overflow-auto ${size === 'xl' ? 'max-w-6xl' : wide ? 'max-w-3xl' : 'max-w-md'}`}`}>
         <div className={`sticky top-0 z-10 flex shrink-0 items-center justify-between border-b ${line} bg-[#FBF9F4] px-5 py-3`}>
           <h3 className={`font-serif text-lg ${ink}`}>{title}</h3>

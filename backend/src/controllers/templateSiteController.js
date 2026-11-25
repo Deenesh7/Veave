@@ -57,12 +57,18 @@ exports.listSites = wrap(async (req, res) => {
   send(res, { sites: entries.map((entry) => site(entry.site, entry.pageCount)) });
 });
 
+const healChecked = new Map(); // siteId -> the revision and page routes whose sample routes were last found fine
+
 exports.getSite = wrap(async (req, res) => {
   const doc = await siteService.getSite(req.user, req.params.siteId);
   const pages = await pageService.listPagesFor(doc);
   const active = await TemplateGenerationJob.findOne({ siteId: doc._id, status: { $in: TemplateGenerationJob.ACTIVE_STATUSES } }).sort({ createdAt: -1 });
   // A detail page whose sample record was rewritten away would open on "not found": it is moved to a record that exists.
-  if (!active) await pageService.healSampleRoutes(doc, { pages }).catch((error) => logger.warn(`Sample routes of site ${doc._id} were not checked: ${error.message}`));
+  // Reading every file of the site is slow, so it is only redone when the site changed since the last check.
+  const checkKey = `${doc.revision || 0}:${pages.map((item) => `${item._id}${item.route}`).join('|')}`;
+  if (!active && healChecked.get(String(doc._id)) !== checkKey) {
+    await pageService.healSampleRoutes(doc, { pages }).then((moved) => { if (!moved.length) healChecked.set(String(doc._id), checkKey); }).catch((error) => logger.warn(`Sample routes of site ${doc._id} were not checked: ${error.message}`));
+  }
   send(res, { site: site(doc, pages.length), pages: pages.map(page), activeJob: active ? job(active) : null });
 });
 
@@ -186,6 +192,11 @@ exports.deleteImage = wrap(async (req, res) => {
   send(res, await assets.removeAsset(req.user, req.params.siteId, req.params.imageId, { force: String(req.query?.force || '') === 'true' }));
 });
 
+exports.swapImage = wrap(async (req, res) => {
+  const result = await assets.swapImageReference({ user: req.user, siteId: req.params.siteId, fromPath: req.body?.fromPath, imageId: req.body?.imageId });
+  send(res, result);
+});
+
 exports.replaceImage = wrap(async (req, res) => {
   const result = await assets.replaceAsset({ user: req.user, siteId: req.params.siteId, assetId: req.params.imageId, buffer: req.file?.buffer, originalName: req.file?.originalname });
   send(res, result);
@@ -232,10 +243,12 @@ async function previewFor(req, res, pageId = null) {
   const selected = pageId ? pages.find((item) => String(item._id) === String(pageId)) : null;
   const doc = await preview.ensurePrecompiled(owner.projectId);
   if (!doc) throw new NotFoundError('Preview');
-  const base = { status: doc.status, sourceHash: doc.sourceHash, compiledAt: doc.compiledAt, error: doc.error || null, siteRevision: owner.revision, route: selected?.route || '/', pages: pages.map((item) => ({ id: String(item._id), name: item.name, route: item.route })) };
+  // The hash the studio keeps covers the compiler too: a fixed preview runtime with the same site files is a new document, not "unchanged".
+  const documentHash = `${doc.sourceHash}:${doc.compilerVersion || ''}`;
+  const base = { status: doc.status, sourceHash: documentHash, compiledAt: doc.compiledAt, error: doc.error || null, siteRevision: owner.revision, route: selected?.route || '/', pages: pages.map((item) => ({ id: String(item._id), name: item.name, route: item.route })) };
   if (doc.status !== 'ready') return send(res, { preview: base });
   const clientHash = String(req.query.hash || '');
-  if (clientHash && clientHash === doc.sourceHash) return send(res, { preview: { ...base, token: doc.token, unchanged: true } });
+  if (clientHash && clientHash === documentHash) return send(res, { preview: { ...base, token: doc.token, unchanged: true } });
   return send(res, { preview: { ...base, token: doc.token, html: await preview.htmlOf(doc), bytes: doc.bytes } });
 }
 

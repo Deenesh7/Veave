@@ -57,6 +57,7 @@ export const templateSiteService = {
   listImages: (siteId) => api.get(`/template-sites/${siteId}/images`),
   updateImage: (siteId, imageId, data) => api.patch(`/template-sites/${siteId}/images/${imageId}`, data),
   deleteImage: (siteId, imageId, { force = false } = {}) => api.delete(`/template-sites/${siteId}/images/${imageId}`, { params: force ? { force: true } : undefined }),
+  swapImage: (siteId, fromPath, imageId) => api.post(`/template-sites/${siteId}/images/swap`, { fromPath, imageId }, { timeout: 60000 }),
   replaceImage: (siteId, imageId, file, { onProgress } = {}) => {
     const form = new FormData();
     form.append('photo', file);

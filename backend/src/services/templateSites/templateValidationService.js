@@ -55,7 +55,9 @@ function wantsSiteWide(instruction, files = []) {
   }
   // The section's own words are written in a shared component (for example the tabs and search box of the hero): the behaviour the owner
   // asks for lives in that component, so the AI must be allowed to change it. Two or more of the section's texts must be found there.
-  const phrases = [...new Set((String(instruction || '').match(/"([^"\n]{10,120})"/g) || []).map((item) => item.slice(1, -1).trim()))];
+  // Only the texts of a section the owner is looking at count: the whole page's content (PAGE CONTENT) always includes text that shared
+  // components show, which would make every page edit a change of the whole website.
+  const phrases = [...new Set((String(instruction || '').replace(/\n\nPAGE CONTENT[\s\S]*$/, '').match(/"([^"\n]{10,120})"/g) || []).map((item) => item.slice(1, -1).trim()))];
   if (phrases.length >= 2) {
     const components = files.filter((file) => /^src\/components\/[^/]+\.jsx?$/.test(file.path) && typeof file.content === 'string');
     if (components.some((file) => phrases.filter((phrase) => file.content.includes(phrase)).length >= 2)) return true;
@@ -89,6 +91,8 @@ function pageScope({ files, page, pages, template, siteWide = false, includeShar
   }
   const reachable = pageDistinctness.reachableFiles(page.componentPath, byPath, 2).filter((path) => byPath.has(path) && SOURCE.test(path));
   const owned = reachable.filter((path) => path === page.componentPath || (!locked.has(path) && !usedElsewhere.has(path) && path.startsWith('src/')));
+  // The page's own files (its component and what only it uses), before shared content is added for a rewrite or a ticked section.
+  const ownOnly = [...owned];
   const sectionFiles = [];
   // A rewrite of the page covers what the page DISPLAYS: the cards and the sample records it renders are often components and data that
   // other pages use as well. They are changeable for a rewrite (the build and the route test of every page then prove nothing broke).
@@ -129,7 +133,7 @@ function pageScope({ files, page, pages, template, siteWide = false, includeShar
     }
   }
   const shared = reachable.filter((path) => !owned.includes(path));
-  return { siteWide, sectionFiles: [...new Set(sectionFiles)], pageFiles: reachable, owned: new Set(owned), ownedList: owned, sharedList: shared, locked, canCreate: (path) => CREATE_PREFIXES.some((prefix) => path.startsWith(prefix)) && !byPath.has(path) && SOURCE.test(path) };
+  return { siteWide, sectionFiles: [...new Set(sectionFiles)], pageFiles: reachable, ownOnly, owned: new Set(owned), ownedList: owned, sharedList: shared, locked, canCreate: (path) => CREATE_PREFIXES.some((prefix) => path.startsWith(prefix)) && !byPath.has(path) && SOURCE.test(path) };
 }
 
 /** Splits operations into those inside the scope and those that are dropped (with the reason, which goes into the repair prompt). */
@@ -274,7 +278,7 @@ function keepRatioFor({ instruction, attachments = [], siteWide = false, rewrite
 // Everything after the owner's own words is added by the studio or the job: the page and section context, "(The owner ticked only the
 // section ... do not touch, restyle, reword, reorder or REMOVE them ...)" and the note about a failed earlier try. None of it is the
 // owner's request ("remove" in that note once made every ticked-section edit look like a request to delete the section).
-const CONTEXT_MARK = /\n\n(?:SECTION(?: \d+)? CONTENT|PAGE CONTEXT|\(The owner|\(A previous try|This applies to the text)/;
+const CONTEXT_MARK = /\n\n(?:SECTION(?: \d+)? CONTENT|PAGE CONTENT|PAGE CONTEXT|\(The owner|\(A previous try|This applies to the text)/;
 const ownerWords = (instruction) => { const text = String(instruction || ''); const at = text.search(CONTEXT_MARK); return at >= 0 ? text.slice(0, at) : text; };
 
 /** The section numbers the owner ticked: the panel sends 'In section 02 ("Name"), section 05 ("Name"): ...'. */
@@ -335,6 +339,45 @@ function routeMatches(pattern, actual) {
   const p = String(pattern || '').split('/').filter(Boolean);
   return p.length === a.length && p.length > 0 && p.every((segment, index) => segment === a[index] || (segment.startsWith(':') && segment.length > 1));
 }
+/** The internal links of a source file: literal ones ("/programs") and template ones ("/programs/${p.id}" -> "/programs/:param"). */
+function internalLinks(source) {
+  const links = new Set();
+  for (const match of String(source || '').matchAll(/\b(?:to|href)\s*=\s*(?:["'](\/[^"'#?\s]*)["']|\{\s*["'](\/[^"'#?\s]*)["']\s*\}|\{\s*`(\/[^`#?\s]*)`\s*\})/g)) {
+    const link = (match[1] || match[2] || match[3]).replace(/\$\{[^}]*\}/g, ':param').replace(/\/+$/, '') || '/';
+    if (/\.[a-z0-9]{2,5}$/i.test(link) || /^\/(?:assets|images)\//.test(link)) continue;
+    links.add(link);
+  }
+  return links;
+}
+
+/**
+ * What the change added must be connected to the app: a NEW link on a changed file must lead to a route of the router (src/App.jsx), and a
+ * NEW source file must be imported by something (a component nobody imports is never shown). Links that were already there are not judged.
+ */
+function appConnectionProblems({ baseline, candidate, page, changedPaths = [] }) {
+  const problems = [];
+  const routes = pageDistinctness.extractRoutes(candidate).filter((route) => route.path && route.path !== '*' && !route.path.includes('*'));
+  if (!routes.length) return problems;
+  const before = new Map(baseline.map((file) => [file.path, file]));
+  const known = (link) => link === '/' || routes.some((route) => routeMatches(route.path, link) || (link.includes(':param') && routeMatches(link.replace(/:param/g, ':p'), route.path)));
+  for (const path of changedPaths) {
+    const file = candidate.find((item) => item.path === path);
+    if (!file || !SOURCE.test(path) || !/^src\//.test(path) || path === 'src/App.jsx') continue;
+    const old = internalLinks(textOf(before.get(path)));
+    const broken = [...internalLinks(textOf(file))].filter((link) => !old.has(link) && !known(link));
+    if (broken.length) problems.push(issue('website', `${path} links to ${broken.map((link) => `"${link.replace(/:param/g, '...')}"`).join(', ')}, which ${broken.length === 1 ? 'is not a route' : 'are not routes'} of the app (src/App.jsx).`, { path, route: page.route, cause: 'A link the change added leads nowhere: the router has no such page.', action: `Link only to routes the app has: ${[...new Set(routes.map((route) => route.path))].slice(0, 20).join(', ')}.` }));
+  }
+  const byPath = new Map(candidate.map((file) => [file.path, file]));
+  const imported = new Set(candidate.filter((file) => SOURCE.test(file.path)).flatMap((file) => [...pageDistinctness.importMap(file, byPath).values()]));
+  for (const file of candidate) {
+    if (before.has(file.path) || !SOURCE.test(file.path) || !/^src\/(?:components|data)\//.test(file.path) || imported.has(file.path)) continue;
+    // A file imported only for its side effects or re-exported is still connected.
+    if (candidate.some((other) => SOURCE.test(other.path) && new RegExp(`['"][./]*${file.path.replace(/^src\//, '').replace(/\.[jt]sx?$/, '').split('/').pop()}(?:\\.[jt]sx?)?['"]`).test(textOf(other)))) continue;
+    problems.push(issue('website', `${file.path} was created but nothing imports it, so it never appears on the page.`, { path: file.path, route: page.route, cause: 'A new component or data file that is not connected to the page.', action: `Import and use ${file.path} in ${page.componentPath}, or do not create it.` }));
+  }
+  return problems;
+}
+
 const routesFor = (candidate, route) => pageDistinctness.extractRoutes(candidate).filter((item) => routeMatches(item.path, route)).sort((x, y) => Number(y.path === route) - Number(x.path === route));
 
 /**
@@ -394,7 +437,9 @@ function checkCandidate({ baseline, candidate, scope, page, pages, template, cha
   const keepRatio = keepRatioFor({ instruction, attachments, siteWide, rewrite, policy });
   // A rewrite must really replace the wording: a page that still has almost all of its words was not rewritten.
   if (policy?.maxKeep && !siteWide) {
-    const kept = keptShareOwned(baseline, candidate, scope);
+    // Measured on the page's own files: shared data it displays (another page's records, the departments of the site) is judged file by
+    // file below, against the template; counted here it made a full rewrite of the page itself look like "94% unchanged".
+    const kept = keptShareOwned(baseline, candidate, scope.ownOnly ? { ...scope, ownedList: scope.ownOnly } : scope);
     if (kept !== null) {
       if (kept > policy.maxKeep) problems.push(issue('intent', `The page was asked to be rewritten, but ${Math.round(kept * 100)}% of its wording is unchanged.`, { path: page.componentPath, route: page.route, cause: 'The change was too small for a rewrite.', action: 'Write new content for the whole page: new headings, paragraphs, labels and button text for every section, and improve the composition. Return the complete file with operation "modify".' }));
     }
@@ -404,13 +449,19 @@ function checkCandidate({ baseline, candidate, scope, page, pages, template, cha
   // rewritten, and one that an earlier change already rewrote is not asked again.
   if (policy?.rewrite) {
     const original = originalFiles instanceof Map ? originalFiles : null;
+    // Only the words that belong to the template's own subject count ("bedrooms", "brownstones"): words that other templates use too
+    // ("Full name", "Email", "Send") are generic, and a contact form made of them is right for any website, so it is never "old wording".
+    const generic = genericWords(template?.id);
     const left = (scope.pageFiles || []).filter((path) => scope.owned.has(path)).map((path) => {
       const reference = original?.get(path) ?? (policy.refinement ? null : textOf(baseline.find((file) => file.path === path)));
       if (!reference) return null;
       const before = ownedWordSet([{ path, content: reference }], { ownedList: [path] });
       if (before.size < 15) return null;
+      const distinct = [...before].filter((word) => !generic.has(word));
+      if (generic.size && distinct.length < 10) return null;
+      const judged = generic.size ? distinct : [...before];
       const after = ownedWordSet(candidate, { ownedList: [path] });
-      const kept = [...before].filter((word) => after.has(word)).length / before.size;
+      const kept = judged.filter((word) => after.has(word)).length / judged.length;
       return kept > 0.85 ? { path, kept } : null;
     }).filter(Boolean);
     if (left.length) problems.push(issue('intent', `The page was asked to be rewritten, but ${left.map((item) => `${item.path} (${Math.round(item.kept * 100)}% still the old wording)`).join(', ')} still ${left.length > 1 ? 'have' : 'has'} the old wording.`, { path: left[0].path, route: page.route, cause: 'Only part of what the page shows was rewritten: the rest still speaks about the old subject.', action: `Rewrite ${left.map((item) => item.path).join(', ')} as well: every label, heading, badge, placeholder, option, button text and sample record in them, for this website. Keep their export names, props, field names, number of records and image paths so the other pages still build. Return each as a complete file with operation "modify".` }));
@@ -451,6 +502,9 @@ function checkCandidate({ baseline, candidate, scope, page, pages, template, cha
   for (const [name, paths] of bareImports(candidate.filter((file) => changedPaths.includes(file.path)))) {
     if (!installed.has(name)) problems.push(issue('code', `${paths[0]} imports "${name}", which is not installed in this project.`, { path: paths[0], cause: 'Packages cannot be added by a page regeneration.', action: `Remove the use of "${name}" or replace it with plain React and Tailwind.` }));
   }
+  // website: everything a page edit added is connected to the app (links lead to routes of src/App.jsx, new files are imported). When a
+  // whole website is written, a broken link is flagged for review by finalSiteChecks instead (its pages are never regenerated for it).
+  if (!rewrite) problems.push(...appConnectionProblems({ baseline, candidate, page, changedPaths }));
   // website: the route still renders this page's component, and the page is a real, distinct page
   const routes = routesFor(candidate, page.route);
   if (!routes.length || (routes[0].target && routes[0].target !== page.componentPath)) {
@@ -484,6 +538,31 @@ function checkCandidate({ baseline, candidate, scope, page, pages, template, cha
     if (before && (!after || after.content !== before.content)) problems.push(issue('regression', `The ${other.name} page (${other.componentPath}) was changed.`, { path: other.componentPath, route: other.route, cause: 'A regeneration may only change its own page.', action: 'Undo that change.' }));
   }
   return problems;
+}
+
+/**
+ * Words the OTHER templates use too (in at least two of them): the vocabulary of any website (forms, buttons, navigation), as opposed
+ * to the words of one template's subject. Computed once per template and kept.
+ */
+const genericCache = new Map();
+function genericWords(templateId) {
+  if (!templateId) return new Set();
+  if (genericCache.has(templateId)) return genericCache.get(templateId);
+  let generic = new Set();
+  try {
+    const templates = require('../templates/templateService');
+    const counts = new Map();
+    for (const [id] of templates.loadRegistry()) {
+      if (id === templateId) continue;
+      let files;
+      try { files = templates.instantiateFiles(templates.resolveTemplate(id, {})); } catch { continue; }
+      const words = new Set(visibleWording(files.filter((file) => SOURCE.test(file.path) && /^src\//.test(file.path)).map(textOf).join('\n')).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter((word) => word.length > 2));
+      for (const word of words) counts.set(word, (counts.get(word) || 0) + 1);
+    }
+    generic = new Set([...counts].filter(([, n]) => n >= 2).map(([word]) => word));
+  } catch { generic = new Set(); }
+  genericCache.set(templateId, generic);
+  return generic;
 }
 
 /** Remote image links in the changed files that could not be downloaded become asset problems. */
@@ -581,4 +660,4 @@ function finalSiteChecks(files, pages) {
   return found;
 }
 
-module.exports = { isTickedEdit, wantsRemoval, finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, routeMatches, videoUseProblem, namedSections, behaviourFailureOnly, strictModeProblem, relaxSelectors, ownedWordSet, keptShareOwned, visibleWording, wordingOf, issue, sha, MIN_PAGE_WORDS };
+module.exports = { appConnectionProblems, internalLinks, genericWords, isTickedEdit, wantsRemoval, finalSiteChecks, pageScope, wantsSiteWide, ownerWords, filterOperations, checkCandidate, wantsAiAnswers, selectedSectionNumbers, untouchedSectionProblem, isPictureOnlyEdit, keepRatioFor, imageProblems, runBuildGate, pageWords, routeMatches, videoUseProblem, namedSections, behaviourFailureOnly, strictModeProblem, relaxSelectors, ownedWordSet, keptShareOwned, visibleWording, wordingOf, issue, sha, MIN_PAGE_WORDS };

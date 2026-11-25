@@ -7,7 +7,8 @@ import { useTemplateStudioStore, readUi, writeUi } from '../../store/templateStu
 import { templateSiteService, apiMessage } from '../../services/templateSiteService';
 import { ASSET_BASE_PLACEHOLDER } from '../../services/previewService';
 import ThemePanel from './ThemePanel';
-import { THEME_LISTENER, TEXT_EDIT_SCRIPT, FOCUS_SCRIPT } from './previewScripts';
+import { THEME_LISTENER, TEXT_EDIT_SCRIPT, FOCUS_SCRIPT, IMAGE_BUTTON_SCRIPT } from './previewScripts';
+import ImageChangeModal from './ImageChangeModal';
 import { PanelHeader, EmptyState, ErrorNote, IconButton, Spinner, Skeleton, GhostButton, PrimaryButton, ink, muted, line } from './ui';
 
 
@@ -36,10 +37,22 @@ export default function SitePreviewPanel({ className = '' }) {
   const [textMode, setTextModeState] = useState(() => readUi().textMode !== false);
   const setTextMode = (next) => setTextModeState((value) => { const resolved = typeof next === 'function' ? next(value) : next; writeUi({ textMode: resolved }); return resolved; }); // click text in the page to edit it in the Content column (off: links work as in the real site)
   const textModeRef = useRef(readUi().textMode !== false);
+  const [imageEdit, setImageEdit] = useState(null); // the picture opened with its image button: { src, alt, width, height }
   const [sectionEdit, setSectionEdit] = useState(null); // the section opened with its pen: { name, domId, html, head, ... }
   const scrollRef = useRef(0); // where the visitor was in the page, kept across reloads (a saved change reloads the preview)
   const focusRef = useRef([]);
-  const sendFocus = useCallback(() => { try { iframeRef.current?.contentWindow?.postMessage({ type: 'studio-focus-sections', sections: focusRef.current }, '*'); } catch { /* the frame may be reloading */ } }, []);
+  const startRouteRef = useRef({ key: null, route: '/' });
+  const frameRouteRef = useRef(null); // the route the website itself last reported
+  // Sections are only dimmed while the website really shows the selected page; otherwise the ticks would blur another page.
+  const sendFocus = useCallback(() => {
+    try {
+      const { activePageId: activeId } = useTemplateStudioStore.getState();
+      const shown = frameRouteRef.current;
+      const same = shown === null || pageForRouteRef.current?.(shown)?.id === activeId;
+      iframeRef.current?.contentWindow?.postMessage({ type: 'studio-focus-sections', sections: same ? focusRef.current : [] }, '*');
+    } catch { /* the frame may be reloading */ }
+  }, []);
+  const pageForRouteRef = useRef(null);
   useEffect(() => {
     const onGet = (event) => { try { iframeRef.current?.contentWindow?.postMessage({ type: 'studio-section-get', ...event.detail }, '*'); } catch { /* the frame may be reloading */ } };
     window.addEventListener('studio-get-section', onGet);
@@ -103,8 +116,27 @@ export default function SitePreviewPanel({ className = '' }) {
   const hashRef = useRef('');
   const routeRef = useRef('/');
   const pagesRef = useRef(pages);
-  routeRef.current = page?.route || '/';
+  const liveRouteRef = useRef('');
   pagesRef.current = pages;
+  // A detail page is one sample of a dynamic route (/listings/k-1001 for /listings/:id): another record of the same route belongs to it too.
+  const pageForRoute = useCallback((route) => {
+    const list = pagesRef.current;
+    const exact = list.find((item) => item.route === route);
+    if (exact) return exact;
+    const parts = route.split('/').filter(Boolean);
+    if (parts.length < 2) return null;
+    return list.find((item) => {
+      const own = String(item.route || '').split('/').filter(Boolean);
+      return own.length === parts.length && own.slice(0, -1).every((part, i) => part === parts[i]) && own[own.length - 1] !== parts[parts.length - 1];
+    }) || null;
+  }, []);
+  // The page's own route changed (its sample record was rewritten away and the page now opens another one): the record the website was
+  // left on is that old, missing record, so it is forgotten and the page's route is shown.
+  const pageRouteRef = useRef({ id: null, route: null });
+  if (page && pageRouteRef.current.id === page.id && pageRouteRef.current.route !== page.route) liveRouteRef.current = '';
+  if (page) pageRouteRef.current = { id: page.id, route: page.route };
+  // Keep showing the record the visitor opened, as long as it belongs to the selected page.
+  routeRef.current = liveRouteRef.current && page && pageForRoute(liveRouteRef.current)?.id === page.id ? liveRouteRef.current : (page?.route || '/');
   const siteId = site?.id || null;
 
   const load = useCallback(async (force) => {
@@ -130,13 +162,20 @@ export default function SitePreviewPanel({ className = '' }) {
   useEffect(() => { hashRef.current = ''; setState({ status: siteId ? 'loading' : 'idle', html: '', hash: '', error: null }); }, [siteId]);
   useEffect(() => { load(manualKey > 0); }, [load, previewKey, manualKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  pageForRouteRef.current = pageForRoute;
+  const settleRef = useRef(0); // until this time, a route the website reports on its own (its start page) is not a visitor's choice
   const showRoute = useCallback((route) => {
-    try {
-      const frame = iframeRef.current?.contentWindow;
-      // The generated page is browsed, not inspected: links must navigate instead of selecting elements.
-      frame?.postMessage({ type: 'toggle-inspect-mode', enabled: false }, '*');
-      frame?.postMessage({ type: 'preview-restore-route', route }, '*');
-    } catch { /* the frame may be reloading */ }
+    const send = () => {
+      try {
+        const frame = iframeRef.current?.contentWindow;
+        // The generated page is browsed, not inspected: links must navigate instead of selecting elements.
+        frame?.postMessage({ type: 'toggle-inspect-mode', enabled: false }, '*');
+        frame?.postMessage({ type: 'preview-restore-route', route }, '*');
+      } catch { /* the frame may be reloading */ }
+    };
+    send();
+    // The website may not be listening yet right after a refresh, so the selected page is asked for again a few times.
+    [250, 800, 1800].forEach((ms) => setTimeout(() => { if (routeRef.current === route) send(); }, ms));
   }, []);
 
   // Choosing a page in the list shows that page in the website.
@@ -145,7 +184,7 @@ export default function SitePreviewPanel({ className = '' }) {
   // Clicking a section in the Content column scrolls the website to that part of the page.
   useEffect(() => {
     const onScroll = (event) => {
-      try { iframeRef.current?.contentWindow?.postMessage({ type: 'preview-scroll-to-section', label: event.detail?.name ?? event.detail, domId: event.detail?.domId || null, order: event.detail?.order ?? null }, '*'); } catch { /* the frame may be reloading */ }
+      try { iframeRef.current?.contentWindow?.postMessage({ type: 'studio-scroll-to', section: { name: event.detail?.name ?? event.detail, domId: event.detail?.domId || null, index: event.detail?.index ?? -1, total: event.detail?.total ?? 0 } }, '*'); } catch { /* the frame may be reloading */ }
     };
     window.addEventListener('studio-scroll-section', onScroll);
     return () => window.removeEventListener('studio-scroll-section', onScroll);
@@ -162,18 +201,24 @@ export default function SitePreviewPanel({ className = '' }) {
         if (siteKey) writeUi({ scroll: { ...(readUi().scroll || {}), [`${siteKey}:${routeRef.current}`]: scrollRef.current } });
       }
       if (event.data?.type === 'studio-section-html') window.dispatchEvent(new CustomEvent('studio-section-html', { detail: { key: event.data.key, html: String(event.data.html || ''), head: String(event.data.head || ''), htmlClass: String(event.data.htmlClass || ''), bodyClass: String(event.data.bodyClass || '') } }));
+      if (event.data?.type === 'studio-nav-section') window.dispatchEvent(new CustomEvent('studio-nav-section', { detail: { domId: String(event.data.domId || ''), name: String(event.data.name || '') } }));
+      if (event.data?.type === 'studio-image-edit' && revisionPreview?.status !== 'ready') setImageEdit({ src: String(event.data.src || ''), alt: String(event.data.alt || ''), width: Number(event.data.width) || 0, height: Number(event.data.height) || 0, section: event.data.section && event.data.section.name ? event.data.section : null });
       if (event.data?.type === 'studio-text-deselected') useTemplateStudioStore.getState().setSelectedText(null);
       if (event.data?.type === 'studio-section-edit' && revisionPreview?.status !== 'ready') setSectionEdit({ name: String(event.data.name || ''), domId: String(event.data.domId || ''), index: event.data.index, html: String(event.data.html || ''), head: String(event.data.head || ''), htmlClass: String(event.data.htmlClass || ''), bodyClass: String(event.data.bodyClass || '') });
       if (event.data?.type === 'studio-text-selected' && revisionPreview?.status !== 'ready') useTemplateStudioStore.getState().setSelectedText({ id: event.data.id, text: String(event.data.text || ''), tag: String(event.data.tag || '') });
       if (event.data?.type === 'preview-route-changed') {
         const route = String(event.data.route || '/').split(/[?#]/)[0].replace(/\/+$/, '') || '/';
-        const target = pagesRef.current.find((item) => item.route === route);
+        frameRouteRef.current = route;
+        setTimeout(sendFocus, 0);
+        if (Date.now() < settleRef.current && route !== (routeRef.current.split(/[?#]/)[0].replace(/\/+$/, '') || '/')) return;
+        liveRouteRef.current = route;
+        const target = pageForRoute(route);
         if (target) selectPage(target.id);
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [selectPage, showRoute, sendTextMode, revisionPreview]);
+  }, [selectPage, showRoute, sendTextMode, revisionPreview, pageForRoute]);
 
   const width = DEVICES.find((item) => item.id === device)?.width || '100%';
   const regenerating = job && !['completed', 'failed', 'cancelled'].includes(job.status);
@@ -183,10 +228,14 @@ export default function SitePreviewPanel({ className = '' }) {
   const old = revisionPreview?.status === 'ready' ? revisionPreview : null;
   const oldHtml = old ? old.html.split(ASSET_BASE_PLACEHOLDER).join(`${window.location.origin}/api/preview-assets/${old.token}`) : '';
   const raw = old ? oldHtml : state.html;
-  const injected = THEME_LISTENER + `<script>(${blocksScript.toString()})();</script>` + TEXT_EDIT_SCRIPT + FOCUS_SCRIPT + `<script>(${penScript.toString()})();</script>`;
-  const withRuntime = raw && !old ? (raw.includes('<head>') ? raw.replace('<head>', () => `<head>${siteAiRuntime(site?.projectId)}`) : `${siteAiRuntime(site?.projectId)}${raw}`) : raw;
-  const html = raw && !old ? (withRuntime.includes('</body>') ? withRuntime.replace('</body>', () => `${injected}</body>`) : withRuntime + injected) : raw;
+  const injected = THEME_LISTENER + `<script>(${blocksScript.toString()})();</script>` + TEXT_EDIT_SCRIPT + FOCUS_SCRIPT + `<script>(${penScript.toString()})();</script>` + IMAGE_BUTTON_SCRIPT;
   const frameKey = old ? `rev-${old.number}` : `${state.hash}:${manualKey}`;
+  // A rebuilt website (after a finished job, a refresh) starts ON the page being edited instead of Home. The route is fixed per frame, so
+  // moving between pages never reloads the frame.
+  if (startRouteRef.current.key !== frameKey) startRouteRef.current = { key: frameKey, route: routeRef.current || '/' };
+  const startScript = `<script>window.__veaveInitialRoute=${JSON.stringify(startRouteRef.current.route).replace(/</g, '\\u003c')};</script>`;
+  const withRuntime = raw && !old ? (raw.includes('<head>') ? raw.replace('<head>', () => `<head>${startScript}${siteAiRuntime(site?.projectId)}`) : `${startScript}${siteAiRuntime(site?.projectId)}${raw}`) : raw;
+  const html = raw && !old ? (withRuntime.includes('</body>') ? withRuntime.replace('</body>', () => `${injected}</body>`) : withRuntime + injected) : raw;
   const loading = revisionPreview?.status === 'loading' || (!old && site && state.status === 'loading' && !state.html);
   const frameError = revisionPreview?.status === 'error' ? revisionPreview.error : (!old && site && state.status === 'error' ? state.error : null);
 
@@ -196,7 +245,7 @@ export default function SitePreviewPanel({ className = '' }) {
         title={full && site ? `${site.name} · Preview` : 'Preview'}
         action={site ? (
           <div className="flex items-center gap-1">
-            <span className={`mr-2 hidden max-w-[10rem] truncate font-mono text-[11px] sm:inline ${muted}`}>{page?.route || '/'}</span>
+            <span className={`mr-2 hidden max-w-[10rem] truncate font-mono text-[11px] sm:inline ${muted}`}>{routeRef.current || page?.route || '/'}</span>
             <div role="group" aria-label="Device" className={`flex items-center rounded-md border ${line} bg-[#F7F4EE] p-0.5`}>
               {DEVICES.map(({ id, label, icon: Icon, hint }) => (
                 <button key={id} type="button" onClick={() => setDevice(id)} aria-pressed={device === id} aria-label={`${label} preview`} title={`${label} (${hint})`}
@@ -241,7 +290,7 @@ export default function SitePreviewPanel({ className = '' }) {
             <iframe
               key={frameKey} ref={iframeRef} title={`${site.name} website preview`} srcDoc={html}
               sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
-              onLoad={() => { showRoute(routeRef.current); sendTextMode(); setTimeout(sendFocus, 400); try { const savedY = scrollRef.current || Number(readUi().scroll?.[`${useTemplateStudioStore.getState().activeSiteId}:${routeRef.current}`]) || 0; if (savedY > 0) iframeRef.current?.contentWindow?.postMessage({ type: 'studio-restore-scroll', y: savedY }, '*'); } catch { /* the frame may be reloading */ } useTemplateStudioStore.getState().setSelectedText(null); if (cssRef.current) pushCss(cssRef.current); }} className="h-full w-full border-0 bg-white"
+              onLoad={() => { settleRef.current = Date.now() + 2500; frameRouteRef.current = null; showRoute(routeRef.current); sendTextMode(); setTimeout(sendFocus, 400); try { const savedY = scrollRef.current || Number(readUi().scroll?.[`${useTemplateStudioStore.getState().activeSiteId}:${routeRef.current}`]) || 0; if (savedY > 0) iframeRef.current?.contentWindow?.postMessage({ type: 'studio-restore-scroll', y: savedY }, '*'); } catch { /* the frame may be reloading */ } useTemplateStudioStore.getState().setSelectedText(null); if (cssRef.current) pushCss(cssRef.current); }} className="h-full w-full border-0 bg-white"
             />
           </div>
         ) : null}
@@ -252,6 +301,7 @@ export default function SitePreviewPanel({ className = '' }) {
           </div>
         ) : null}
       </div>
+      {imageEdit ? <ImageChangeModal key={imageEdit.src} target={imageEdit} onClose={() => setImageEdit(null)} /> : null}
       {sectionEdit ? <SectionEditModal key={`${sectionEdit.domId}:${sectionEdit.index}:${sectionEdit.name}`} payload={sectionEdit} onClose={() => setSectionEdit(null)} /> : null}
     </section>
   );

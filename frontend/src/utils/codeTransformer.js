@@ -401,7 +401,8 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
     // and history.pushState throws), so every route rendered Home. Keep a virtual
     // path instead and route history/location reads through it.
     (function() {
-      var virtualPath = '/';
+      // A rebuilt preview of one page of a site starts on that page (the studio sets window.__veaveInitialRoute before this runs).
+      var virtualPath = (typeof window.__veaveInitialRoute === 'string' && window.__veaveInitialRoute.charAt(0) === '/' && window.__veaveInitialRoute.charAt(1) !== '/') ? window.__veaveInitialRoute.split(/[?#]/)[0] : '/';
       window.__veavePathname = function() { return virtualPath; };
       // A page opened by navigation starts at its top, also when the scrolling happens in a container instead of the window.
       function scrollPageToTop() {
@@ -513,6 +514,18 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
     (function() {
       function currentPath() { var value = window.__veavePathname() || '/'; return value.charAt(0) === '/' ? value : '/'; }
       var RouterContext = React.createContext({ path: currentPath(), navigate: function() {} });
+      // The values of the route's parameters (/listings/:id on /listings/mbbs gives { id: 'mbbs' }), set by the Routes that matched.
+      var ParamsContext = React.createContext({});
+      function paramsOf(pattern, pathname) {
+        var patternParts = String(pattern || '').replace(/\\\/$/, '').split('/').filter(Boolean);
+        var pathParts = String(pathname || '').replace(/\\\/$/, '').split('/').filter(Boolean);
+        var out = {};
+        patternParts.forEach(function(part, index) {
+          if (part === '*') { out['*'] = pathParts.slice(index).join('/'); return; }
+          if (part.charAt(0) === ':') { try { out[part.slice(1).replace(/\\?$/, '')] = decodeURIComponent(pathParts[index] || ''); } catch (e) { out[part.slice(1)] = pathParts[index] || ''; } }
+        });
+        return out;
+      }
       function matches(pattern, pathname) {
         if (!pattern || pattern === '*') return true;
         var cleanPattern = String(pattern).replace(/\\\/$/, '') || '/';
@@ -553,7 +566,9 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
         var selected = routes.find(function(route) { return route && route.props && route.props.path && route.props.path !== '*' && matches(route.props.path, path); }) ||
           routes.find(function(route) { return route && route.props && route.props.index && path === '/'; }) ||
           routes.find(function(route) { return route && route.props && (route.props.path === '*' || !route.props.path); });
-        return selected ? selected.props.element || null : null;
+        if (!selected) return null;
+        var params = Object.assign({}, React.useContext(ParamsContext), selected.props.path ? paramsOf(selected.props.path, path) : {});
+        return React.createElement(ParamsContext.Provider, { value: params }, selected.props.element || null);
       }
       function Link(props) {
         var router = React.useContext(RouterContext);
@@ -579,7 +594,7 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
       }
       function useNavigate() { return React.useContext(RouterContext).navigate; }
       function useLocation() { var path = React.useContext(RouterContext).path; return { pathname: path, search: window.location.search, hash: window.location.hash, state: null }; }
-      function useParams() { return {}; }
+      function useParams() { return React.useContext(ParamsContext); }
       function useSearchParams() {
         var navigate = useNavigate();
         var params = new URLSearchParams(window.location.search);
@@ -593,7 +608,7 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
       function createBrowserRouter(routes) { return { routes: routes || [] }; }
       function RouterProvider(props) {
         var route = (props.router && props.router.routes || []).find(function(item) { return matches(item.path, window.__veavePathname()); });
-        return route ? route.element || null : null;
+        return route ? React.createElement(ParamsContext.Provider, { value: paramsOf(route.path, window.__veavePathname()) }, route.element || null) : null;
       }
       window.ReactRouterDOM = { BrowserRouter: BrowserRouter, Router: BrowserRouter, StaticRouter: BrowserRouter,
         HashRouter: HashRouter, MemoryRouter: MemoryRouter, Routes: Routes, Switch: Routes, Route: Route,
@@ -1648,8 +1663,14 @@ export function buildPreviewHTML(files, dependencies = [], options = {}) {
         try {
           var restoreRoute = event.data.route || '/';
           if (restoreRoute !== window.__veavePathname()) {
-            window.history.replaceState({}, '', restoreRoute);
-            window.dispatchEvent(new PopStateEvent('popstate'));
+            // Showing a page is not "going back": without this flag the popstate below stepped the page back (usually to Home).
+            window.__veaveRouteBack = true;
+            try {
+              window.history.replaceState({ path: restoreRoute }, '', restoreRoute);
+              window.dispatchEvent(new PopStateEvent('popstate', { state: { path: restoreRoute } }));
+            } finally {
+              window.__veaveRouteBack = false;
+            }
           }
         } catch (e) {}
       } else if (event.data.type === 'preview-navigate-back') {

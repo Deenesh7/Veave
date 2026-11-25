@@ -84,7 +84,7 @@ function groupOf(word) {
 }
 
 // The same marks as templateValidationService's CONTEXT_MARK: everything after them was added by the studio or the job, not typed by the owner.
-const ownerPart = (instruction) => String(instruction || '').split(/\n\n(?:SECTION(?: \d+)? CONTENT|PAGE CONTEXT|\(The owner|\(A previous try|This applies to the text)/)[0].trim();
+const ownerPart = (instruction) => String(instruction || '').split(/\n\n(?:SECTION(?: \d+)? CONTENT|PAGE CONTENT|PAGE CONTEXT|\(The owner|\(A previous try|This applies to the text)/)[0].trim();
 
 function readWords(text) {
   const words = String(text || '').toLowerCase().match(/[a-z']+/g) || [];
@@ -224,8 +224,11 @@ function namedSubject(text) {
 }
 
 /** Typo-tolerant, no-model reading of an instruction. Always returns a valid intent. */
+// The studio's lead naming the section ('In the section "Anatomy and Physiology": ', 'In section 02 ("Team"): ') says WHERE, not what to do:
+// read as words it made "add a background image" look like "add a section".
+const SECTION_LEAD = /^In (?:the section "[^"]*"|(?:(?:and |, )?section \d+ \("[^"]*"\)(?:,? ?(?:and )?)?)+):\s*/i;
 function heuristicIntent(instruction, ctx = {}) {
-  const text = ownerPart(instruction);
+  const text = ownerPart(instruction).replace(SECTION_LEAD, '');
   // "Do not change the layout, just update the text" is ONE instruction: a negation is not split from what follows it.
   const clauses = /\b(?:do not|don't|dont|without)\b[\s\S]{0,25}\b(?:change|touch|alter|modify)\b/i.test(text) ? [text] : text.split(SPLIT).map((part) => part.trim()).filter((part) => part.split(/\s+/).length >= 1 && part.length > 1);
   const read = (clauses.length ? clauses : [text]).map((part) => readClause(part, ctx));

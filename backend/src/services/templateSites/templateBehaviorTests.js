@@ -32,12 +32,31 @@ LITERAL: the test must do exactly what the owner described and nothing more. If 
 6. At most ${MAX_TESTS} tests, at most 12 steps each, every test ends with an assertion. Do not invent controls that are not in the code.
 7. A request about a colour, size, font or spacing is tested with a computed-style assertion that uses the exact value asked for: {"action":"assert","selector":S,"style":{"property":"background-color","value":"rgb(0, 0, 0)"}} (black is rgb(0, 0, 0), white rgb(255, 255, 255), red rgb(255, 0, 0); sizes are in px, e.g. "24px"). S must match exactly one element (use the section's id, e.g. #curriculum). A test that only asserts visibility can never verify a colour or size request and is not acceptable.
 8b. A selector must match exactly ONE element, or the browser refuses it. Cards, rows and buttons repeat: when several elements can match (the same fee on two cards, a label that appears in every card, a link in the menu and in the footer), take the first with " >> nth=0", for example text="Total Fees" >> nth=0 or button:has-text("Apply") >> nth=0, or assert how many there are with count. Prefer a selector for the section or heading you know is unique.
+9. When REQUIRED CONTENT is listed, the owner gave those exact texts: write one test that opens the page and asserts that each of them is on it, one assert per text with "text" set to that text (use a selector for the section or "body", never one that matches several elements). Use the texts exactly as listed.
 8. Always write at least one test. A visual change is tested too: assert that the changed element is visible, has the text, or has the style the owner asked for. Never return an empty list.`;
 
 const OPERATES = /\b(click|clicks|clicked|press|open|opens|popup|pop-up|modal|dialog|button|form|submit|search|tab|tabs|link|navigate|ask|type|typing|enter|select|dropdown|menu|filter|toggle|show|hide|play|login|log in|sign|upload|chat|answer|question)\b/i;
 const LOOK = /\b(colou?r|font|bigger|larger|smaller|size|bold|italic|spacing|padding|margin|rename|reword|wording|rephrase|heading|title|text|background|gradient|rounded|shadow|align|logo|image|photo|picture)\b/i;
 /** A change to how something looks or reads (no behaviour named): a browser has nothing to operate, so no test is written. */
-const isStyleOnly = (instruction) => { const own = String(instruction || '').split(/\n\nSECTION CONTENT|\n\(The owner/)[0]; return LOOK.test(own) && !OPERATES.test(own); };
+const ownWords = (instruction) => require('./templateValidationService').ownerWords(instruction);
+const isStyleOnly = (instruction) => { const own = ownWords(instruction); return LOOK.test(own) && !OPERATES.test(own); };
+
+/**
+ * The exact texts the owner wants on the page: what they quoted ("call it "Explore Programmes"") and the lines of copy they pasted
+ * (a heading, a paragraph, "Primary button: Explore Programmes"). At most 8, each as it must appear.
+ */
+function requiredTexts(instruction) {
+  const own = ownWords(instruction).replace(/^In (?:(?:and |, )?section \d+ \("[^"]*"\)(?:,? ?(?:and )?)?)+:\s*/i, '');
+  const found = [];
+  for (const match of own.matchAll(/["“]([^"”\n]{3,120})["”]/g)) found.push(match[1].trim());
+  const lines = own.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  // Pasted copy: several lines. A label before a colon ("Primary button: Explore") is not part of the text.
+  if (lines.length >= 3) for (const line of lines.slice(1)) {
+    const text = line.replace(/^[A-Za-z ]{3,30}:\s+(?=\S)/, '').split('\t')[0].trim();
+    if (text.length >= 3 && text.length <= 140 && text.split(/\s+/).length <= 20) found.push(text);
+  }
+  return [...new Set(found)].slice(0, 8);
+}
 
 function parseJson(text) {
   const raw = String(text || '').trim();
@@ -58,7 +77,7 @@ function defaultAsk() {
  * @returns {{ tests: Array, status: 'planned'|'unavailable', reason?: string, usage?: object }}
  *   unavailable: tests could not be written (the change stays unverified and is reported as such).
  */
-async function planBehaviorTests({ instruction, page, files, changedPaths, deps = {}, signal }) {
+async function planBehaviorTests({ instruction, page, files, changedPaths, deps = {}, signal, route = null }) {
   const ask = deps.askBehaviorModel || (process.env.OPENROUTER_API_KEY ? defaultAsk() : null);
   // Writing tests is a small job: it may run on a faster model (TEMPLATE_TEST_MODEL) than the page writer.
   const inScope = (fn) => (process.env.TEMPLATE_TEST_MODEL ? require('../../utils/modelScope').run(process.env.TEMPLATE_TEST_MODEL, fn) : fn());
@@ -74,9 +93,11 @@ async function planBehaviorTests({ instruction, page, files, changedPaths, deps 
     shown.push(chunk);
     size += chunk.length;
   }
+  const required = requiredTexts(instruction);
   const messages = [
     { role: 'system', content: SYSTEM },
-    { role: 'user', content: `PAGE: ${page.name} (route ${page.route})\n\nOWNER INSTRUCTION:\n${String(instruction).slice(0, 3000)}\n\nCODE AFTER THE CHANGE:\n${shown.join('\n\n')}` }
+    // The owner's own words (not the page outline the studio adds), the exact texts they asked for, and the route the page really opens at.
+    { role: 'user', content: `PAGE: ${page.name} (route ${route || page.route})\n\nOWNER INSTRUCTION:\n${String(ownWords(instruction)).slice(0, 3000)}\n\n${required.length ? `REQUIRED CONTENT (must be visible on the page after the change):\n${required.map((text) => `- ${JSON.stringify(text)}`).join('\n')}\n\n` : ''}CODE AFTER THE CHANGE:\n${shown.join('\n\n')}` }
   ];
   try {
     const answer = await inScope(() => ask(messages, { signal }));
@@ -87,7 +108,7 @@ async function planBehaviorTests({ instruction, page, files, changedPaths, deps 
     const tests = [];
     const names = new Set();
     for (const raw of parsed.tests.slice(0, MAX_TESTS)) {
-      const test = { name: `Behaviour: ${String(raw?.name || 'requested change').slice(0, 80)}`, path: String(raw?.path || page.route || '/'), viewports: ['desktop'], steps: Array.isArray(raw?.steps) ? raw.steps.slice(0, 12) : [] };
+      const test = { name: `Behaviour: ${String(raw?.name || 'requested change').slice(0, 80)}`, path: route || String(raw?.path || page.route || '/'), viewports: ['desktop'], steps: Array.isArray(raw?.steps) ? raw.steps.slice(0, 12) : [] };
       if (names.has(test.name)) test.name = `${test.name} (${names.size + 1})`;
       try { validatePlan({ version: 1, tests: [test] }); } catch (error) { logger.warn(`Behaviour test "${test.name}" was dropped: ${error.message}`); continue; }
       names.add(test.name);
@@ -102,4 +123,4 @@ async function planBehaviorTests({ instruction, page, files, changedPaths, deps 
   }
 }
 
-module.exports = { planBehaviorTests, isStyleOnly, SYSTEM };
+module.exports = { planBehaviorTests, isStyleOnly, requiredTexts, SYSTEM };

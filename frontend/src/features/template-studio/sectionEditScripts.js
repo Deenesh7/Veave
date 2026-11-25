@@ -137,7 +137,9 @@ export function penScript() {
       // The studio's page prompt asks for what one section shows right now, so the AI gets the same context as the section pop-up.
       var list = Array.prototype.slice.call(blocks().all()).concat(Array.prototype.slice.call(document.querySelectorAll('section')));
       var found = d.domId ? document.getElementById(d.domId) : null;
-      if (!found || !blocks().of(found)) {
+      // The whole page the visitor sees (its main content, without the shared menu and footer when the page has a <main>).
+      if (d.whole) found = document.querySelector('main') || document.getElementById('root') || document.body;
+      else if (!found || !blocks().of(found)) {
         found = null;
         var want = norm(d.name).toLowerCase();
         Array.prototype.forEach.call(list, function (sec) {
@@ -168,6 +170,7 @@ export function sectionEditScript() {
   function norm(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
   function textNodes(el) { var out = []; for (var c = el.firstChild; c; c = c.nextSibling) { if (c.nodeType === 3 && norm(c.nodeValue)) out.push(c); } return out; }
   document.addEventListener('click', function (e) {
+    if (e.target.closest && e.target.closest('#studio-img-btn')) return;
     var link = e.target.closest && e.target.closest('a,button,form,[role="tab"]');
     if (link) { e.preventDefault(); e.stopPropagation(); }
   }, true);

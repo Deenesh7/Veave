@@ -214,6 +214,20 @@ async function healSampleRoutes(site, { pages = null, files = null } = {}) {
     moved.push({ pageId: String(item._id), from: item.route, to });
     item.route = to;
   }
+  // The menu and the links still point at the record that is gone: they are pointed at the page's own address.
+  try {
+    const current2 = moved.length || !files ? (await store.readSite(site)).files : files;
+    const repair = require('./templateDataContract').repairDetailLinks(current2, list);
+    if (repair.fixed.length) {
+      const change = await changeFiles(site, (before) => ({ files: require('./templateDataContract').repairDetailLinks(before, list).files }));
+      if (change.written != null) {
+        await bumpSite(site._id);
+        logger.info(`Site ${site._id}: ${repair.fixed.length} link(s) to a missing record were pointed at the page's address (${[...new Set(repair.fixed.map((f) => `${f.from} -> ${f.to}`))].join(', ')}).`);
+      }
+    }
+  } catch (error) {
+    logger.warn(`Links of site ${site._id} were not checked: ${error.message}`);
+  }
   return moved;
 }
 
@@ -351,7 +365,9 @@ function extractSections(source, { withRanges = false } = {}) {
   for (const m of text.matchAll(/import\s*\{([^}]+)\}\s*from\s+['"](\.{1,2}\/[^'"]+)['"]/g)) if (!NOT_A_SECTION_IMPORT.test(m[2])) for (const part of m[1].split(',')) { const [original, alias] = part.split(/\s+as\s+/i).map((x) => x.trim()); const name = alias || original; if (/^[A-Z]/.test(name)) local.set(name, original); }
   for (const m of text.matchAll(/<([A-Z][A-Za-z0-9]*)\b(?:[^>]*?\b(?:title|heading|label)=(?:"([^"]+)"|\{?['"`]([^'"`]+)['"`]\}?))?/g)) {
     if (!local.has(m[1]) || SHARED_CHROME.test(m[1])) continue;
-    if (ranges.some(([a, b]) => m.index > a && m.index < b)) continue;
+    if (ranges.some(([a, b]) => m.index >= a && m.index < b)) continue;
+    // `if (!l) return <NotFound />`: what the page shows INSTEAD of itself when its record is missing, not one of its sections.
+    if (/\bif\s*\([^\n]*\)\s*return\s*\(?\s*$/.test(text.slice(Math.max(0, m.index - 200), m.index).split('\n').pop())) continue;
     found.push({ index: m.index, end: null, name: m[2] || m[3] || wordsOf(local.get(m[1])), kind: 'component', domId: null });
   }
 
@@ -385,6 +401,39 @@ function sectionBlocks(source) {
     const end = Math.min(own ?? next ?? text.length, next ?? text.length);
     return { numbers: items.map((entry) => entry.number), number: items[0].number, name: (inline || items[0].item).name, source: text.slice(start, end) };
   });
+}
+
+/**
+ * Which section of the page a name the studio sent belongs to. The section pop-up names a block by its first heading, which for a grid of
+ * cards is the heading of the FIRST CARD ("Anatomy and Physiology"), one record of a data file, not a section of the page. Returns
+ * { number, name, record, dataPath, records } (record: the card that was named; records: the names of all the records the section
+ * shows, when it shows one element per record), or null when the name cannot be placed.
+ */
+function resolveSection(files, page, name) {
+  const norm = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const byPath = new Map((files || []).map((file) => [file.path, file]));
+  const source = String(byPath.get(page.componentPath)?.content || '');
+  const blocks = sectionBlocks(source);
+  const numbered = blocks.flatMap((block) => block.numbers.map((number) => ({ number, name: block.name, start: source.indexOf(block.source), tag: (/^<([A-Z][\w.]*)/.exec(block.source) || [])[1] || null })));
+  const contract = require('./templateDataContract');
+  const data = require('../ai/pageDistinctness').reachableFiles(page.componentPath, byPath, 2).filter((path) => /^src\/data\//.test(path) && byPath.has(path));
+  const recordNames = (path) => [...String(byPath.get(path)?.content || '').matchAll(/\b(?:name|title)\s*:\s*(['"`])([^'"`\n]{2,80})\1/g)].map((match) => match[2]).slice(0, 24);
+  // A section drawn once per record: its component is rendered inside a .map( over the records.
+  const perRecord = numbered.filter((item) => item.tag && item.start >= 0 && [...source.matchAll(/\.map\(/g)].some((match) => { const open = match.index + match[0].length - 1; const body = contract.callBody(source, open); return item.start > open && item.start < open + body.length; }));
+  const recordsOf = (item) => {
+    // The data the page maps over for this section: an imported records file named in the code just before it.
+    const before = source.slice(Math.max(0, item.start - 900), item.start);
+    const path = data.find((candidate) => { const exports = [...String(byPath.get(candidate)?.content || '').matchAll(/export\s+const\s+([A-Za-z_$][\w$]*)/g)].map((match) => match[1]); return exports.some((exp) => new RegExp(`\\b${exp}\\b`).test(before) || new RegExp(`\\b${exp}\\b`).test(source.slice(0, 2000)) && before.includes('.map(')); });
+    return path ? { dataPath: path, records: recordNames(path) } : { dataPath: null, records: [] };
+  };
+  const exact = numbered.find((item) => norm(item.name) === norm(name));
+  if (exact) return { number: exact.number, name: exact.name, record: null, ...(perRecord.includes(exact) ? recordsOf(exact) : { dataPath: null, records: [] }) };
+  // The heading of one card: the name of a record in a data file the page shows, drawn by the one section that renders a card per record.
+  const holder = data.find((path) => recordNames(path).some((value) => norm(value) === norm(name)));
+  if (!holder || perRecord.length === 0) return null;
+  const section = perRecord.length === 1 ? perRecord[0] : perRecord.find((item) => recordsOf(item).dataPath === holder);
+  if (!section) return null;
+  return { number: section.number, name: section.name, record: name, dataPath: holder, records: recordNames(holder) };
 }
 
 /** Where the JSX element that opens at `start` ends (after `/>` or its matching closing tag), or null when it cannot be read. */
@@ -462,4 +511,4 @@ async function describeSections(site, page) {
   return (await describeSectionItems(site, page)).map((item) => item.name);
 }
 
-module.exports = { extractHeadings, extractSections, sectionBlocks, jsxElementEnd, describeSectionItems, describeSections, listPagesFor, healSampleRoutes, addPage, renamePage, deletePage, reorderPages, MAX_PAGES, assertNoRunningJob, changeFiles, undoFiles, bumpSite, reindex };
+module.exports = { resolveSection, extractHeadings, extractSections, sectionBlocks, jsxElementEnd, describeSectionItems, describeSections, listPagesFor, healSampleRoutes, addPage, renamePage, deletePage, reorderPages, MAX_PAGES, assertNoRunningJob, changeFiles, undoFiles, bumpSite, reindex };

@@ -250,4 +250,45 @@ function sampleRoute(files, page) {
   return `/${next.join('/')}`;
 }
 
-module.exports = { sampleRoute, recordShapes, fieldsRead, importersOf, exportNames, brokenReads, brokenExports, usageNotes };
+
+/**
+ * A link to a detail page that still points at a record that no longer exists (the menu says /listings/k-1001 while the page now opens
+ * /listings/mbbs) ends on "not found". Every quoted link of that shape whose record is not written in any data file is pointed at the
+ * page's own route. Returns { files, fixed: [{ path, from, to }] }; `files` is the same list when nothing needed fixing.
+ */
+function repairDetailLinks(files, pages) {
+  const fixed = [];
+  const routes = pageDistinctness.extractRoutes(files);
+  const dataText = files.filter((file) => DATA.test(file.path)).map(textOf).join('\n');
+  const rules = [];
+  for (const page of pages || []) {
+    if (!page?.route || !page.componentPath) continue;
+    const pattern = routes.find((item) => /\/:/.test(item.path) && (!item.target || item.target === page.componentPath));
+    if (!pattern) continue;
+    const parts = pattern.path.split('/').filter(Boolean);
+    if (parts.filter((part) => part.startsWith(':')).length !== 1 || !parts[parts.length - 1].startsWith(':')) continue;
+    const prefix = `/${parts.slice(0, -1).join('/')}`;
+    const own = page.route.split('/').filter(Boolean);
+    if (`/${own.slice(0, -1).join('/')}` !== prefix) continue;
+    rules.push({ prefix, to: page.route, ownValue: decodeURIComponent(own[own.length - 1] || '') });
+  }
+  if (!rules.length) return { files, fixed };
+  const next = files.map((file) => {
+    if (!SOURCE.test(file.path)) return file;
+    let content = textOf(file);
+    if (!content) return file;
+    for (const rule of rules) {
+      const link = new RegExp(`(['"\`])${escape(rule.prefix)}/([^'"\`/?#$\\s]+)\\1`, 'g');
+      content = content.replace(link, (whole, quote, value) => {
+        const decoded = (() => { try { return decodeURIComponent(value); } catch { return value; } })();
+        if (/^[:*]/.test(decoded) || decoded === rule.ownValue || new RegExp(`(['"\`])${escape(decoded)}\\1`).test(dataText)) return whole;
+        fixed.push({ path: file.path, from: `${rule.prefix}/${value}`, to: rule.to });
+        return `${quote}${rule.to}${quote}`;
+      });
+    }
+    return content === textOf(file) ? file : { ...file, content };
+  });
+  return { files: fixed.length ? next : files, fixed };
+}
+
+module.exports = { repairDetailLinks, callBody, sampleRoute, recordShapes, fieldsRead, importersOf, exportNames, brokenReads, brokenExports, usageNotes };

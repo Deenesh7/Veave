@@ -81,6 +81,7 @@ sites.get('/:siteId/images', controller.listImages);
 sites.post('/:siteId/images/:imageId/enhance', aiLimiter, controller.enhanceImage);
 sites.post('/:siteId/images/:imageId/enhancement', controller.chooseEnhancement);
 sites.get('/:siteId/images/:imageId/file', controller.imageFile);
+sites.post('/:siteId/images/swap', controller.swapImage);
 sites.patch('/:siteId/images/:imageId', controller.updateImage);
 sites.delete('/:siteId/images/:imageId', controller.deleteImage);
 sites.post('/:siteId/images/:imageId/replace', uploadLimiter, singlePhoto, controller.replaceImage);

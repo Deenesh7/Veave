@@ -15,15 +15,26 @@ const store = require('./siteFileStore');
 const logger = require('../../utils/logger');
 
 class PageGenerationError extends Error {
-  constructor(message, { code = 'PAGE_GENERATION_FAILED', issues = [], report = null } = {}) {
+  constructor(message, { code = 'PAGE_GENERATION_FAILED', issues = [], report = null, repeated = false } = {}) {
     super(message);
     this.name = 'PageGenerationError';
     this.code = code;
     this.issues = issues;
     this.report = report;
+    this.repeated = repeated;
   }
 }
 
+// Repairs in a row that may end in exactly the same problem before the repairs stop (the 3rd identical answer ends the loop).
+const MAX_SAME_PROBLEM = 2;
+// Problems judged by a model (relevance review, intent review) are worded differently every time: only deterministic ones are compared.
+const JUDGED_STAGES = new Set(['semantic-review', 'intent']);
+/** The identity of a set of deterministic problems (stage, file and message), '' when there are none. */
+function problemSignature(problems = []) {
+  return (problems || []).filter((item) => item && !JUDGED_STAGES.has(item.stage)).map((item) => `${item.stage}|${item.path || ''}|${String(item.message || '').replace(/\s+/g, ' ').trim()}`).sort().join('\n');
+}
+
+const reasoningEffort = () => { const value = String(process.env.TEMPLATE_REASONING_EFFORT || 'medium').trim().toLowerCase(); return ['minimal', 'low', 'medium', 'high'].includes(value) ? value : 'medium'; };
 const REPAIR_ROUNDS = () => { const n = Number.parseInt(process.env.TEMPLATE_REPAIR_ROUNDS, 10); return Number.isFinite(n) && n >= 0 ? n : 3; };
 
 /* ------------------------------------------------ default dependencies (replaced in tests) ------------------------------------------------ */
@@ -37,7 +48,8 @@ function defaultCallModel(mode = 'edit') {
     const options = {
       model, temperature: 0.2, max_tokens: Number.parseInt(process.env.TEMPLATE_PAGE_MAX_TOKENS, 10) || 16000,
       timeout: Number.parseInt(process.env.OPENROUTER_GENERATION_TIMEOUT_MS, 10) || 300000,
-      reasoning: { effort: 'low', exclude: true }, tools: [aiProtocol.FILE_OPERATIONS_TOOL],
+      // The page writer thinks before it answers (TEMPLATE_REASONING_EFFORT: minimal, low, medium or high; medium by default).
+      reasoning: { effort: reasoningEffort(), exclude: true }, tools: [aiProtocol.FILE_OPERATIONS_TOOL],
       tool_choice: { type: 'function', function: { name: aiProtocol.FILE_OPERATIONS_TOOL.function.name } },
       // Cancelling the job (or its time limit) stops the call in flight instead of paying for a page nobody will see.
       ...(signal ? { signal } : {})
@@ -162,6 +174,13 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   }
   const siteWide = validation.wantsSiteWide(text, files) || Boolean(policy?.siteWide);
   const originals = (() => { try { return new Map(require('../templates/templateService').instantiateFiles(template).map((file) => [file.path, file.content])); } catch { return null; } })();
+  // "Rewrite this page for Saveetha" on a page an earlier change already wrote for it (it was edited before and no longer reads like the
+  // template): this is a refinement (keep what fits, change what still speaks about the old subject), not another full replacement of its wording.
+  const editedBefore = (history || []).length > 0 || Number(page.currentRevision) > 1;
+  if (policy?.rewrite && !policy.refinement && editedBefore && alreadyRewritten(originals, files, page.componentPath, template)) {
+    policy = { ...policy, refinement: true, maxKeep: undefined };
+    logger.info(`The ${page.name} page was already rewritten away from the template: this rewrite is treated as a refinement.`);
+  }
   const sectionPhrases = ticked ? quotedPhrases(text) : [];
   const scope = validation.pageScope({ files, page, pages, template, siteWide, includeSharedContent: Boolean(policy?.rewrite), sectionNames: validation.namedSections(text), sectionPhrases });
   const get = (path) => files.find((file) => file.path === path);
@@ -171,13 +190,25 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   const otherPages = pages.filter((item) => String(item._id) !== String(page._id)).map((item) => ({ name: item.name, route: item.route, description: item.description }));
 
   let entity = null;
-  try { entity = await discoverImages?.(validation.ownerWords(text), { signal }); } catch (error) { if (signal?.aborted) throw error; logger.warn(`Image search for the page instruction was skipped: ${error.message}`); }
+  // Pictures were given for this change (uploaded by the owner, or made for it): no other pictures are searched for on the web.
+  try { entity = attachments.length ? null : await discoverImages?.(validation.ownerWords(text), { signal }); } catch (error) { if (signal?.aborted) throw error; logger.warn(`Image search for the page instruction was skipped: ${error.message}`); }
 
+  // The request as an ordered work list made from this page (its sections, the files that show them, the exact texts, the pictures): the
+  // writer does and checks every item, and the reviewer judges the change by the same items.
+  const workList = (() => { try { return require('./templateWorkList').buildWorkList({ instruction: text, page, files, scope, policy, intent: intentResult?.intent || null, attachments, template, originals }); } catch (error) { logger.warn(`The work list for the ${page.name} page was not made: ${error.message}`); return []; } })();
+  if (workList.length) logger.info(`Work list for the ${page.name} page (${workList.length} item(s)): ${workList.map((item) => item.text.slice(0, 60)).join(' | ')}`);
   // Who else reads the files this change may touch (exports, record fields), so the change keeps them working.
   const usageBlock = (() => { try { return require('./templateDataContract').usageNotes(files, scope.ownedList); } catch { return ''; } })();
+  // Text edit, section edit, redesign, or a conversion of the page to another kind of website: a conversion rebuilds the page (and the
+  // validator also flags old-industry components it leaves imported), the others keep the page's structure.
+  const contentAudit = require('./templateContentAudit');
+  const changeKind = contentAudit.changeKind({ plan: siteContext?.plan || null, intent: intentResult?.intent || null, policy, ticked, mode: siteContext?.mode });
+  const conversion = changeKind === 'conversion';
+  const conversionBlock = (() => { if (!conversion) return ''; try { return contentAudit.conversionBlock({ plan: siteContext.plan, page, files, scope, template }); } catch (error) { logger.warn(`The conversion brief for the ${page.name} page was not made: ${error.message}`); return ''; } })();
+  if (siteContext?.plan) logger.info(`Change kind for the ${page.name} page: ${changeKind}`);
   const promptFor = (repair, current = files) => buildPageMessages({
     template, page, otherPages, instruction: text, ownedFiles: scope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
-    entityBlock: entity?.block || '', researchBlock: research?.block || '', sectionFiles: scope.sectionFiles || [], attachments, repair, siteContext, intent: intentResult?.intent || null, policy, usageBlock
+    entityBlock: entity?.block || '', researchBlock: research?.block || '', sectionFiles: scope.sectionFiles || [], attachments, repair, siteContext, intent: intentResult?.intent || null, policy, usageBlock, workList, conversionBlock
   });
 
   /* ---- generate, check, repair (static stages) ---- */
@@ -194,12 +225,18 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   let startFrom = files;
   // An independent reviewer compares the changed lines with the owner's words (not in tests that supply their own model, nor when a whole website is written).
   const reviewOn = Boolean(deps.reviewIntent || deps.askIntentModel) || (!deps.callModel && siteContext?.mode !== 'website');
-  const keptShare = ({ baseline: before, candidate: after }) => validation.keptShareOwned(before, after, scope);
+  const keptShare = ({ baseline: before, candidate: after }) => validation.keptShareOwned(before, after, scope.ownOnly ? { ...scope, ownedList: scope.ownOnly } : scope);
   // The sections the owner ticked, and the ones that must stay as they are: the reviewer judges the change in the ticked ones only.
   const focusNames = validation.namedSections(text);
   const lockedNames = ticked ? untickedSectionNames(get(page.componentPath)?.content, text, focusNames) : [];
-  const review = (args) => (deps.reviewIntent || require('./templateIntentReview').reviewIntent)({ instruction: text, focus: focusNames.join(', '), lockedSections: lockedNames, deps, signal, intent: policy ? intentResult.intent : null, research: research ? { found: research.found, organisation: research.organisation || '', sources: research.sources.map((entry) => entry.url), items: research.items.length } : null, wording: policy?.rewrite ? validation.wordingOf(args.candidate, (scope.pageFiles || []).filter((path) => scope.owned.has(path))) : '', site: policy?.rewrite ? [siteContext?.name, siteContext?.brief].filter(Boolean).join(': ').slice(0, 300) : '', refinement: Boolean(policy?.refinement), keptShare: policy && !policy.refinement ? keptShare(args) : null, ...args });
+  // What the reviewer reads as "the page" for a rewrite: the page's own files and what this change touched. Shared records it displays
+  // (another page's data, the departments of the site) are judged file by file against the template, not by the reviewer.
+  const reviewedPaths = (changed = []) => [...new Set([...(scope.ownOnly || [page.componentPath]), ...changed.filter((path) => scope.owned.has(path))])];
+  const review = (args) => (deps.reviewIntent || require('./templateIntentReview').reviewIntent)({ instruction: text, focus: focusNames.join(', '), lockedSections: lockedNames, workList, deps, signal, intent: policy ? intentResult.intent : null, research: research ? { found: research.found, organisation: research.organisation || '', sources: research.sources.map((entry) => entry.url), items: research.items.length } : null, wording: policy?.rewrite ? validation.wordingOf(args.candidate, reviewedPaths(args.changedPaths)) : '', site: policy?.rewrite ? websiteLine(siteContext) : '', refinement: Boolean(policy?.refinement), keptShare: policy && !policy.refinement ? keptShare(args) : null, ...args });
   let verdict = { met: null };
+  let lastSignature = '';
+  let repeats = 0;
+  const autoCorrected = [];
   const BROKEN_MARKUP = /syntax error|closing tag|unexpected token|unterminated/i;
   for (let round = 0; round <= repairRounds; round += 1) {
     signal?.throwIfAborted();
@@ -259,9 +296,31 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     // Right content for THIS website: only once the page is otherwise sound (it is the costly check), and only when the site has a plan.
     // A section the owner ticked or opened is changed in place: the relevance review of the whole page is skipped (it only matters when the page's subject changes).
     if (siteContext?.plan && !problems.length && !/ticked only the section/.test(text)) {
-      const reviewed = await timed('content review', () => semantic.semanticProblems({ plan: siteContext.plan, page, files: candidate, scope, brief: siteContext.brief, deps, signal }));
+      const reviewed = await timed('content review', () => semantic.semanticProblems({ plan: siteContext.plan, page, files: candidate, scope, brief: siteContext.brief, deps, signal, baseline, conversion }));
       usage = sumUsage(usage, reviewed.usage);
       problems = problems.concat(reviewed.problems);
+    }
+    // The model had its repair and still left short leftovers of the old website ("See listings" on a card): they are corrected with the
+    // website's own vocabulary, without another model call, and EVERY check runs again on the corrected files. A correction that would
+    // bring any other problem is thrown away.
+    if (siteContext?.plan && round >= 1 && problems.length && problems.every((item) => item.leaks?.length)) {
+      const fixed = contentAudit.rewordLeaks(candidate, problems, siteContext.plan);
+      if (fixed.changes.length) {
+        const fixedChanged = store.diffFiles(baseline, fixed.files).changed.map((item) => item.path);
+        let again = validation.checkCandidate({ baseline, candidate: fixed.files, scope, page, pages, template, changedPaths: fixedChanged, attachments, instruction: text, siteWide, rewrite: siteContext?.mode === 'website', policy, originalFiles: originals });
+        if (!again.length) {
+          const reviewedAgain = await timed('content review', () => semantic.semanticProblems({ plan: siteContext.plan, page, files: fixed.files, scope, brief: siteContext.brief, deps, signal, baseline, conversion }));
+          usage = sumUsage(usage, reviewedAgain.usage);
+          again = reviewedAgain.problems;
+        }
+        if (again.every((item) => item.leaks?.length || item.stage === 'semantic-review')) {
+          logger.info(`The ${page.name} page: corrected ${fixed.changes.length} leftover(s) of the old website without the model: ${fixed.changes.map((item) => `${item.path}:${item.line}`).join(', ')}`);
+          autoCorrected.push(...fixed.changes);
+          candidate = fixed.files;
+          changedPaths = fixedChanged;
+          problems = again;
+        }
+      }
     }
     if (reviewOn && !problems.length && changedPaths.some((path) => scope.owned.has(path))) {
       onState('validating', 'Checking the change against your request');
@@ -275,10 +334,20 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     // Remarks from the relevance reviewer are advice, not a reason to throw the page away: one correction is tried, then the page is kept and flagged for review.
     if (problems.every((item) => item.stage === 'semantic-review') && (round >= 1 || round === repairRounds)) { reviewNotes = problems; break; }
     const restart = problems.some((item) => item.stage === 'preserve');
+    // The same deterministic problem after a repair: the repair did not touch the code that causes it. The next repair is told so (with the
+    // file and text), and after the third identical answer the loop stops instead of paying for repairs that keep failing the same way.
+    const signature = problemSignature(problems);
+    repeats = signature && signature === lastSignature ? repeats + 1 : 0;
+    lastSignature = signature;
     repair = { diagnostics: describe(problems), candidate: scope.ownedList.map((path) => candidate.find((file) => file.path === path)).filter(Boolean), restart };
     startFrom = restart ? files : candidate;
     if (problems.some((item) => BROKEN_MARKUP.test(String(item.message)))) allowPatch = false;
     if (problems.some((item) => BROKEN_MARKUP.test(String(item.message)))) repair.diagnostics.push('[code] The last answer left the JSX broken. Do NOT use patches this time: return the complete corrected file with operation "modify", with every opening tag closed.');
+    if (repeats >= 1) repair.diagnostics.push(`[repeat] Your last fix did not change what causes ${problems.length === 1 ? 'this problem' : 'these problems'}: ${[...new Set(problems.map((item) => item.path).filter(Boolean))].join(', ') || page.componentPath} still ${problems.length === 1 ? 'has it' : 'have them'}. Change exactly the file, line and text named above (or stop rendering that component on this page). Do not change anything else.`);
+    if (repeats >= MAX_SAME_PROBLEM && round < repairRounds) {
+      logger.warn(`The ${page.name} page: the same problem came back after ${repeats} repairs; stopping the repairs. ${problems[0]?.message || ''}`);
+      throw new PageGenerationError(`The new version of the ${page.name} page did not pass validation after ${attempts} attempt(s): ${problems.slice(0, 3).map((item) => item.message).join(' | ')}`, { code: 'PAGE_VALIDATION_FAILED', issues: problems, repeated: true });
+    }
     if (round === repairRounds) throw new PageGenerationError(problems.every((item) => item.stage === 'intent') ? `The AI could not do what you asked. ${problems.map((item) => item.message.replace(/^The change does not do what was asked: /, '')).join(' ')} Your page is exactly as it was.` : `The new version of the ${page.name} page did not pass validation after ${attempts} attempt(s): ${problems.slice(0, 3).map((item) => item.message).join(' | ')}`, { code: problems.every((item) => item.stage === 'intent') ? 'INTENT_NOT_MET' : 'PAGE_VALIDATION_FAILED', issues: problems });
   }
 
@@ -288,14 +357,14 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   let behavior = { status: 'unavailable', tests: [], reason: 'Behaviour tests were not run.' };
   if (buildGate) {
     const styleOnly = false; // look-only changes are tested too: the exact colour, size or text asked for is asserted
+    // A detail page is tested at a record that exists in the NEW records (a sample route whose record is gone would only show "not found").
+    const sampleRoute = (item) => { try { return require('./templateDataContract').sampleRoute(candidate, item) || item.route; } catch { return item.route; } };
     const canPlan = (Boolean(deps.planBehaviorTests) || (!deps.callModel && siteContext?.mode !== 'website'));
     if (canPlan) onState('validating', 'Writing browser tests for what you asked');
-    const planned = !canPlan ? (styleOnly ? { status: 'not-applicable', tests: [], reason: 'A look-only change (colour, size, wording) has nothing to operate.' } : { status: 'unavailable', tests: [], reason: 'Behaviour tests were not written for this kind of job.' }) : await timed('write browser tests', () => (deps.planBehaviorTests || require('./templateBehaviorTests').planBehaviorTests)({ instruction: text, page, files: candidate, changedPaths, deps, signal }));
+    const planned = !canPlan ? (styleOnly ? { status: 'not-applicable', tests: [], reason: 'A look-only change (colour, size, wording) has nothing to operate.' } : { status: 'unavailable', tests: [], reason: 'Behaviour tests were not written for this kind of job.' }) : await timed('write browser tests', () => (deps.planBehaviorTests || require('./templateBehaviorTests').planBehaviorTests)({ instruction: text, page, files: candidate, changedPaths, deps, signal, route: sampleRoute(page) }));
     usage = sumUsage(usage, planned.usage);
     behavior = planned;
     onState('validating', 'Building the site and testing every page');
-    // A detail page is tested at a record that exists in the NEW records (a sample route whose record is gone would only show "not found").
-    const sampleRoute = (item) => { try { return require('./templateDataContract').sampleRoute(candidate, item) || item.route; } catch { return item.route; } };
     const routes = [...new Set(['/', ...pages.map(sampleRoute)])];
     const gateRepair = async (current, diagnostics) => {
       // A test that fails on its own selector (it matches several elements) is not fixed by rewriting the page.
@@ -304,7 +373,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
       const gateScope = validation.pageScope({ files: current, page, pages, template, siteWide, includeSharedContent: Boolean(policy?.rewrite), sectionNames: validation.namedSections(text), sectionPhrases });
       const gateRepairPrompt = buildPageMessages({
         template, page, otherPages, instruction: text, ownedFiles: gateScope.ownedList.map((path) => current.find((file) => file.path === path)).filter(Boolean), sharedFiles, siteWide,
-        entityBlock: '', attachments, repair: { diagnostics: [generationPipeline.formatDiagnostics(diagnostics)], candidate: null }, siteContext, intent: intentResult?.intent || null, policy, researchBlock: research?.block || '', usageBlock
+        entityBlock: '', attachments, repair: { diagnostics: [generationPipeline.formatDiagnostics(diagnostics)], candidate: null }, siteContext, intent: intentResult?.intent || null, policy, researchBlock: research?.block || '', usageBlock, workList, conversionBlock
       });
       const response = await callModel(gateRepairPrompt, { signal });
       usage = sumUsage(usage, response.usage);
@@ -321,7 +390,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     let environmentError = null;
     let gateError = null;
     for (let tryNumber = 1; tryNumber <= 3 && !gated; tryNumber += 1) {
-      try { gated = await timed('build + browser tests', () => buildGate(candidate, { routes, extraTests: behavior.tests, signal, repair: gateRepair, onProgress: (state) => onState('validating', state?.stage || 'validating') })); }
+      try { gated = await timed('build + browser tests', () => buildGate(candidate, { routes, extraTests: behavior.tests, signal, repair: gateRepair, onProgress: gateProgress(onState) })); }
       catch (error) {
         if (signal?.aborted || error?.name === 'AbortError') throw error;
         if (!environmental(error)) { environmentError = null; gateError = error; break; }
@@ -347,7 +416,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
         const attempt = attempts[index];
         try {
           onState('validating', attempt.looser ? 'Retrying the browser test with clearer selectors' : 'Checking the build without the faulty browser test');
-          gated = await timed('build + browser tests (recovery)', () => buildGate(candidate, { routes, extraTests: attempt.tests, signal, maxRepairs: 0, onProgress: (state) => onState('validating', state?.stage || 'validating') }));
+          gated = await timed('build + browser tests (recovery)', () => buildGate(candidate, { routes, extraTests: attempt.tests, signal, maxRepairs: 0, onProgress: gateProgress(onState) }));
           behavior = attempt.looser ? { ...behavior, tests: attempt.tests } : { status: 'unavailable', tests: [], reason: 'The automatic browser test for this change was unreliable (its selectors matched several elements), but the page builds and every route opens. Please try the change in the preview.' };
           logger.warn(`The ${page.name} page was accepted: only its generated browser test failed (${attempt.looser ? 'it passed with clearer selectors' : 'it was left out'}).`);
           gateError = null;
@@ -406,7 +475,22 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   }
 
   const diff = store.diffFiles(baseline, finalFiles);
-  return { intent: intentEngine.summarize(intentResult, policy), research: require('./templateWebResearch').summarize(research), files: finalFiles, changed: diff.changed, previous: diff.previous, changedPaths: diff.changed.map((item) => item.path), report, usage, attempts, dropped, reviewNotes, entity: entity ? { found: [...new Set(entity.assets.map((asset) => asset.entity))], missing: entity.missing.map((item) => item.name) } : null };
+  return { workList, intent: intentEngine.summarize(intentResult, policy), research: require('./templateWebResearch').summarize(research), files: finalFiles, changed: diff.changed, previous: diff.previous, changedPaths: diff.changed.map((item) => item.path), report, usage, attempts, dropped, reviewNotes, autoCorrected, entity: entity ? { found: [...new Set(entity.assets.map((asset) => asset.entity))], missing: entity.missing.map((item) => item.name) } : null };
+}
+
+// The build machine reports many small stages, some in parallel ("manifest", "install", "syntax"...): the owner sees a few plain steps
+// that only move forward within one run of the checks.
+const GATE_STAGES = { static: ['Checking the code', 1], 'plan-schema': ['Checking the code', 1], syntax: ['Checking the code', 1], execution: ['Installing the website\'s packages', 2], manifest: ['Installing the website\'s packages', 2], install: ['Installing the website\'s packages', 2], dependencies: ['Installing the website\'s packages', 2], build: ['Building the website', 3], preview: ['Starting the website', 4], browser: ['Testing every page in a browser', 5], artifacts: ['Finishing the checks', 6], verified: ['Finishing the checks', 6] };
+function gateProgress(onState) {
+  let rank = 0;
+  return (state) => {
+    const stage = state?.stage;
+    if (stage === 'repair') { rank = 0; return; } // the repair reports itself ("Fixing a build or browser error"); the next run starts again
+    const entry = GATE_STAGES[stage];
+    if (!entry || entry[1] <= rank) return;
+    rank = entry[1];
+    onState('validating', entry[0]);
+  };
 }
 
 /** The name the website itself shows as its brand (src/data/site.js), which tells an abbreviation like "SMC" which organisation it stands for. */
@@ -427,6 +511,26 @@ function intentContext({ page, pages, files, instruction, siteContext, history }
   return { page: { name: page.name, route: page.route }, sections, selectedSections, category: siteContext?.plan?.identity?.category || null, otherPages: pages.filter((item) => String(item._id) !== String(page._id)).map((item) => item.name), history };
 }
 
+/** What the website is, for the reviewer: from the plan when there is one (never an earlier page's instruction saved as the brief). */
+function websiteLine(siteContext) {
+  const identity = siteContext?.plan?.identity;
+  if (identity) return [`${identity.name || siteContext.name}${identity.organizationType || identity.category ? ` (${[identity.organizationType, identity.category].filter(Boolean).join(', ')})` : ''}`, identity.purpose].filter(Boolean).join(': ').slice(0, 300);
+  return [siteContext?.name, validation.ownerWords(siteContext?.brief || '')].filter(Boolean).join(': ').slice(0, 300);
+}
+
+/** Does the page's own file no longer read like the template it came from (less than 60% of the template's subject words are left)? */
+function alreadyRewritten(originals, files, path, template) {
+  const original = originals?.get(path);
+  const current = (files.find((file) => file.path === path) || {}).content;
+  if (!original || typeof current !== 'string') return false;
+  const generic = validation.genericWords(template?.id);
+  const before = [...validation.ownedWordSet([{ path, content: original }], { ownedList: [path] })];
+  const judged = generic.size && before.filter((word) => !generic.has(word)).length >= 10 ? before.filter((word) => !generic.has(word)) : before;
+  if (judged.length < 10) return false;
+  const now = validation.ownedWordSet([{ path, content: current }], { ownedList: [path] });
+  return judged.filter((word) => now.has(word)).length / judged.length < 0.6;
+}
+
 /** Did the owner tick (or name, through the section panel) the sections this change is about? */
 const isTicked = (instruction) => validation.isTickedEdit(instruction);
 
@@ -445,4 +549,4 @@ function untickedSectionNames(source, instruction, tickedNames) {
 
 const textOfFile = (file) => (file && file.encoding !== 'base64' && typeof file.content === 'string' ? file.content : '');
 
-module.exports = { regeneratePage, PageGenerationError, applyAnswer, defaultCallModel, sumUsage, intentContext, brandOf };
+module.exports = { alreadyRewritten, regeneratePage, PageGenerationError, applyAnswer, defaultCallModel, sumUsage, intentContext, brandOf, problemSignature };

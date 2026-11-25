@@ -34,19 +34,12 @@ export default function ContentEditorPanel({ className = '' }) {
   const [renaming, setRenaming] = useState(null);   // the new name while editing
   const [resizing, setResizing] = useState(false);
   const [picked, setPicked] = useState({}); // the ticked sections (their ids), per page; they are shown as chips, never typed into the prompt
-  // The ticks are kept per website, so a refresh of the page does not lose them.
+  // Ticks are not kept across a refresh (a stale tick blurred a preview that was no longer showing that page); a different site starts clean.
   const siteKey = site?.id || null;
-  const pickedFor = useRef(null);
   useEffect(() => {
-    if (!siteKey || pickedFor.current === siteKey) return;
-    pickedFor.current = siteKey;
-    setPicked(readUi().picked?.[siteKey] || {});
+    setPicked({});
+    if (readUi().picked) writeUi({ picked: undefined });
   }, [siteKey]);
-  useEffect(() => {
-    if (!siteKey || pickedFor.current !== siteKey) return;
-    const clean = Object.fromEntries(Object.entries(picked).filter(([, numbers]) => Array.isArray(numbers) && numbers.length));
-    writeUi({ picked: { ...(readUi().picked || {}), [siteKey]: clean } });
-  }, [picked, siteKey]);
   const panel = useRef(null);
 
   const currentPageIndex = pages.findIndex((item) => item.id === activePageId);
@@ -61,6 +54,10 @@ export default function ContentEditorPanel({ className = '' }) {
 
   const instruction = (activePageId && drafts[activePageId]) || '';
   const running = job && !TERMINAL.includes(job.status);
+  // The bar of one job only moves forward (a slower poll or a retry of the AI never makes it jump back).
+  const barRef = useRef({ id: null, value: 0 });
+  if (job && barRef.current.id !== job.id) barRef.current = { id: job.id, value: 0 };
+  const barValue = job ? (barRef.current.value = Math.max(barRef.current.value, Number(job.progress) || 0)) : 0;
   const mine = job && (job.pageId === activePageId || !job.pageId);
   const focusName = job && job.pageId && lastRequest && lastRequest.pageId === job.pageId ? String(lastRequest.focusSection || '').trim() : '';
   const chosen = (activePageId && selection[activePageId]) || {};
@@ -87,7 +84,7 @@ export default function ContentEditorPanel({ className = '' }) {
   // The ticked sections are told to the preview, which dims every other section so the chosen ones are easy to see.
   const focusKey = checkedNumbers.map((n) => sections[n - 1]?.id).filter(Boolean).join('|');
   useEffect(() => {
-    const chosenSections = checkedNumbers.map((n) => sections[n - 1]).filter(Boolean).map((item) => ({ name: item.name, domId: item.domId || null }));
+    const chosenSections = checkedNumbers.map((n) => sections[n - 1]).filter(Boolean).map((item) => ({ name: item.name, domId: item.domId || null, index: sections.indexOf(item), total: sections.length }));
     window.dispatchEvent(new CustomEvent('studio-focus-sections', { detail: { sections: chosenSections } }));
   }, [focusKey, activePageId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { window.dispatchEvent(new CustomEvent('studio-focus-sections', { detail: { sections: [] } })); }, []);
@@ -106,9 +103,34 @@ export default function ContentEditorPanel({ className = '' }) {
     setChecked(on ? [...checkedNumbers, number] : checkedNumbers.filter((n) => n !== number));
     if (on) {
       requestAnimationFrame(() => { const box = document.getElementById('page-instruction'); if (box) box.focus({ preventScroll: true }); });
-      window.dispatchEvent(new CustomEvent('studio-scroll-section', { detail: { id: section.id, name: section.name, domId: section.domId || null, order: section.order } }));
+      window.dispatchEvent(new CustomEvent('studio-scroll-section', { detail: { id: section.id, name: section.name, domId: section.domId || null, order: section.order, index: idx, total: sections.length } }));
     }
   };
+
+  // Clicking a nav link (#section) in the preview marks the matching section here and brings it into view.
+  const [navActiveId, setNavActiveId] = useState(null);
+  const sectionsRef = useRef(sections);
+  sectionsRef.current = sections;
+  useEffect(() => { setNavActiveId(null); }, [activePageId]);
+  useEffect(() => {
+    const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const onNav = (event) => {
+      const { domId = '', name = '' } = event.detail || {};
+      const list = sectionsRef.current;
+      const wanted = normName(domId.replace(/[-_]/g, ' '));
+      const label = normName(name);
+      const match = list.find((s) => s.domId && s.domId === domId)
+        || list.find((s) => normName(s.name) === wanted || normName(s.name) === label)
+        || list.find((s) => { const n = normName(s.name); return n && wanted && (n.includes(wanted) || wanted.includes(n)); });
+      if (!match) return;
+      setNavActiveId(match.id);
+      const index = list.indexOf(match);
+      if (index >= SECTIONS_SHOWN) setShowAllSections(true);
+      requestAnimationFrame(() => document.getElementById(`content-section-${match.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+    };
+    window.addEventListener('studio-nav-section', onNav);
+    return () => window.removeEventListener('studio-nav-section', onNav);
+  }, []);
 
   // Touching anything in the Content column folds the app's menu sidebar and the Pages column (Content / Preview then share 30 / 70), so the work area gets the room.
   const foldMenu = () => { const store = useTemplateStudioStore.getState(); if (!store.appSidebarHidden) store.setAppSidebarHidden(true); if (!store.pagesCollapsed) store.setPagesCollapsed(true); };
@@ -151,13 +173,13 @@ export default function ContentEditorPanel({ className = '' }) {
     if (await regenerate(withContext, attachmentsNow(), sent.focus, text)) { clearSelection(); setChecked([]); }
   };
 
-  const readSectionHtml = (section) => new Promise((resolve) => {
+  const readSectionHtml = (section, { whole = false } = {}) => new Promise((resolve) => {
     const key = `${Date.now()}-${Math.random()}`;
     const done = (html) => { window.removeEventListener('studio-section-html', on); clearTimeout(timer); resolve(html); };
     const on = (event) => { if (event.detail?.key === key) done(event.detail.html || ''); };
     const timer = setTimeout(() => done(''), 1500);
     window.addEventListener('studio-section-html', on);
-    window.dispatchEvent(new CustomEvent('studio-get-section', { detail: { key, domId: section.domId || '', name: section.name || '' } }));
+    window.dispatchEvent(new CustomEvent('studio-get-section', { detail: { key, domId: section?.domId || '', name: section?.name || '', whole } }));
   });
 
   const addPageContext = async (base) => {
@@ -173,6 +195,14 @@ export default function ContentEditorPanel({ className = '' }) {
         if (!html || room < 300) continue;
         const outline = sectionOutline(html, [], Math.min(1500, room));
         if (outline) context += `\n\nSECTION ${String(n).padStart(2, '0')} CONTENT (what the visitor sees in "${String(section.name).replace(/"/g, "'").slice(0, 70)}" right now; for reference, change only what the instruction asks):\n${outline}`;
+      }
+      // No section ticked: the instruction is about the whole page, so the AI is told what the visitor sees on it now (the records the
+      // page shows, the text that comes from data files), not only its code.
+      if (!checkedNumbers.length) {
+        const html = await readSectionHtml(null, { whole: true });
+        const room = MAX_TEXT - base.length - context.length - 120;
+        const outline = html && room >= 300 ? sectionOutline(html, [], Math.min(2200, room)) : '';
+        if (outline) context += `\n\nPAGE CONTENT (what the visitor sees on this page right now; for reference, change only what the instruction asks):\n${outline}`;
       }
       return withContextWithin(base, context, MAX_TEXT);
     } catch { return String(base).slice(0, MAX_TEXT); }
@@ -276,10 +306,10 @@ export default function ContentEditorPanel({ className = '' }) {
                 {visibleSections.map((sec, idx) => {
                   const selected = checkedNumbers.includes(idx + 1);
                   return (
-                    <li key={sec.id}>
+                    <li key={sec.id} id={`content-section-${sec.id}`}>
                       <label
                         title={`Select section ${idx + 1} (${sec.name}) and show it in the preview`}
-                        className={`flex w-full cursor-pointer items-center gap-2 rounded-md border bg-white p-2 text-left text-xs transition focus-within:ring-2 focus-within:ring-[#5E7B5F] ${selected ? 'border-[#5E7B5F] bg-[#F1F6F1]' : `${line} hover:border-[#5E7B5F]/60 hover:bg-[#FDFCF9]`} ${running ? 'cursor-not-allowed opacity-60' : ''}`}
+                        className={`flex w-full cursor-pointer items-center gap-2 rounded-md border bg-white p-2 text-left text-xs transition focus-within:ring-2 focus-within:ring-[#5E7B5F] ${selected ? 'border-[#5E7B5F] bg-[#F1F6F1]' : navActiveId === sec.id ? 'border-[#5E7B5F] bg-[#F1F6F1] ring-1 ring-[#5E7B5F]/40' : `${line} hover:border-[#5E7B5F]/60 hover:bg-[#FDFCF9]`} ${running ? 'cursor-not-allowed opacity-60' : ''}`}
                       >
                         <input type="checkbox" checked={selected} disabled={running} onChange={() => toggleSection(sec, idx)} aria-label={`Section ${idx + 1}: ${sec.name}`} className="h-3.5 w-3.5 shrink-0 accent-[#5E7B5F]" />
                         <span className={`flex h-4 w-5 shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold ${selected ? 'bg-[#5E7B5F] text-white' : 'bg-[#EFEBE1] text-[#5E7B5F]'}`}>
@@ -356,7 +386,7 @@ export default function ContentEditorPanel({ className = '' }) {
                 </div>
                 {running ? (
                   <>
-                    <div className="mt-2 h-1.5 overflow-hidden rounded bg-[#E9E4D7]"><div className="h-full bg-[#5E7B5F] transition-all" style={{ width: `${Math.max(5, job.progress || 0)}%` }} /></div>
+                    <div className="mt-2 h-1.5 overflow-hidden rounded bg-[#E9E4D7]"><div className="h-full bg-[#5E7B5F] transition-all" style={{ width: `${Math.max(5, barValue)}%` }} /></div>
                     <p className={`mt-1.5 text-[11px] ${muted}`}>{job.stepName && job.stepName !== STEP[job.status] ? job.stepName : 'This usually takes under a minute. You can keep browsing the preview.'}</p>
                   </>
                 ) : null}
