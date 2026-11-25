@@ -61,7 +61,7 @@ app.use(cors(corsOptions));
 app.use('/api', require('./middleware/originGuard'));
 // Production: log only failed requests in a compact format (slow ones are reported by slowRequestLogger). Dev keeps the full log.
 app.use(process.env.NODE_ENV === 'production'
-  ? morgan(':method :url :status :res[content-length] - :response-time ms', { skip: (req, res) => res.statusCode < 400 })
+  ? morgan(':method :url :status :res[content-length] - :response-time ms', { skip: (req, res) => res.statusCode < 400 || (res.locals && res.locals.quietRefusal) })
   : morgan('dev'));
 app.use(require('./utils/perfMonitor').slowRequestLogger);
 // Stored preview assets are public capability URLs (unguessable token); a page can legitimately request dozens of them.

@@ -21,9 +21,20 @@ function mayAskIssuance(req) {
   }
   return PRIVATE_ADDRESS.test(ip) && !req.headers['x-forwarded-for'];
 }
+// A name whose DNS still points at this server but which is not connected (any more) is asked about every time somebody opens it:
+// that is one line per domain every half hour, not one line per visit.
+const refusedAt = new Map();
+const REFUSED_LOG_MS = 30 * 60 * 1000;
 router.get('/domain-ask', async (req, res) => {
   if (!mayAskIssuance(req)) return res.sendStatus(404);
-  const ok = await require('../services/hosting/domainService').isIssuableDomain(req.query.domain).catch(() => false);
+  const domain = String(req.query.domain || '').toLowerCase().slice(0, 253);
+  const ok = await require('../services/hosting/domainService').isIssuableDomain(domain).catch(() => false);
+  if (!ok && domain && !/^[\d.:]+$/.test(domain) && Date.now() - (refusedAt.get(domain) || 0) > REFUSED_LOG_MS) {
+    refusedAt.set(domain, Date.now());
+    if (refusedAt.size > 500) refusedAt.clear();
+    require('../utils/logger').warn(`Certificate refused for ${domain}: it is not a connected domain of a published site, but its DNS still points at this server. Remove that DNS record, or connect the domain in Veave.`);
+  }
+  res.locals.quietRefusal = !ok;
   return res.sendStatus(ok ? 200 : 404);
 });
 

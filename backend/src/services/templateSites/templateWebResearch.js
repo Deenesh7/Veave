@@ -102,6 +102,8 @@ async function research({ instruction, siteName = '', brand = '', pageName = '',
   if (hit && Date.now() - hit.at < CACHE_MS && !deps.noCache) return { ...hit.value, usage: null, cached: true };
   const ask = deps.askWebResearch || (process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key' ? defaultAsk() : null);
   if (!ask) return { found: false, items: [], sources: [], block: unavailableBlock('no search is available right now'), usage: null, error: 'No model is configured.' };
+  const startedAt = Date.now();
+  logger.info(`Web research for the ${pageName || 'page'}: searching the web (${siteName || brand || 'website'}).`);
   try {
     const answer = await ask([{ role: 'system', content: SYSTEM }, { role: 'user', content: `WEBSITE NAME (the owner's label, may be an abbreviation): ${siteName || '(not named)'}\nBRAND ON THE WEBSITE ITSELF: ${brand || '(not known)'}\nPAGE: ${pageName || '(not named)'}\n\nOWNER REQUEST:\n${request.slice(0, 1500)}` }], { signal });
     const parsed = parseJson(answer.content);
@@ -111,10 +113,12 @@ async function research({ instruction, siteName = '', brand = '', pageName = '',
     // The facts must be about the organisation the owner means. A different one with a similar name or the same abbreviation is refused,
     // not used: a wrong fee on a college's website is worse than none.
     if (items.length && !samesOrganisation(organisation, `${request} ${brand}`)) {
+      logger.warn(`Web research for the ${pageName || 'page'}: the results were about a different organisation (${organisation || 'not identified'}) and were not used.`);
       const refused = { found: false, items: [], sources: [], block: unavailableBlock(`the search matched a different organisation (${organisation || 'not identified'}), so nothing from it can be used`), usage: answer.usage || null, error: `Different organisation: ${organisation || 'not identified'}` };
       cache.set(key, { at: Date.now(), value: refused });
       return refused;
     }
+    logger.info(`Web research for the ${pageName || 'page'}: ${items.length} item(s) from ${sources.length} source(s) in ${Math.round((Date.now() - startedAt) / 1000)}s${organisation ? ` (${organisation})` : ''}.`);
     const value = { found: items.length > 0, items, sources, organisation, block: blockFor({ items, sources, notes: parsed.notes, organisation, website: text(parsed.official_website, 120) }, instruction), usage: answer.usage || null };
     cache.set(key, { at: Date.now(), value });
     return value;

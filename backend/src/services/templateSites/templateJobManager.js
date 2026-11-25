@@ -303,6 +303,7 @@ class TemplateJobManager {
   }
 
   schedule(jobId) {
+    logger.info(`Template job ${jobId} queued.`);
     setImmediate(() => this.execute(jobId).catch((error) => logger.error(`Template job ${jobId} crashed: ${error.message}`)));
   }
 
@@ -341,6 +342,7 @@ class TemplateJobManager {
 
   async progress(jobId, to, stepName, extra = {}) {
     const moved = await this.move(jobId, to, { stepName, ...lease(), ...extra });
+    if (moved) logger.info(`Template job ${jobId}: ${String(stepName).slice(0, 120)}`);
     if (moved) TemplateGenerationJob.updateOne({ jobId }, { $push: { timeline: { $each: [{ state: to, step: String(stepName).slice(0, 120), at: new Date() }], $slice: -80 } } }).catch(() => {});
     if (!moved) {
       const current = await TemplateGenerationJob.findOne({ jobId }).select('status').lean();
@@ -360,6 +362,7 @@ class TemplateJobManager {
       { new: true }
     );
     if (!claimed) return;
+    logger.info(`Template job ${jobId} started (${claimed.type}${claimed.focusSection ? `, section "${String(claimed.focusSection).slice(0, 60)}"` : ''}).`);
     const controller = new AbortController();
     this.active.set(jobId, controller);
     let leaseLost = null;
@@ -748,6 +751,7 @@ class TemplateJobManager {
       result: { changedPaths: pending.changed.map((file) => file.path), revision: fresh?.currentRevision ?? null, pageId: pending.pageId || null, flaggedPages, validation: pending.validation, entity: pending.entity || null, intent: pending.intent || null, research: pending.research || null, notices: noticesOf(job) }
     });
     if (!done) throw new ConflictError('The job was no longer committing when it finished.');
+    logger.info(`Template job ${job.jobId} completed in ${Math.round((Date.now() - new Date(job.startedAt || job.createdAt).getTime()) / 1000)}s.`);
   }
 
   /**
