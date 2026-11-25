@@ -239,6 +239,8 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   // (that would demand new wording in the sections that must stay as they are) and never a change of the whole website.
   const ticked = isTicked(text);
   if (policy && ticked) policy = { ...policy, rewrite: false, refinement: false, maxKeep: undefined, siteWide: false };
+  const question = intentResult ? require('../ai/intentUnderstandingService').clarificationFor(intentResult, { attachments: attachments.length, selectedSections: ticked ? 1 : 0 }) : '';
+  if (question) throw new PageGenerationError(`${question} Say it in one sentence (for example what the page or website should be about); nothing was changed.`, { code: 'NEEDS_CLARIFICATION' });
   if (policy?.revert) throw new PageGenerationError('This asks to undo an earlier change. Restore the earlier version from the version history instead; nothing was changed.', { code: 'UNDO_USES_VERSIONS' });
   /* ---- facts from the web, when the owner asks for them ("search online for the programmes and their fees") ---- */
   const webResearch = require('./templateWebResearch');

@@ -170,7 +170,7 @@ function repeatSignature(error, generator) {
 
 function failureCode(error, { timedOut = false } = {}) {
   if (timedOut) return 'JOB_TIMEOUT';
-  if (error?.code && /^[A-Z_]+$/.test(error.code) && ['PAGE_VALIDATION_FAILED', 'BUILD_VALIDATION_FAILED', 'FINAL_CHECK_FAILED', 'MODEL_ANSWER_UNUSABLE', 'NO_USABLE_CHANGES', 'INTENT_NOT_MET', 'NO_EFFECTIVE_CHANGE', 'EMPTY_INSTRUCTION', 'PAGE_FILE_MISSING', 'SITE_CHANGED', 'UNDO_USES_VERSIONS', 'PLAN_FAILED', 'PLAN_UNUSABLE', 'IDENTITY_FAILED', 'PLAN_LIMIT_REACHED'].includes(error.code)) return error.code;
+  if (error?.code && /^[A-Z_]+$/.test(error.code) && ['PAGE_VALIDATION_FAILED', 'BUILD_VALIDATION_FAILED', 'FINAL_CHECK_FAILED', 'MODEL_ANSWER_UNUSABLE', 'NO_USABLE_CHANGES', 'INTENT_NOT_MET', 'NO_EFFECTIVE_CHANGE', 'EMPTY_INSTRUCTION', 'PAGE_FILE_MISSING', 'SITE_CHANGED', 'UNDO_USES_VERSIONS', 'NEEDS_CLARIFICATION', 'PLAN_FAILED', 'PLAN_UNUSABLE', 'IDENTITY_FAILED', 'PLAN_LIMIT_REACHED'].includes(error.code)) return error.code;
   if (error?.code === 'OPENROUTER_INSUFFICIENT_CREDITS') return 'PROVIDER_CREDITS';
   if (error?.code === 'OPENROUTER_AUTH_ERROR') return 'PROVIDER_AUTH';
   if (error?.code === 'OPENROUTER_RATE_LIMIT') return 'PROVIDER_RATE_LIMIT';
@@ -531,6 +531,11 @@ class TemplateJobManager {
       const result = await engine.understand({ instruction: job.instruction, context, deps: this.deps, signal });
       if (result.usage) await this.noteExtraTokens(job, Number(result.usage.total_tokens ?? result.usage.totalTokens ?? 0) || 0);
       if (!engine.changesSubject(result.intent)) return false;
+      // "Rewrite THIS PAGE for Saveetha" changes this page only: the rest of the website is adapted only when the owner asked for the website.
+      if (result.intent.scope !== 'entire_website' && !['website_wide_change', 'new_website'].includes(result.intent.intent)) {
+        logger.info(`Template job ${job.jobId}: the request is about this page (scope ${result.intent.scope}); the rest of the website is not adapted.`);
+        return false;
+      }
       // A subject that is the website's own (the college the site is already about, even misspelt: "Savitam" for "Saveetha") is not a new one.
       const known = [site.name, generator.brandOf(files), site.plan?.identity?.name, site.plan?.identity?.category].filter(Boolean).join(' ');
       if (require('./templateWebResearch').samesOrganisation(result.intent.subject, known)) {

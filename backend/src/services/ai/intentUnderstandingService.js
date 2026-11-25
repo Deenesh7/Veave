@@ -16,6 +16,7 @@ const INTENTS = ['full_rewrite', 'full_redesign', 'partial_redesign', 'targeted_
 const SCOPES = ['element', 'section', 'multiple_sections', 'entire_page', 'multiple_pages', 'entire_website'];
 const OPERATIONS = ['replace_content', 'redesign_layout', 'edit_target', 'add_content', 'add_section', 'remove_section', 'remove_content', 'fix_bug', 'make_responsive', 'change_style', 'replace_image', 'change_functionality', 'improve_seo', 'apply_site_wide', 'revert_previous'];
 
+const CLARIFY_BELOW = 0.3; // below this the model itself could not read the request: it is asked about, not guessed
 const CONFIDENT = 0.5; // below this the engine does not change any rule: the previous behaviour applies
 const FAST_PATH = 0.85; // at or above this the words alone are clear enough: no model call
 
@@ -294,6 +295,20 @@ function contextBlock(instruction, ctx) {
   return `${lines.join('\n')}\n\nINSTRUCTION:\n${ownerPart(instruction).slice(0, 1500)}`;
 }
 
+/** Does a reading say something specific (a subject, or a kind of change other than the default "edit this page")? */
+const isSpecific = (intent) => Boolean(intent && (intent.subject || (intent.intent && intent.intent !== 'targeted_edit') || (intent.operations || []).some((op) => op.type && op.type !== 'edit_target')));
+
+/**
+ * The question to ask the owner when the request could not be read at all: the model said so (it gave a question and is below 0.3 sure) and
+ * the plain words found nothing either. Photos or ticked sections mean the request is not only its words, so nothing is asked then.
+ */
+function clarificationFor(result, { attachments = 0, selectedSections = 0 } = {}) {
+  const intent = result?.intent;
+  if (!intent || attachments || selectedSections) return '';
+  if (intent.unclear && intent.clarification) return intent.clarification;
+  return '';
+}
+
 /* ------------------------------------------------ the entry point ------------------------------------------------ */
 
 const cache = new Map();
@@ -314,11 +329,19 @@ async function understand({ instruction, context = {}, deps = {}, signal } = {})
     const answer = await ask([{ role: 'system', content: SYSTEM }, { role: 'user', content: contextBlock(instruction, context) }], { signal });
     const modelIntent = validateIntent(parseJson(answer.content));
     if (!modelIntent) throw new Error('The answer was not a valid intent.');
-    // A model that is unsure while the words were clear keeps the words' reading.
-    const chosen = modelIntent.confidence < CONFIDENT && rules && rules.confidence > modelIntent.confidence ? rules : modelIntent;
+    // A model that is unsure while the words were clear keeps the words' reading. But a generic guess ("edit this page", no subject) is not
+    // "clear words": when the model named a subject or a specific kind of change, its reading is kept, and its wobbling confidence number
+    // (the same answer scored 0.34 to 0.72 on the same request) is lifted to the level at which the engine acts on it.
+    const modelBeatsGuess = modelIntent.confidence >= CLARIFY_BELOW && isSpecific(modelIntent) && !isSpecific(rules);
+    let chosen = modelIntent.confidence < CONFIDENT && rules && rules.confidence > modelIntent.confidence && !modelBeatsGuess ? rules : modelIntent;
+    // The model could not read the request at all and the words found nothing specific either: the question is kept, to be asked.
+    if (modelIntent.clarification && modelIntent.confidence < CLARIFY_BELOW && !isSpecific(modelIntent) && !isSpecific(rules)) chosen = { ...chosen, clarification: modelIntent.clarification, unclear: true };
+    if (chosen === modelIntent && modelBeatsGuess && modelIntent.confidence < CONFIDENT) {
+      chosen = { ...modelIntent, confidence: CONFIDENT + 0.1, reasoning_summary: `${modelIntent.reasoning_summary || 'Read by the model.'} (The model named what is wanted; the plain words alone said nothing specific.)` };
+    }
     if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value);
     cache.set(key, chosen);
-    return { intent: chosen, source: chosen === modelIntent ? 'model' : 'rules-fallback', usage: answer.usage || null };
+    return { intent: chosen, source: (chosen === modelIntent || chosen.reasoning_summary !== (rules && rules.reasoning_summary)) && !(chosen.unclear && !isSpecific(modelIntent)) ? 'model' : 'rules-fallback', usage: answer.usage || null };
   } catch (error) {
     if (signal?.aborted) throw error;
     logger.warn(`Intent understanding fell back to the wording: ${error.message}`);
@@ -396,4 +419,4 @@ const summarize = (result, policy) => result && ({
   policy: policy ? { keepRatio: policy.keepRatio === undefined ? 'default' : policy.keepRatio, maxKeep: policy.maxKeep ?? null, wholeFile: policy.wholeFile, siteWide: policy.siteWide } : null
 });
 
-module.exports = { enabled, changesSubject, namedSubject, asksForWebResearch, understand, heuristicIntent, validateIntent, policyFor, planBlock, summarize, readWords, groupOf, distance, ownerPart, INTENTS, SCOPES, OPERATIONS, CONFIDENT, FAST_PATH, SYSTEM };
+module.exports = { clarificationFor, isSpecific, CLARIFY_BELOW, enabled, changesSubject, namedSubject, asksForWebResearch, understand, heuristicIntent, validateIntent, policyFor, planBlock, summarize, readWords, groupOf, distance, ownerPart, INTENTS, SCOPES, OPERATIONS, CONFIDENT, FAST_PATH, SYSTEM };
