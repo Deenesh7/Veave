@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
-const { validateBrowser, validatePlan } = require('./browserValidation.cjs');
+const { validateBrowser, validateBrowserParallel, validatePlan } = require('./browserValidation.cjs');
 
 const WORKSPACE = '/workspace';
 const OUTPUT_LIMIT = 1024 * 1024;
@@ -344,7 +344,7 @@ async function main() {
       if (visualReferencePath && visualReferencePath !== '/reference/reference-image') {
         throw new Error('Visual reference must use the fixed trusted runner path.');
       }
-      const browserResult = await validateBrowser('http://127.0.0.1:4173/', {
+      const browserResult = await validateBrowserParallel('http://127.0.0.1:4173/', {
         plan: result.plan,
         maxRoutes: Math.min(1000, Math.max(100, result.plan?.tests?.length || 0)),
         timeoutMs: Math.min(900000, Math.max(180000, (result.plan?.tests?.length || 0) * 5000)),

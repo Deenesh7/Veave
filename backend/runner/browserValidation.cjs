@@ -154,6 +154,8 @@ async function validateBrowser(url, options = {}) {
     const networkTimeout = limit('networkTimeout', 5000, 30000, 100);
     const timeoutMs = limit('timeoutMs', 90000, 900000, 1000);
     coverage.limits = { maxRoutes, maxInteractions, settleMs, actionTimeout, navigationTimeout, networkTimeout, timeoutMs };
+    const wanted = options.viewports === undefined ? null : options.viewports;
+    if (wanted !== null && (!Array.isArray(wanted) || !wanted.length || wanted.some((name) => !Object.hasOwn(VIEWPORTS, name)))) throw new Error('Invalid viewports; expected a non-empty list of desktop/mobile.');
     const chromium = options.chromium || require('playwright').chromium;
     const work = async () => {
       browser = await chromium.launch({ headless: true, timeout: Math.min(timeoutMs, 90000) });
@@ -197,7 +199,7 @@ async function validateBrowser(url, options = {}) {
         }
         check('visual', errorCount === visualStart ? 'passed' : 'failed', visual || {});
       }
-      for (const [viewportName, viewport] of Object.entries(VIEWPORTS)) {
+      for (const [viewportName, viewport] of Object.entries(VIEWPORTS).filter(([name]) => !wanted || wanted.includes(name))) {
         if (expired) return;
         const makeContext = async () => {
           const context = await browser.newContext({ viewport, isMobile: viewportName === 'mobile',
@@ -585,4 +587,42 @@ async function validateBrowser(url, options = {}) {
   return result();
 }
 
-module.exports = { validateBrowser, validatePlan };
+/**
+ * The same checks as validateBrowser, with the desktop and the mobile screen tested AT THE SAME TIME (two browsers, each doing what one
+ * screen did before) and their results merged. Used when the machine has more than one CPU; with a visual reference to compare against, or
+ * when asked not to (options.parallelViewports === false), it is the plain sequential run.
+ */
+async function validateBrowserParallel(url, options = {}) {
+  const cpus = require('node:os').availableParallelism ? require('node:os').availableParallelism() : require('node:os').cpus().length;
+  if (options.parallelViewports === false || options.visualReferencePath || options.viewports !== undefined || cpus < 2) return validateBrowser(url, options);
+  const names = Object.keys(VIEWPORTS);
+  const parts = await Promise.all(names.map((name) => validateBrowser(url, { ...options, viewports: [name] })));
+  const seen = new Set();
+  const diagnostics = [];
+  for (const part of parts) for (const item of part.diagnostics) {
+    const key = `${item.category}|${item.path}|${item.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (diagnostics.length < 200) diagnostics.push(item);
+  }
+  // Each part ends with its own overall "browser" check: one combined check replaces them.
+  const checks = parts.flatMap((part) => part.checks.filter((entry) => entry.name !== 'browser'));
+  checks.push({ name: 'browser', status: diagnostics.length ? 'failed' : 'passed' });
+  const first = parts[0].coverage;
+  const coverage = {
+    ...first,
+    viewports: parts.flatMap((part) => part.coverage.viewports),
+    routes: parts.flatMap((part) => part.coverage.routes),
+    interactions: parts.flatMap((part) => part.coverage.interactions),
+    plannedTests: parts.flatMap((part) => part.coverage.plannedTests),
+    skips: parts.flatMap((part) => part.coverage.skips).slice(0, 500),
+    network: {
+      completedRequests: parts.reduce((sum, part) => sum + (part.coverage.network?.completedRequests || 0), 0),
+      noContentCompletions: parts.reduce((sum, part) => sum + (part.coverage.network?.noContentCompletions || 0), 0),
+      teardownAborts: parts.reduce((sum, part) => sum + (part.coverage.network?.teardownAborts || 0), 0)
+    }
+  };
+  return { ok: diagnostics.length === 0, diagnostics, checks, coverage, visual: parts.map((part) => part.visual).find(Boolean) || null };
+}
+
+module.exports = { validateBrowser, validateBrowserParallel, validatePlan };
