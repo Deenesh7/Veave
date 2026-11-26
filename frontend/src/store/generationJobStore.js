@@ -696,7 +696,7 @@ export const useGenerationJobStore = create((set, get) => ({
     const { activeJobId } = get();
     if (!activeJobId) return;
 
-    if (!window.confirm('Are you sure you want to cancel this project generation? Progress will be lost.')) {
+    if (!window.confirm('Stop creating this project?\n\nThe work done so far will be discarded.')) {
       return false;
     }
 
@@ -704,6 +704,7 @@ export const useGenerationJobStore = create((set, get) => ({
       await aiCreationService.cancelJob(activeJobId);
     } catch (e) {
       console.warn('Failed to cancel job on server:', e);
+      set({ notificationToast: { type: 'error', message: 'We couldn\'t stop the project just now. It may be about to finish, so please check again in a moment.' } });
       await get().pollStatus(activeJobId);
       return false;
     }

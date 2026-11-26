@@ -68,6 +68,8 @@ const initialCollapsed = () => {
 };
 
 let textSaveTimer = null;
+let textSaving = null;
+let textSaveAgain = false;
 
 // What the owner typed, as opposed to what is sent: the studio adds "In section 02 ("Name"): " in front and the page / section context
 // behind the typed text. Both sides are reduced to the typed words (spacing ignored) before they are compared.
@@ -106,21 +108,31 @@ export const useTemplateStudioStore = create((set, get) => ({
     clearTimeout(textSaveTimer);
     textSaveTimer = setTimeout(() => get().saveSelectedText(), 900);
   },
+  // Saves go one after another: a second save that starts while the first is still running would look for the old text in the code,
+  // which the first save has just replaced, and wrongly report "Not saved".
   saveSelectedText: async () => {
     clearTimeout(textSaveTimer);
-    const { selectedText: current, activeSiteId, activePageId } = get();
-    if (!current || !activeSiteId || !activePageId) return;
-    const next = current.text.replace(/\s+/g, ' ').trim();
-    if (!next || next === current.saved) { if (!next) set({ selectedText: { ...current, status: 'error', error: 'The text cannot be empty.' } }); return; }
-    set({ selectedText: { ...current, status: 'saving', error: null } });
-    try {
-      await templateSiteService.editText(activeSiteId, activePageId, { oldText: current.saved, newText: next });
-      const now = get().selectedText;
-      if (now && now.id === current.id) set({ selectedText: { ...now, saved: next, status: now.text.replace(/\s+/g, ' ').trim() === next ? 'saved' : 'idle' } });
-    } catch (error) {
-      const now = get().selectedText;
-      if (now && now.id === current.id) set({ selectedText: { ...now, status: 'error', error: apiMessage(error, 'The text could not be saved.') } });
-    }
+    if (textSaving) { textSaveAgain = true; return textSaving; }
+    textSaving = (async () => {
+      do {
+        textSaveAgain = false;
+        const { selectedText: current, activeSiteId, activePageId } = get();
+        if (!current || !activeSiteId || !activePageId) break;
+        const next = current.text.replace(/\s+/g, ' ').trim();
+        if (!next || next === current.saved) { if (!next) set({ selectedText: { ...current, status: 'error', error: 'The text cannot be empty.' } }); break; }
+        set({ selectedText: { ...current, status: 'saving', error: null } });
+        try {
+          await templateSiteService.editText(activeSiteId, activePageId, { oldText: current.saved, newText: next });
+          const now = get().selectedText;
+          if (now && now.id === current.id) set({ selectedText: { ...now, saved: next, status: now.text.replace(/\s+/g, ' ').trim() === next ? 'saved' : 'idle' } });
+        } catch (error) {
+          const now = get().selectedText;
+          if (now && now.id === current.id) set({ selectedText: { ...now, status: 'error', error: apiMessage(error, 'The text could not be saved.') } });
+          break;
+        }
+      } while (textSaveAgain);
+    })().finally(() => { textSaving = null; });
+    return textSaving;
   },
   appSidebarHidden: readUi().appSidebarHidden === true, // remembered across a refresh
   setAppSidebarHidden: (value) => { writeUi({ appSidebarHidden: Boolean(value) }); set({ appSidebarHidden: value }); },
@@ -426,14 +438,14 @@ export const useTemplateStudioStore = create((set, get) => ({
   cancelJob: async () => {
     const job = get().job;
     if (!job) return;
-    if (!window.confirm('Are you sure you want to cancel this generation?')) return;
+    if (!window.confirm('Stop this generation?\n\nYour website stays exactly as it is now. Nothing from this run will be saved.')) return;
     try {
       const res = await templateSiteService.cancelJob(job.id);
       set({ job: res.data.job });
       get().stopPolling();
       await get().refreshPages();
-      get().flash('info', 'The generation was cancelled. Nothing was changed.');
-    } catch (error) { get().flash('error', apiMessage(error, 'The job could not be cancelled.')); }
+      get().flash('info', 'The generation was stopped. Your website was not changed.');
+    } catch (error) { get().flash('error', apiMessage(error, 'We couldn\'t stop it just now. If it is almost done it may finish on its own. Please check again in a moment.')); }
   },
 
   stopPolling: () => { pollRun += 1; },
@@ -551,6 +563,22 @@ export const useTemplateStudioStore = create((set, get) => ({
     })();
     sectionRequests.set(key, request);
     return request;
+  },
+
+  /** Takes one section out of the page's code straight away (no AI, no credits). */
+  removeSection: async (sectionId) => {
+    const { activeSiteId: siteId, activePageId: pageId } = get();
+    if (!siteId || !pageId || !sectionId || get().busy[`section:${sectionId}`]) return false;
+    get().setBusy(`section:${sectionId}`, true);
+    try {
+      const res = await templateSiteService.removeSection(siteId, pageId, sectionId);
+      set((state) => ({ previewKey: state.previewKey + 1, selectedText: null }));
+      await get().loadSections(pageId);
+      get().loadRevisions(pageId);
+      get().flash('success', res.data.name ? `The section “${res.data.name}” was removed.` : 'The section was removed.');
+      return true;
+    } catch (error) { get().flash('error', apiMessage(error, 'The section could not be removed.')); return false; }
+    finally { get().setBusy(`section:${sectionId}`, false); }
   },
 
   /** Shows an older revision in the preview (read-only; nothing is saved). */

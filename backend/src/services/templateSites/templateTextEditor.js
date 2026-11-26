@@ -54,7 +54,7 @@ function renderFor(source, at, newText) {
     return out;
   }
   // JSX text (or a bare piece of text): characters that mean something to JSX cannot be written plainly.
-  if (/[{}<>\\`]/.test(newText)) throw new ValidationError('That text contains { } < > or a backslash, which cannot be saved straight into the page. Use the AI instruction for this change.');
+  if (/[{}<>\\`]/.test(newText)) throw new ValidationError('Please avoid the characters { } < > and \\ in this text, as they can\'t be saved here. Ask the AI if you need them.');
   if (/^['"`]/.test(newText.trim()) || /['"`]$/.test(newText.trim())) {
     // a quote next to a JSX tag is fine; inside JSX text it is plain text. Nothing to do.
   }
@@ -73,13 +73,13 @@ function applyEdit(files, page, oldText, newText) {
       for (const at of occurrences(file.content, oldText)) hits.push({ path, at });
     }
     if (!hits.length) continue;
-    if (hits.length > 1) throw new ConflictError(`This text is written ${hits.length} times in the site's code (${[...new Set(hits.map((hit) => hit.path))].slice(0, 3).join(', ')}), so it cannot be changed safely from here. Use the AI instruction and name the section.`);
+    if (hits.length > 1) throw new ConflictError(`This exact text appears ${hits.length} times on the site, so changing it here could change the wrong one. Tick its section and ask the AI to change it instead.`);
     const { path, at } = hits[0];
     const file = byPath.get(path);
     const content = `${file.content.slice(0, at.index)}${renderFor(file.content, at, newText)}${file.content.slice(at.index + at.length)}`;
     return { files: files.map((item) => (item.path === path ? { ...item, content } : item)), path };
   }
-  throw new ValidationError('This text is not written directly in the page code (it is built from other values), so it cannot be edited here. Use the AI instruction instead.');
+  throw new ValidationError('This text comes from the site\'s content, so it can\'t be edited by hand here. Ask the AI to change it instead.');
 }
 
 async function editText({ user, siteId, pageId, oldText, newText }) {

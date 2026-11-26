@@ -52,6 +52,7 @@ sites.get('/:siteId/pages/:pageId', controller.getPage);
 sites.patch('/:siteId/pages/:pageId', controller.updatePage);
 sites.delete('/:siteId/pages/:pageId', controller.deletePage);
 sites.post('/:siteId/pages/:pageId/text', controller.editText);
+sites.delete('/:siteId/pages/:pageId/sections/:sectionId', controller.removeSection);
 
 // Website versions, history, comparison, branches. (Fixed words come before the :versionId routes.)
 sites.get('/:siteId/versions', controller.listVersions);

@@ -118,6 +118,11 @@ exports.editText = wrap(async (req, res) => {
   send(res, result);
 });
 
+exports.removeSection = wrap(async (req, res) => {
+  const result = await require('../services/templateSites/templateSectionRemover').removeSection({ user: req.user, siteId: req.params.siteId, pageId: req.params.pageId, sectionId: req.params.sectionId });
+  send(res, result);
+});
+
 exports.deletePage = wrap(async (req, res) => {
   const result = await pageService.deletePage({ user: req.user, siteId: req.params.siteId, pageId: req.params.pageId });
   send(res, { deleted: true, retargeted: result.retargeted });

@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ImagePlus, Sparkles, X, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Pencil, Check, RotateCcw, LayoutList, ArrowRight, Type, Loader2 } from 'lucide-react';
+import { ImagePlus, Sparkles, X, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Pencil, Check, RotateCcw, LayoutList, ArrowRight, Type, Loader2, Trash2 } from 'lucide-react';
 import { useTemplateStudioStore, CONTENT_MIN, CONTENT_MAX, readUi, writeUi } from '../../store/templateStudioStore';
 import { FAILURE_TITLES } from '../../store/generationJobStore';
-import { PanelHeader, EmptyState, IconButton, PrimaryButton, GhostButton, Spinner, Skeleton, inputClass, ink, muted, line } from './ui';
+import { PanelHeader, EmptyState, IconButton, ConfirmModal, PrimaryButton, GhostButton, Spinner, Skeleton, inputClass, ink, muted, line } from './ui';
 import ImageLibrary from './ImageLibrary';
 import VoiceInputButton from './VoiceInputButton';
 import { sectionOutline } from './sectionOutline';
@@ -105,6 +105,14 @@ export default function ContentEditorPanel({ className = '' }) {
       requestAnimationFrame(() => { const box = document.getElementById('page-instruction'); if (box) box.focus({ preventScroll: true }); });
       window.dispatchEvent(new CustomEvent('studio-scroll-section', { detail: { id: section.id, name: section.name, domId: section.domId || null, order: section.order, index: idx, total: sections.length } }));
     }
+  };
+
+  const [removing, setRemoving] = useState(null); // the section waiting for the owner's OK
+  const deleteSection = (section) => { if (!running && activePageId) setRemoving(section); };
+  const confirmRemove = async () => {
+    const section = removing;
+    setRemoving(null);
+    if (section) await store.removeSection(section.id);
   };
 
   // Clicking a nav link (#section) in the preview marks the matching section here and brings it into view.
@@ -261,7 +269,7 @@ export default function ContentEditorPanel({ className = '' }) {
                 <div className={`mb-1.5 flex items-center justify-between text-[11px] ${muted}`}>
                   <span className="rounded-full bg-[#E8F0E8] px-2 py-0.5 font-medium text-[#3F5E41]">{TAG_LABEL[selectedText.tag] || 'Text'}</span>
                   <span role="status" aria-live="polite" className="flex items-center gap-1">
-                    {selectedText.status === 'saving' ? <><Loader2 className="h-3 w-3 animate-spin" />Saving…</> : selectedText.status === 'saved' ? <><Check className="h-3 w-3 text-[#5E7B5F]" />Saved</> : selectedText.status === 'error' ? <span className="text-[#A4493A]">Not saved</span> : selectedText.text.replace(/\s+/g, ' ').trim() !== selectedText.saved ? 'Editing…' : null}
+                    {selectedText.status === 'saving' ? <><Loader2 className="h-3 w-3 animate-spin" />Saving…</> : selectedText.status === 'saved' ? <><Check className="h-3 w-3 text-[#5E7B5F]" />Saved</> : selectedText.status === 'error' ? <span className="text-[#A4493A]">Couldn’t save this change</span> : selectedText.text.replace(/\s+/g, ' ').trim() !== selectedText.saved ? 'Editing…' : null}
                   </span>
                 </div>
                 <textarea
@@ -307,16 +315,20 @@ export default function ContentEditorPanel({ className = '' }) {
                   const selected = checkedNumbers.includes(idx + 1);
                   return (
                     <li key={sec.id} id={`content-section-${sec.id}`}>
-                      <label
-                        title={`Select section ${idx + 1} (${sec.name}) and show it in the preview`}
-                        className={`flex w-full cursor-pointer items-center gap-2 rounded-md border bg-white p-2 text-left text-xs transition focus-within:ring-2 focus-within:ring-[#5E7B5F] ${selected ? 'border-[#5E7B5F] bg-[#F1F6F1]' : navActiveId === sec.id ? 'border-[#5E7B5F] bg-[#F1F6F1] ring-1 ring-[#5E7B5F]/40' : `${line} hover:border-[#5E7B5F]/60 hover:bg-[#FDFCF9]`} ${running ? 'cursor-not-allowed opacity-60' : ''}`}
-                      >
-                        <input type="checkbox" checked={selected} disabled={running} onChange={() => toggleSection(sec, idx)} aria-label={`Section ${idx + 1}: ${sec.name}`} className="h-3.5 w-3.5 shrink-0 accent-[#5E7B5F]" />
-                        <span className={`flex h-4 w-5 shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold ${selected ? 'bg-[#5E7B5F] text-white' : 'bg-[#EFEBE1] text-[#5E7B5F]'}`}>
-                          {String(idx + 1).padStart(2, '0')}
-                        </span>
-                        <span className={`truncate font-medium ${ink}`}>{sec.name}</span>
-                      </label>
+                      <div className={`flex w-full items-center gap-1 rounded-md border bg-white text-left text-xs transition focus-within:ring-2 focus-within:ring-[#5E7B5F] ${selected ? 'border-[#5E7B5F] bg-[#F1F6F1]' : navActiveId === sec.id ? 'border-[#5E7B5F] bg-[#F1F6F1] ring-1 ring-[#5E7B5F]/40' : `${line} hover:border-[#5E7B5F]/60 hover:bg-[#FDFCF9]`} ${running ? 'opacity-60' : ''}`}>
+                        <label title={`Select section ${idx + 1} (${sec.name}) and show it in the preview`} className={`flex min-w-0 flex-1 items-center gap-2 p-2 ${running ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                          <input type="checkbox" checked={selected} disabled={running} onChange={() => toggleSection(sec, idx)} aria-label={`Section ${idx + 1}: ${sec.name}`} className="h-3.5 w-3.5 shrink-0 accent-[#5E7B5F]" />
+                          <span className={`flex h-4 w-5 shrink-0 items-center justify-center rounded font-mono text-[10px] font-semibold ${selected ? 'bg-[#5E7B5F] text-white' : 'bg-[#EFEBE1] text-[#5E7B5F]'}`}>
+                            {String(idx + 1).padStart(2, '0')}
+                          </span>
+                          <span className={`truncate font-medium ${ink}`}>{sec.name}</span>
+                        </label>
+                        {sec.kind === 'section' || sec.kind === 'component' ? (
+                          <button type="button" disabled={running || Boolean(busy[`section:${sec.id}`])} onClick={() => deleteSection(sec)} title={`Remove section ${idx + 1} (${sec.name}) from the page`} aria-label={`Delete section ${idx + 1}: ${sec.name}`} className="mr-1.5 shrink-0 rounded p-1 text-[#8A8374] hover:bg-[#F6E6E2] hover:text-[#A4493A] disabled:opacity-50">
+                            {busy[`section:${sec.id}`] ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                          </button>
+                        ) : null}
+                      </div>
                     </li>
                   );
                 })}
@@ -346,7 +358,7 @@ export default function ContentEditorPanel({ className = '' }) {
                       <span key={n} className="inline-flex max-w-full items-center gap-1 rounded-full bg-[#E8F0E8] py-0.5 pl-1 pr-1.5 text-[11px] font-medium text-[#3F5E41]">
                         <span className="flex h-4 min-w-[1.25rem] items-center justify-center rounded-full bg-[#5E7B5F] px-1 font-mono text-[10px] font-semibold text-white">{String(n).padStart(2, '0')}</span>
                         <span className="max-w-[9rem] truncate">{sections[n - 1]?.name}</span>
-                        <button type="button" disabled={running} onClick={() => setChecked(checkedNumbers.filter((x) => x !== n))} aria-label={`Remove section ${n}`} className="rounded-full p-0.5 hover:bg-[#5E7B5F]/15 disabled:opacity-50"><X className="h-3 w-3" /></button>
+                        <button type="button" disabled={running} onClick={() => setChecked(checkedNumbers.filter((x) => x !== n))} aria-label={`Untick section ${n}`} className="rounded-full p-0.5 hover:bg-[#5E7B5F]/15 disabled:opacity-50"><X className="h-3 w-3" /></button>
                       </span>
                     ))}
                     {checkedNumbers.length > 1 ? <button type="button" disabled={running} onClick={() => setChecked([])} className={`ml-auto text-[11px] font-medium underline underline-offset-2 ${muted}`}>Clear</button> : null}
@@ -413,6 +425,8 @@ export default function ContentEditorPanel({ className = '' }) {
         onKeyDown={(event) => { if (event.key === 'ArrowLeft') setContentWidth(contentWidth - 20); if (event.key === 'ArrowRight') setContentWidth(contentWidth + 20); }}
         className={`absolute inset-y-0 -right-1 z-10 hidden w-2 cursor-col-resize lg:block ${resizing ? 'bg-[#5E7B5F]/40' : 'hover:bg-[#5E7B5F]/30 focus:bg-[#5E7B5F]/30'}`} />
     </section>
+    <ConfirmModal open={Boolean(removing)} danger title="Remove this section?" confirmLabel="Remove section" onClose={() => setRemoving(null)} onConfirm={confirmRemove}
+      message={<><span className="block rounded-md border border-[#E2DCCF] bg-white px-3 py-2 font-medium">{removing?.name}</span><span className={`mt-3 block ${muted}`}>It disappears from this page right away. Nothing else on the page changes, and no AI or credits are used.</span></>} />
     </>
   );
 }

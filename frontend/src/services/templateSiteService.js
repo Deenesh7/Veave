@@ -73,6 +73,7 @@ export const templateSiteService = {
   previewRevision: (siteId, pageId, number) => api.get(`/template-sites/${siteId}/pages/${pageId}/revisions/${number}/preview`, { timeout: 120000 }),
   generateSite: (siteId, data) => api.post(`/template-sites/${siteId}/generate`, data),
   editText: (siteId, pageId, data) => api.post(`/template-sites/${siteId}/pages/${pageId}/text`, data),
+  removeSection: (siteId, pageId, sectionId) => api.delete(`/template-sites/${siteId}/pages/${pageId}/sections/${encodeURIComponent(sectionId)}`),
   regeneratePage: (siteId, pageId, data) => api.post(`/template-sites/${siteId}/pages/${pageId}/regenerate`, data),
   retryPage: (siteId, pageId) => api.post(`/template-sites/${siteId}/pages/${pageId}/retry`, { idempotencyKey: `retry-${pageId}-${Date.now()}` }),
   getJob: (jobId) => api.get(`/template-jobs/${jobId}`, statusRequest),
