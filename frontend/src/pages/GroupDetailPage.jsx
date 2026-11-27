@@ -29,19 +29,24 @@ export default function GroupDetailPage() {
   const [error, setError] = useState(null);
   const [tab, setTab] = useState('projects');
 
+  const latest = React.useRef(groupId);
+  latest.current = groupId;
+
   const load = useCallback(async () => {
     try {
       const res = await svc.getGroup(groupId);
+      if (latest.current !== groupId) return; // the user already moved to another group
       setGroup(res.data.data);
       setError(null);
     } catch (err) {
+      if (latest.current !== groupId) return;
       setError(err.response?.status === 404 ? 'not-found' : apiErrorMessage(err, 'Could not load this group.'));
     } finally {
-      setLoading(false);
+      if (latest.current === groupId) setLoading(false);
     }
   }, [groupId]);
 
-  useEffect(() => { setLoading(true); load(); }, [load]);
+  useEffect(() => { setLoading(true); setGroup(null); setError(null); setTab('projects'); load(); }, [load]);
 
   if (loading) return <Spinner label="Loading group..." />;
   if (error === 'not-found' || !group) {
@@ -64,7 +69,7 @@ export default function GroupDetailPage() {
       {pending && <div className="mb-4"><Notice kind="success">Your membership is waiting for an admin to approve it. You will get access to the group's projects once approved.</Notice></div>}
 
       {!pending && (
-        <>
+        <React.Fragment key={group.id}>
           <div className="flex gap-1 border-b border-[#E2E5E8] mb-5 overflow-x-auto">
             {visibleTabs.map(({ id, label, icon: Icon }) => (
               <button
@@ -81,7 +86,7 @@ export default function GroupDetailPage() {
           {tab === 'members' && <MembersTab group={group} onChanged={() => { load(); fetchGroups(); }} />}
           {tab === 'invitations' && isAdmin && <InvitationsTab group={group} />}
           {tab === 'settings' && isAdmin && <SettingsTab group={group} onSaved={(g) => { setGroup((prev) => ({ ...prev, ...g })); fetchGroups(); }} />}
-        </>
+        </React.Fragment>
       )}
     </div>
   );
@@ -437,7 +442,7 @@ function InvitationsTab({ group }) {
   const [scope, setScope] = useState('group');
   const [projectId, setProjectId] = useState('');
   const [projectPermission, setProjectPermission] = useState('viewer');
-  const [groupProjects, setGroupProjects] = useState([]);
+  const [groupProjects, setGroupProjects] = useState(null);
   const [busy, setBusy] = useState(false);
   const [list, setList] = useState(null);
   const [error, setError] = useState(null);
@@ -448,9 +453,17 @@ function InvitationsTab({ group }) {
     try { setList((await svc.listGroupInvitations(group.id)).data.data || []); } catch (err) { setError(apiErrorMessage(err, 'Could not load invitations.')); }
   }, [group.id]);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { svc.listGroupProjects(group.id).then((res) => setGroupProjects(res.data.data || [])).catch(() => setGroupProjects([])); }, [group.id]);
+  useEffect(() => {
+    let alive = true;
+    setGroupProjects(null);
+    setProjectId('');
+    svc.listGroupProjects(group.id).then((res) => alive && setGroupProjects(res.data.data || [])).catch(() => alive && setGroupProjects([]));
+    return () => { alive = false; };
+  }, [group.id]);
   const needsProject = scope !== 'group';
-  const pickedProject = projectId || groupProjects[0]?._id || '';
+  // Only a project of THIS group can be picked, so a choice left over from another group is never sent.
+  const projectsHere = groupProjects || [];
+  const pickedProject = projectsHere.some((p) => p._id === projectId) ? projectId : (projectsHere[0]?._id || '');
 
   const send = async (e) => {
     e.preventDefault();
@@ -491,11 +504,19 @@ function InvitationsTab({ group }) {
           </Field>
           {needsProject && (
             <>
-              <Field label="Project">
-                <Dropdown className={`${inputClass} w-52`} value={pickedProject} onChange={(e) => setProjectId(e.target.value)}>
-                  {groupProjects.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-                </Dropdown>
-              </Field>
+              <div className="w-52">
+                <Field label="Project">
+                  <Dropdown
+                    className={inputClass}
+                    value={pickedProject}
+                    onChange={(e) => setProjectId(e.target.value)}
+                    disabled={projectsHere.length === 0}
+                    placeholder={groupProjects === null ? 'Loading projects...' : 'No projects in this group'}
+                  >
+                    {projectsHere.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+                  </Dropdown>
+                </Field>
+              </div>
               <Field label="Project access">
                 <Dropdown className={`${inputClass} w-36`} value={projectPermission} onChange={(e) => setProjectPermission(e.target.value)}>
                   <option value="viewer">Viewer</option>
@@ -511,6 +532,9 @@ function InvitationsTab({ group }) {
           )}
           <Btn type="submit" loading={busy} disabled={!email || (needsProject && !pickedProject)}>Send invitation</Btn>
         </form>
+        {needsProject && groupProjects !== null && projectsHere.length === 0 && (
+          <p className="text-[11px] text-amber-700 mt-2">This group has no projects yet. Add one on the Projects tab first, or invite them to the whole group.</p>
+        )}
         <p className="text-[11px] text-zinc-500 mt-2">We email the invitation (and notify them in the app if they have an account). The email says whether it is for the whole group, a single project, or both. Their role is set automatically when they accept. Invitations expire after 7 days.</p>
       </Card>
       {error && <Notice onClose={() => setError(null)}>{error}</Notice>}
