@@ -70,7 +70,10 @@ export default function GroupsPage() {
                   <div className="w-9 h-9 rounded-lg bg-zinc-900 text-white flex items-center justify-center text-sm font-bold shrink-0">
                     {group.name.slice(0, 1).toUpperCase()}
                   </div>
-                  <h3 className="text-sm font-bold text-[#111827] leading-snug break-words line-clamp-2" title={group.name}>{group.name}</h3>
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-bold text-[#111827] leading-snug break-words line-clamp-2" title={group.name}>{group.name}</h3>
+                    {group.parent && <p className="text-[11px] text-zinc-500 truncate">Sub-group of {group.parent.name}</p>}
+                  </div>
                 </div>
                 {group.myStatus === 'pending' ? <StatusBadge status="pending" /> : <RoleBadge role={group.myRole} />}
               </div>

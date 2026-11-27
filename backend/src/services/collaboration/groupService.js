@@ -33,9 +33,12 @@ function toGroup(group, membership, extra = {}) {
     name: group.name,
     description: group.description,
     ownerId: sid(group.ownerId),
+    parentId: group.parentId ? sid(group.parentId) : null,
     settings: group.settings,
     myRole: membership?.role || null,
     myStatus: membership?.status || null,
+    // True when the caller manages this sub-group because they own or administer its main group (they are not a member of it).
+    inherited: !!membership?.inherited,
     createdAt: group.createdAt,
     updatedAt: group.updatedAt,
     ...extra
@@ -47,7 +50,16 @@ async function requireMember(user, groupId, { roles = null, allowPending = false
   if (!mongoose.isValidObjectId(groupId)) throw new NotFoundError('Group');
   const uid = userId(user);
   if (!uid) throw new NotFoundError('Group');
-  const membership = await GroupMembership.findOne({ groupId, userId: uid, status: allowPending ? { $in: ['active', 'pending'] } : 'active' });
+  let membership = await GroupMembership.findOne({ groupId, userId: uid, status: allowPending ? { $in: ['active', 'pending'] } : 'active' });
+  if (!membership) {
+    // The owner and admins of a main group manage its sub-groups as admins without being members of them.
+    const sub = await Group.findById(groupId);
+    if (sub?.parentId && await GroupMembership.exists({ groupId: sub.parentId, userId: uid, status: 'active', role: { $in: ADMIN_ROLES } })) {
+      membership = { role: 'admin', status: 'active', groupId: sub._id, userId: uid, inherited: true };
+      if (roles && !roles.includes('admin')) throw new ForbiddenError('Only the owner of this sub-group can do this.', 'GROUP_OWNER_REQUIRED');
+      return { group: sub, membership };
+    }
+  }
   if (!membership) {
     // A support admin can open any group without joining it (read access; changing a group still needs a group admin or the support-only tools).
     if (isSupportAdmin(user)) {
@@ -64,22 +76,24 @@ async function requireMember(user, groupId, { roles = null, allowPending = false
   return { group, membership };
 }
 
-async function createGroup(user, { name, description = '', settings = {} } = {}) {
+async function createGroup(user, { name, description = '', settings = {} } = {}, parent = null) {
   const uid = userId(user);
   const cleaned = cleanName(name);
-  const nameKey = Group.keyFor(cleaned);
-  if (await Group.exists({ nameKey })) throw new ConflictError(`A group named "${cleaned}" already exists. Choose a different name.`, 'GROUP_NAME_TAKEN');
+  const parentId = parent ? parent._id : null;
+  const nameKey = Group.keyFor(cleaned, parentId);
+  const taken = parent ? `A sub-group named "${cleaned}" already exists in ${parent.name}.` : `A group named "${cleaned}" already exists. Choose a different name.`;
+  if (await Group.exists({ nameKey })) throw new ConflictError(taken, 'GROUP_NAME_TAKEN');
   let group;
   try {
     group = await withTransaction(async (session) => {
       const [created] = await Group.create([{
-        name: cleaned, nameKey, description: cleanDescription(description), ownerId: uid, settings: pickSettings(settings)
+        name: cleaned, nameKey, description: cleanDescription(description), ownerId: uid, parentId, settings: pickSettings(settings)
       }], session ? { session } : {});
       await GroupMembership.create([{ groupId: created._id, userId: uid, role: 'owner', status: 'active', joinedAt: new Date() }], session ? { session } : {});
       return created;
     });
   } catch (error) {
-    if (error.code === 11000) throw new ConflictError(`A group named "${cleaned}" already exists. Choose a different name.`, 'GROUP_NAME_TAKEN');
+    if (error.code === 11000) throw new ConflictError(taken, 'GROUP_NAME_TAKEN');
     // Standalone MongoDB has no transactions: do not leave an owner-less group behind.
     throw error;
   }
@@ -87,8 +101,43 @@ async function createGroup(user, { name, description = '', settings = {} } = {})
   if (!(await GroupMembership.exists({ groupId: group._id, userId: uid }))) {
     await GroupMembership.create({ groupId: group._id, userId: uid, role: 'owner', status: 'active', joinedAt: new Date() });
   }
-  await audit(uid, 'group.created', { groupId: group._id, meta: { name: cleaned } });
-  return toGroup(group, { role: 'owner', status: 'active' }, { memberCount: 1, projectCount: 0 });
+  await audit(uid, parent ? 'group.subgroup_created' : 'group.created', { groupId: group._id, meta: { name: cleaned, ...(parent ? { parentId: sid(parent._id) } : {}) } });
+  return toGroup(group, { role: 'owner', status: 'active' }, { memberCount: 1, projectCount: 0, ...(parent ? { parent: { id: sid(parent._id), name: parent.name } } : {}) });
+}
+
+/** A sub-group inside a main group (one level only). Only the main group's owner and admins can create one. */
+async function createSubgroup(user, parentId, data = {}) {
+  const { group: parent } = await requireMember(user, parentId, { roles: ADMIN_ROLES });
+  if (parent.parentId) throw new ValidationError('A sub-group cannot have its own sub-groups.');
+  return createGroup(user, data, parent);
+}
+
+/** The sub-groups of a main group: all of them for its owner and admins, otherwise only the ones the caller belongs to. */
+async function listSubgroups(user, parentId) {
+  const uid = userId(user);
+  const { group: parent, membership } = await requireMember(user, parentId);
+  if (parent.parentId) return [];
+  const all = ADMIN_ROLES.includes(membership.role) || membership.role === 'support';
+  const children = await Group.find({ parentId: parent._id }).lean();
+  if (!children.length) return [];
+  const ids = children.map((c) => c._id);
+  const [mine, counts, projectCounts] = await Promise.all([
+    GroupMembership.find({ groupId: { $in: ids }, userId: uid, status: { $in: ['active', 'pending'] } }).lean(),
+    GroupMembership.aggregate([{ $match: { groupId: { $in: ids }, status: 'active' } }, { $group: { _id: '$groupId', n: { $sum: 1 } } }]),
+    ProjectSharing.aggregate([{ $match: { groupId: { $in: ids }, targetType: 'group' } }, { $group: { _id: '$groupId', n: { $sum: 1 } } }])
+  ]);
+  const mineBy = new Map(mine.map((m) => [String(m.groupId), m]));
+  const memberCount = new Map(counts.map((c) => [String(c._id), c.n]));
+  const projectCount = new Map(projectCounts.map((c) => [String(c._id), c.n]));
+  const inherited = { role: membership.role === 'support' ? 'support' : 'admin', status: 'active', inherited: membership.role !== 'support' };
+  return children
+    .filter((c) => all || mineBy.has(String(c._id)))
+    .map((c) => {
+      const own = mineBy.get(String(c._id));
+      const effective = own && (ADMIN_ROLES.includes(own.role) || !all) ? own : inherited;
+      return toGroup(c, effective, { memberCount: memberCount.get(String(c._id)) || 0, projectCount: projectCount.get(String(c._id)) || 0, parent: { id: sid(parent._id), name: parent.name } });
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function pickSettings(input = {}) {
@@ -110,7 +159,7 @@ async function listGroups(user) {
     groupIds = [...groupIds, ...all.map((g) => g._id).filter((id) => !mine.has(String(id)))];
   }
   if (!groupIds.length) return [];
-  const [groups, counts, projectCounts] = await Promise.all([
+  const [found, counts, projectCounts] = await Promise.all([
     Group.find({ _id: { $in: groupIds } }).lean(),
     GroupMembership.aggregate([{ $match: { groupId: { $in: groupIds }, status: 'active' } }, { $group: { _id: '$groupId', n: { $sum: 1 } } }]),
     ProjectSharing.aggregate([{ $match: { groupId: { $in: groupIds }, targetType: 'group' } }, { $group: { _id: '$groupId', n: { $sum: 1 } } }])
@@ -119,28 +168,41 @@ async function listGroups(user) {
   const projectCount = new Map(projectCounts.map((c) => [String(c._id), c.n]));
   const membershipByGroup = new Map(memberships.map((m) => [String(m.groupId), m]));
   const supportView = { role: 'support', status: 'active' };
+  // A sub-group gets its own card only for someone who is not in its main group (they find it in the main group's Sub-groups tab).
+  const parents = await Group.find({ _id: { $in: [...new Set(found.filter((g) => g.parentId).map((g) => String(g.parentId)))] } }).select('name').lean();
+  const parentById = new Map(parents.map((p) => [String(p._id), p]));
+  const inParent = (g) => membershipByGroup.get(String(g.parentId))?.status === 'active';
+  const groups = found.filter((g) => !g.parentId || (membershipByGroup.has(String(g._id)) && !inParent(g)));
   return groups
     .map((group) => toGroup(group, membershipByGroup.get(String(group._id)) || supportView, {
       memberCount: memberCount.get(String(group._id)) || 0,
-      projectCount: projectCount.get(String(group._id)) || 0
+      projectCount: projectCount.get(String(group._id)) || 0,
+      ...(group.parentId && parentById.get(String(group.parentId)) ? { parent: { id: sid(group.parentId), name: parentById.get(String(group.parentId)).name } } : {})
     }))
     .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 }
 
 async function getGroup(user, groupId) {
   const { group, membership } = await requireMember(user, groupId, { allowPending: true });
-  const [memberCount, projectCount] = await Promise.all([
+  const [memberCount, projectCount, parent] = await Promise.all([
     GroupMembership.countDocuments({ groupId: group._id, status: 'active' }),
-    ProjectSharing.countDocuments({ groupId: group._id, targetType: 'group' })
+    ProjectSharing.countDocuments({ groupId: group._id, targetType: 'group' }),
+    group.parentId ? Group.findById(group.parentId).select('name').lean() : null
   ]);
-  return toGroup(group, membership, { memberCount, projectCount });
+  const subgroupCount = group.parentId || membership.status !== 'active' ? 0 : (await listSubgroups(user, group._id)).length;
+  // Only someone who can open the main group gets a link back to it.
+  const canOpenParent = parent && (membership.inherited || isSupportAdmin(user) || await GroupMembership.exists({ groupId: parent._id, userId: userId(user), status: 'active' }));
+  return toGroup(group, membership, {
+    memberCount, projectCount, subgroupCount,
+    parent: parent ? { id: sid(parent._id), name: parent.name, canOpen: !!canOpenParent } : null
+  });
 }
 
 async function updateGroup(user, groupId, patch = {}) {
-  const { group } = await requireMember(user, groupId, { roles: ADMIN_ROLES });
+  const { group, membership } = await requireMember(user, groupId, { roles: ADMIN_ROLES });
   if (patch.name !== undefined) {
     const cleaned = cleanName(patch.name);
-    const nameKey = Group.keyFor(cleaned);
+    const nameKey = Group.keyFor(cleaned, group.parentId);
     if (nameKey !== group.nameKey && await Group.exists({ nameKey, _id: { $ne: group._id } })) {
       throw new ConflictError(`A group named "${cleaned}" already exists. Choose a different name.`, 'GROUP_NAME_TAKEN');
     }
@@ -156,7 +218,7 @@ async function updateGroup(user, groupId, patch = {}) {
     throw error;
   }
   await audit(userId(user), 'group.updated', { groupId: group._id, meta: { fields: Object.keys(patch) } });
-  return toGroup(group, { role: (await GroupMembership.findOne({ groupId, userId: userId(user) })).role, status: 'active' });
+  return toGroup(group, membership);
 }
 
 async function listMembers(user, groupId) {
@@ -242,6 +304,7 @@ async function removeMember(user, groupId, targetUserId) {
 async function leaveGroup(user, groupId, { unshareOwnedProjects = false } = {}) {
   const uid = userId(user);
   const { group, membership } = await requireMember(user, groupId, { allowPending: true });
+  if (membership.inherited) throw new ValidationError('You manage this sub-group through its main group, so there is nothing to leave.');
   if (membership.role === 'owner') throw new ForbiddenError('The owner cannot leave. Transfer ownership or delete the group first.', 'OWNER_CANNOT_LEAVE');
   const owned = await Project.find({ userId: uid }).select('_id').lean();
   const sharedOwned = owned.length ? await ProjectSharing.find({ groupId, targetType: 'group', projectId: { $in: owned.map((p) => p._id) } }).select('_id').lean() : [];
@@ -278,22 +341,26 @@ async function transferOwnership(user, groupId, newOwnerId, confirmName) {
 }
 
 async function deleteGroup(user, groupId, confirmName) {
-  const { group } = await requireMember(user, groupId, { roles: ['owner'] });
+  // The owner deletes a group; a sub-group can also be deleted by the owner or an admin of its main group.
+  const { group, membership } = await requireMember(user, groupId, { roles: ADMIN_ROLES });
+  if (membership.role !== 'owner' && !membership.inherited) throw new ForbiddenError('Only the group owner can delete the group.', 'GROUP_OWNER_REQUIRED');
   if (String(confirmName || '').trim() !== group.name) throw new ValidationError('Type the group name exactly to confirm deletion.');
-  const members = await GroupMembership.find({ groupId, status: 'active' }).select('userId').lean();
+  // Deleting a main group deletes its sub-groups too.
+  const ids = [group._id, ...(await Group.find({ parentId: group._id }).select('_id').lean()).map((g) => g._id)];
+  const members = await GroupMembership.find({ groupId: { $in: ids }, status: 'active' }).select('userId').lean();
   await withTransaction(async (session) => {
     const opts = session ? { session } : {};
-    await ProjectSharing.deleteMany({ groupId }, opts);
-    await GroupInvitation.updateMany({ groupId, status: 'pending' }, { $set: { status: 'revoked', respondedAt: new Date() } }, opts);
-    await GroupMembership.deleteMany({ groupId }, opts);
-    await Group.deleteOne({ _id: groupId }, opts);
+    await ProjectSharing.deleteMany({ groupId: { $in: ids } }, opts);
+    await GroupInvitation.updateMany({ groupId: { $in: ids }, status: 'pending' }, { $set: { status: 'revoked', respondedAt: new Date() } }, opts);
+    await GroupMembership.deleteMany({ groupId: { $in: ids } }, opts);
+    await Group.deleteMany({ _id: { $in: ids } }, opts);
   });
   await audit(userId(user), 'group.deleted', { groupId, meta: { name: group.name } });
-  await notify(members.map((m) => m.userId).filter((id) => sid(id) !== userId(user)), { type: 'removed_from_group', title: `${group.name} was deleted`, data: {} });
+  await notify([...new Set(members.map((m) => sid(m.userId)))].filter((id) => id !== userId(user)), { type: 'removed_from_group', title: `${group.name} was deleted`, data: {} });
   return { deleted: true };
 }
 
 module.exports = {
-  ADMIN_ROLES, requireMember, createGroup, listGroups, getGroup, updateGroup, listMembers, setMemberRole, approveMember,
+  ADMIN_ROLES, requireMember, createGroup, createSubgroup, listSubgroups, listGroups, getGroup, updateGroup, listMembers, setMemberRole, approveMember,
   removeMember, leaveGroup, transferOwnership, deleteGroup, publicUser, userId
 };

@@ -9,6 +9,8 @@ export const collaborationService = {
   deleteGroup: (id, confirmName) => api.delete(`/groups/${id}`, { data: { confirmName } }),
   transferOwnership: (id, newOwnerId, confirmName) => api.post(`/groups/${id}/transfer`, { newOwnerId, confirmName }),
   leaveGroup: (id, unshareOwnedProjects = false) => api.post(`/groups/${id}/leave`, { unshareOwnedProjects }),
+  listSubgroups: (id) => api.get(`/groups/${id}/subgroups`),
+  createSubgroup: (id, data) => api.post(`/groups/${id}/subgroups`, data),
   // Members
   listMembers: (id) => api.get(`/groups/${id}/members`),
   setMemberRole: (id, userId, role) => api.patch(`/groups/${id}/members/${userId}`, { role }),

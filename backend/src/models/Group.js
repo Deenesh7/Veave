@@ -9,6 +9,8 @@ const groupSchema = new mongoose.Schema({
   nameKey: { type: String, required: true, unique: true },
   description: { type: String, default: '', trim: true, maxlength: 500 },
   ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  // Set for a sub-group (one level only). Its members see only the sub-group's projects; the main group's owner and admins manage it.
+  parentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Group', default: null, index: true },
   settings: {
     // When true, accepting an invitation puts the user in "pending" until an admin approves them.
     requireApproval: { type: Boolean, default: false },
@@ -18,6 +20,10 @@ const groupSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-groupSchema.statics.keyFor = (name) => String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+// Main group names are unique across Veave; sub-group names only need to be unique inside their main group.
+groupSchema.statics.keyFor = (name, parentId = null) => {
+  const key = String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  return parentId ? `sub:${String(parentId)}:${key}` : key;
+};
 
 module.exports = mongoose.model('Group', groupSchema);

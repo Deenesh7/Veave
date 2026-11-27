@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Project = require('../../models/Project');
 const ProjectSharing = require('../../models/ProjectSharing');
 const GroupMembership = require('../../models/GroupMembership');
+const Group = require('../../models/Group');
 const { NotFoundError, ForbiddenError } = require('../../utils/errors');
 
 /**
@@ -20,9 +21,20 @@ const levelName = (rank) => Object.keys(LEVELS).find((key) => LEVELS[key] === ra
 const idOf = (value) => (value && value._id ? String(value._id) : value ? String(value) : '');
 const asObjectId = (value) => (mongoose.isValidObjectId(value) ? new mongoose.Types.ObjectId(String(value)) : null);
 
+/** The caller's active memberships, plus an "admin" membership in every sub-group of a group they own or administer. */
 async function activeMemberships(userId) {
   if (!userId) return [];
-  return GroupMembership.find({ userId, status: 'active' }).select('groupId role').lean();
+  const direct = await GroupMembership.find({ userId, status: 'active' }).select('groupId role').lean();
+  const managed = direct.filter((m) => ['owner', 'admin'].includes(m.role)).map((m) => m.groupId);
+  if (!managed.length) return direct;
+  const children = await Group.find({ parentId: { $in: managed } }).select('_id').lean();
+  const byGroup = new Map(direct.map((m) => [String(m.groupId), m]));
+  for (const child of children) {
+    const existing = byGroup.get(String(child._id));
+    if (!existing) direct.push({ groupId: child._id, role: 'admin', inherited: true });
+    else if (!['owner', 'admin'].includes(existing.role)) existing.role = 'admin';
+  }
+  return direct;
 }
 
 /** Computes the caller's access to an already-loaded project document (needs `_id` and `userId`). */

@@ -14,6 +14,9 @@ router.delete('/:groupId', controller.deleteGroup);
 router.post('/:groupId/transfer', controller.transferOwnership);
 router.post('/:groupId/leave', controller.leaveGroup);
 
+router.get('/:groupId/subgroups', controller.listSubgroups);
+router.post('/:groupId/subgroups', controller.createSubgroup);
+
 router.get('/:groupId/members', controller.listMembers);
 router.patch('/:groupId/members/:userId', controller.setMemberRole);
 router.delete('/:groupId/members/:userId', controller.removeMember);

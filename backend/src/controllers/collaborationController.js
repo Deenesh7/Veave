@@ -19,6 +19,8 @@ exports.getGroup = wrap((req) => groupService.getGroup(req.user, req.params.grou
 exports.updateGroup = wrap((req) => groupService.updateGroup(req.user, req.params.groupId, req.body || {}));
 exports.deleteGroup = wrap((req) => groupService.deleteGroup(req.user, req.params.groupId, req.body?.confirmName));
 exports.transferOwnership = wrap((req) => groupService.transferOwnership(req.user, req.params.groupId, req.body?.newOwnerId, req.body?.confirmName));
+exports.listSubgroups = wrap((req) => groupService.listSubgroups(req.user, req.params.groupId));
+exports.createSubgroup = wrap((req) => groupService.createSubgroup(req.user, req.params.groupId, req.body || {}), 201);
 exports.leaveGroup = wrap((req) => groupService.leaveGroup(req.user, req.params.groupId, { unshareOwnedProjects: req.body?.unshareOwnedProjects === true }));
 
 // Members

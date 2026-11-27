@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, UsersRound, FolderOpen, Mail, Settings, Plus, Share2, UserPlus, LogOut, Check, X, Trash2 } from 'lucide-react';
+import { ArrowLeft, UsersRound, FolderOpen, Mail, Settings, Plus, Share2, UserPlus, LogOut, Check, X, Trash2, Network } from 'lucide-react';
 import { collaborationService as svc, apiErrorMessage } from '../services/collaborationService';
 import { useCollabStore } from '../store/collabStore';
 import { useProjectStore } from '../store/projectStore';
@@ -12,9 +12,11 @@ import {
   PageHeader, Btn, Card, EmptyState, Spinner, RoleBadge, StatusBadge, Notice, Modal, ConfirmDialog, Field, inputClass, useFlash, timeAgo, RoleSelect, roleLabel, isSupportUser
 } from '../features/collaboration/ui';
 import Dropdown from '../components/ui/Dropdown';
+import CreateGroupDialog from '../features/collaboration/CreateGroupDialog';
 
 const TABS = [
   { id: 'projects', label: 'Projects', icon: FolderOpen },
+  { id: 'subgroups', label: 'Sub-groups', icon: Network, mainOnly: true },
   { id: 'members', label: 'Members', icon: UsersRound },
   { id: 'invitations', label: 'Invitations', icon: Mail, adminOnly: true },
   { id: 'settings', label: 'Settings', icon: Settings, adminOnly: true },
@@ -56,14 +58,17 @@ export default function GroupDetailPage() {
 
   const isAdmin = ['owner', 'admin'].includes(group.myRole);
   const pending = group.myStatus === 'pending';
-  const visibleTabs = TABS.filter((t) => !t.adminOnly || isAdmin);
+  const isSub = Boolean(group.parentId);
+  // Sub-groups go one level deep. Plain members only see the tab when they are in one of the sub-groups.
+  const visibleTabs = TABS.filter((t) => (!t.adminOnly || isAdmin) && (!t.mainOnly || (!isSub && (isAdmin || group.subgroupCount > 0))));
+  const backTo = isSub && group.parent?.canOpen ? { to: `/groups/${group.parent.id}`, label: group.parent.name } : { to: '/groups', label: 'All groups' };
 
   return (
     <div>
       <PageHeader
-        back={<Link to="/groups" className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-[#111827] mb-2"><ArrowLeft className="w-3.5 h-3.5" />All groups</Link>}
+        back={<Link to={backTo.to} className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-[#111827] mb-2"><ArrowLeft className="w-3.5 h-3.5" />{backTo.label}</Link>}
         title={<span className="flex items-center gap-2">{group.name} <RoleBadge role={group.myRole} /></span>}
-        subtitle={group.description || undefined}
+        subtitle={[isSub && group.parent ? `Sub-group of ${group.parent.name}` : null, group.description].filter(Boolean).join(' · ') || undefined}
       />
 
       {pending && <div className="mb-4"><Notice kind="success">Your membership is waiting for an admin to approve it. You will get access to the group's projects once approved.</Notice></div>}
@@ -83,11 +88,78 @@ export default function GroupDetailPage() {
             ))}
           </div>
           {tab === 'projects' && <ProjectsTab group={group} isAdmin={isAdmin} />}
+          {tab === 'subgroups' && !isSub && <SubgroupsTab group={group} isAdmin={isAdmin} />}
           {tab === 'members' && <MembersTab group={group} onChanged={() => { load(); fetchGroups(); }} />}
           {tab === 'invitations' && isAdmin && <InvitationsTab group={group} />}
           {tab === 'settings' && isAdmin && <SettingsTab group={group} onSaved={(g) => { setGroup((prev) => ({ ...prev, ...g })); fetchGroups(); }} />}
         </React.Fragment>
       )}
+    </div>
+  );
+}
+
+/* ----------------------------------------------------------------------------------------------- Sub-groups */
+
+function SubgroupsTab({ group, isAdmin }) {
+  const navigate = useNavigate();
+  const [list, setList] = useState(null);
+  const [error, setError] = useState(null);
+  const [creating, setCreating] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await svc.listSubgroups(group.id);
+      setList(res.data.data || []);
+      setError(null);
+    } catch (err) {
+      setError(apiErrorMessage(err, 'Could not load the sub-groups.'));
+    }
+  }, [group.id]);
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div className="space-y-4">
+      {isAdmin && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Btn icon={Plus} onClick={() => setCreating(true)}>New sub-group</Btn>
+          <p className="text-[11px] text-zinc-500">People invited to a sub-group see only that sub-group's projects.</p>
+        </div>
+      )}
+      {error && <Notice>{error}</Notice>}
+      {list === null ? <Spinner label="Loading sub-groups..." /> : list.length === 0 ? (
+        <EmptyState
+          icon={Network}
+          title="No sub-groups yet"
+          text={isAdmin ? `Make a sub-group for a team inside ${group.name}. Its members only see the projects you share with the sub-group.` : 'You are not in any sub-group of this group.'}
+        />
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {list.map((sub) => (
+            <Card
+              key={sub.id}
+              role="link"
+              tabIndex={0}
+              onClick={() => navigate(`/groups/${sub.id}`)}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); navigate(`/groups/${sub.id}`); } }}
+              className="h-full cursor-pointer p-4 transition-all hover:border-zinc-300 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/20"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-lg bg-zinc-200 text-zinc-800 flex items-center justify-center text-sm font-bold shrink-0">{sub.name.slice(0, 1).toUpperCase()}</div>
+                  <h3 className="text-sm font-bold text-[#111827] leading-snug break-words line-clamp-2" title={sub.name}>{sub.name}</h3>
+                </div>
+                {sub.myStatus === 'pending' ? <StatusBadge status="pending" /> : <RoleBadge role={sub.myRole} />}
+              </div>
+              <p className="text-xs text-zinc-500 mt-3 line-clamp-2 min-h-[2rem]">{sub.description || 'No description.'}</p>
+              <div className="flex items-center gap-4 mt-3 pt-3 border-t border-zinc-100 text-[11px] text-zinc-600">
+                <span className="flex items-center gap-1.5"><UsersRound className="w-3.5 h-3.5" />{sub.memberCount} member{sub.memberCount === 1 ? '' : 's'}</span>
+                <span className="flex items-center gap-1.5"><FolderOpen className="w-3.5 h-3.5" />{sub.projectCount} project{sub.projectCount === 1 ? '' : 's'}</span>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+      <CreateGroupDialog open={creating} onClose={() => setCreating(false)} parent={group} onCreated={load} />
     </div>
   );
 }
@@ -381,7 +453,7 @@ function MembersTab({ group, onChanged }) {
         )}
       </Modal>
 
-      {group.myRole !== 'owner' && (
+      {group.myRole !== 'owner' && !group.inherited && group.myRole !== 'support' && (
         <div><Btn variant="outline" icon={LogOut} onClick={() => setLeaving(true)}>Leave group</Btn></div>
       )}
 
@@ -615,10 +687,10 @@ function SettingsTab({ group, onSaved }) {
         </form>
       </Card>
 
-      {group.myRole === 'owner' && (
+      {(group.myRole === 'owner' || group.inherited) && (
         <Card className="p-5 border-red-200">
           <h3 className="text-sm font-bold text-red-700">Danger zone</h3>
-          <p className="text-xs text-zinc-500 mt-1 mb-3">Deleting the group removes all memberships and stops sharing every project with it. The projects themselves are kept by their owners.</p>
+          <p className="text-xs text-zinc-500 mt-1 mb-3">Deleting the group removes all memberships and stops sharing every project with it{group.parentId ? '' : ', and deletes its sub-groups too'}. The projects themselves are kept by their owners.</p>
           <Btn variant="danger" icon={Trash2} onClick={() => setDeleting(true)}>Delete group</Btn>
         </Card>
       )}
@@ -629,7 +701,7 @@ function SettingsTab({ group, onSaved }) {
         description="This cannot be undone."
         confirmLabel="Delete group"
         requireText={group.name}
-        onConfirm={async (typed) => { await svc.deleteGroup(group.id, typed).catch((e) => { throw new Error(apiErrorMessage(e)); }); await fetchGroups(); navigate('/groups'); }}
+        onConfirm={async (typed) => { await svc.deleteGroup(group.id, typed).catch((e) => { throw new Error(apiErrorMessage(e)); }); await fetchGroups(); navigate(group.parent?.canOpen ? `/groups/${group.parent.id}` : '/groups'); }}
       />
     </div>
   );
