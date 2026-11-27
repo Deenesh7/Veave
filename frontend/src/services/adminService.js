@@ -23,6 +23,7 @@ export const adminService = {
   userNotes: (id) => api.get(`/admin/users/${id}/notes`).then(data),
   addUserNote: (id, note) => api.post(`/admin/users/${id}/notes`, { note }).then(data),
   setUserStatus: (id, status, reason) => api.patch(`/admin/users/${id}/status`, { status, reason }).then(data),
+  setUserPlan: (id, plan) => api.patch(`/admin/users/${id}/plan`, { plan }).then(data),
   setUserRole: (id, role) => api.patch(`/admin/users/${id}/role`, { role }).then(data),
 
   creditSummary: (params) => api.get(`/admin/credits/summary${qs(params)}`).then(data),

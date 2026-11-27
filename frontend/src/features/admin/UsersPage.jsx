@@ -7,7 +7,7 @@ import { Async, Badge, Btn, Card, ConfirmDialog, EmptyState, Field, Page, Pagina
 import { useAdmin } from './AdminLayout';
 import CreditDialog from './CreditDialog';
 
-const PLAN_OPTIONS = ['Free Tier', 'Plus Plan', 'Pro Plan'];
+const PLAN_OPTIONS = ['Free Tier', 'Plus Plan', 'Pro Plan', 'Post Paid Plan'];
 
 export function UsersPage() {
   const [filters, setFilters] = useState({ q: '', role: '', plan: '', status: '', subscription: '', sort: 'newest' });
@@ -68,6 +68,7 @@ export function UserDetailPage() {
   const state = useAsync(() => adminService.user(id), [id]);
   const [dialog, setDialog] = useState(null);       // 'status' | 'role' | 'credits'
   const [reason, setReason] = useState('');
+  const [planChoice, setPlanChoice] = useState('Post Paid Plan');
   const [busy, setBusy] = useState(false);
 
   const act = async (fn, success) => {
@@ -93,6 +94,7 @@ export function UserDetailPage() {
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Btn variant="primary" onClick={() => setDialog('credits')}>Adjust credits</Btn>
+                    <Btn onClick={() => { setPlanChoice(user.plan === 'Post Paid Plan' ? 'Free Tier' : 'Post Paid Plan'); setDialog('plan'); }}>Change plan</Btn>
                     {!self ? (user.status === 'suspended'
                       ? <Btn onClick={() => setDialog('restore')}>Restore account</Btn>
                       : <Btn variant="danger" onClick={() => setDialog('suspend')}>Suspend</Btn>) : null}
@@ -110,6 +112,10 @@ export function UserDetailPage() {
               {tab === 'Notes' ? <UserNotes id={id} /> : null}
 
               <CreditDialog open={dialog === 'credits'} user={user} onClose={() => setDialog(null)} onDone={() => { setDialog(null); state.reload(); }} />
+              <ConfirmDialog open={dialog === 'plan'} title="Change this account's plan" confirmLabel="Change plan" busy={busy} onClose={() => setDialog(null)} onConfirm={() => act(() => adminService.setUserPlan(id, planChoice), 'Plan updated.')}>
+                <Field label="Plan"><Select value={planChoice} onChange={(event) => setPlanChoice(event.target.value)}>{PLAN_OPTIONS.filter((plan) => plan !== user.plan).map((plan) => <option key={plan}>{plan}</option>)}</Select></Field>
+                <p>{planChoice === 'Post Paid Plan' ? `${user.name} gets no credit or token limit and is billed after use. People ${user.name} invites to groups also have no credit limit.` : `${user.name} moves to ${planChoice} and gets that plan's credits.`}</p>
+              </ConfirmDialog>
               <ConfirmDialog open={dialog === 'suspend'} title="Suspend this account?" danger confirmLabel="Suspend account" busy={busy} onClose={() => setDialog(null)} onConfirm={() => act(() => adminService.setUserStatus(id, 'suspended', reason), 'Account suspended.')}>
                 <p>{user.name} will be signed out of every request and cannot sign in until you restore the account. Their data is kept.</p>
                 <Field label="Reason (required)"><Textarea rows={3} value={reason} onChange={(event) => setReason(event.target.value)} maxLength={300} /></Field>

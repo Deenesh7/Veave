@@ -21,7 +21,22 @@ const PLAN_LIMITS = {
     storageBytes: 100 * 1024 * 1024 * 1024, // 100 GB
     maxProjects: 100,
   },
+  // Billed after use (invoiced), so no credit or token limit applies. Only an administrator can put an account on it: it is never
+  // offered for purchase and cannot be chosen by the account holder.
+  'Post Paid Plan': {
+    price: 0,
+    credits: 0,
+    monthlyTokens: Number.MAX_SAFE_INTEGER,
+    storageBytes: 10 * 1024 * 1024 * 1024 * 1024, // 10 TB
+    maxProjects: 100000,
+    unlimited: true,
+    adminOnly: true,
+  },
 };
+
+const POSTPAID_PLAN = 'Post Paid Plan';
+const isUnlimitedPlan = (name) => PLAN_LIMITS[name]?.unlimited === true;
+const isAdminOnlyPlan = (name) => PLAN_LIMITS[name]?.adminOnly === true;
 
 // Accounts created before plans were named consistently have plan "Free Plan" (or none).
 function resolvePlanName(name) {
@@ -52,4 +67,4 @@ function creditsForTokens(totalTokens) {
   return Math.max(1, Math.ceil((Number(totalTokens) || 0) / TOKENS_PER_CREDIT));
 }
 
-module.exports = { imageEnhanceCredits, CREDIT_PRICE_INR, MIN_CREDIT_PURCHASE, MAX_CREDIT_PURCHASE, canBuyExtraCredits, TOKENS_PER_CREDIT, creditsForTokens, PLAN_LIMITS, resolvePlanName, limitsFor };
+module.exports = { POSTPAID_PLAN, isUnlimitedPlan, isAdminOnlyPlan, imageEnhanceCredits, CREDIT_PRICE_INR, MIN_CREDIT_PURCHASE, MAX_CREDIT_PURCHASE, canBuyExtraCredits, TOKENS_PER_CREDIT, creditsForTokens, PLAN_LIMITS, resolvePlanName, limitsFor };

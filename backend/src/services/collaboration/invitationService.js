@@ -93,6 +93,7 @@ async function invite(user, groupId, { email, userId: targetUserId, role = 'memb
     throw error;
   }
   await audit(userId(user), 'invitation.sent', { groupId, targetUserId: invitee?._id || null, meta: { invitationId: invitation.invitationId, role, scope, projectId, email: inviteeEmail } });
+  await require('../billing/postPaidOnInvite').onInvitation({ inviter: user, inviteeEmail, invitationId: invitation.invitationId });
   if (invitee) {
     await notify(invitee._id, {
       type: 'group_invitation',
@@ -105,7 +106,7 @@ async function invite(user, groupId, { email, userId: targetUserId, role = 'memb
     to: inviteeEmail, inviterName: user.name || 'A Veave user', groupName: group.name, groupDescription: group.description,
     role, expiresAt: invitation.expiresAt, isRegistered: !!invitee
   });
-  return { ...toInvitation(invitation, { group, inviter: user, invitee, projectName: project?.name }), email: { sent: delivery.sent, reason: delivery.reason || null }, inviteeRegistered: !!invitee };
+  return { ...toInvitation(invitation, { group, inviter: user, invitee, projectName: project?.name }), email: { sent: delivery.sent, reason: delivery.reason || null }, inviteeRegistered: !!invitee};
 }
 
 async function listForGroup(user, groupId) {

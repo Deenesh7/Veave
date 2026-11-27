@@ -4,7 +4,7 @@ const User = require('../../models/User');
 const AIUsage = require('../../models/AIUsage');
 const { AppError } = require('../../utils/errors');
 const logger = require('../../utils/logger');
-const { limitsFor, resolvePlanName, creditsForTokens, TOKENS_PER_CREDIT } = require('./plans');
+const { limitsFor, resolvePlanName, creditsForTokens, TOKENS_PER_CREDIT, PLAN_LIMITS, isUnlimitedPlan } = require('./plans');
 
 class PlanLimitError extends AppError {
   constructor(message) {
@@ -93,9 +93,38 @@ async function projectCredits(projectId) {
   return Number(project?.creditBalance) > 0 ? Number(project.creditBalance) : 0;
 }
 
+const unlimitedPlanNames = () => Object.keys(PLAN_LIMITS).filter(isUnlimitedPlan);
+
+/**
+ * True when nothing about credits or the monthly token allowance may stop (or be charged to) this account:
+ *  - the account itself is on an unlimited plan (Post Paid Plan) or is marked credits-exempt;
+ *  - the project being worked in belongs to an account on an unlimited plan (its shared collaborators work on that account's terms);
+ *  - the account was invited into, or is a member of, a group owned by (or joined through an invitation from) an unlimited account.
+ */
+async function hasUnlimitedCredits(userId, { projectId = null } = {}) {
+  if (!userId) return false;
+  const unlimited = unlimitedPlanNames();
+  const user = await User.findById(userId).select('plan creditsExempt').lean();
+  if (!user) return false;
+  if (user.creditsExempt || unlimited.includes(user.plan)) return true;
+  if (projectId && mongoose.isValidObjectId(projectId)) {
+    const project = await Project.findById(projectId).select('userId').lean();
+    if (project?.userId && String(project.userId) !== String(userId) && await User.exists({ _id: project.userId, $or: [{ plan: { $in: unlimited } }, { creditsExempt: true }] })) return true;
+  }
+  const GroupMembership = require('../../models/GroupMembership');
+  const Group = require('../../models/Group');
+  const memberships = await GroupMembership.find({ userId: toObjectId(userId), status: 'active' }).select('groupId invitedBy').lean();
+  if (!memberships.length) return false;
+  const inviters = memberships.map((row) => row.invitedBy).filter(Boolean);
+  const groups = await Group.find({ _id: { $in: memberships.map((row) => row.groupId) } }).select('ownerId').lean();
+  const sponsors = [...new Set([...inviters, ...groups.map((group) => group.ownerId)].map(String))];
+  return Boolean(sponsors.length && await User.exists({ _id: { $in: sponsors }, plan: { $in: unlimited } }));
+}
+
 // Throws PlanLimitError when the account has no credits left or has used its monthly token allowance.
 async function assertCanUseAI(userId, { projectId = null } = {}) {
   if (!userId) return;
+  if (await hasUnlimitedCredits(userId, { projectId })) return;
   if (await projectCredits(projectId) > 0) return; // the project has credits of its own: they pay, so the owner's balance and monthly allowance are not in the way
   const user = await User.findById(userId).select('plan credits subscription creditsExempt').lean();
   if (!user || user.creditsExempt) return;
@@ -139,8 +168,7 @@ async function chargeProjectCredits(userId, projectId, cost) {
 // Deducts credits for a finished generation (1 credit per 20,000 tokens, never below zero). Returns the updated user.
 // With a projectId, the project's own balance (if it has one) pays first and the owner only pays what is left.
 async function chargeCredits(userId, totalTokens, { projectId = null } = {}) {
-  const exempt = await User.findOne({ _id: userId, creditsExempt: true }).select('_id').lean();
-  if (exempt) return User.findById(userId);
+  if (await hasUnlimitedCredits(userId, { projectId })) return User.findById(userId);
   let cost = creditsForTokens(totalTokens);
   if (projectId) { cost = await chargeProjectCredits(userId, projectId, cost); if (cost <= 0) return User.findById(userId); }
   const floor = (field) => ({ $max: [0, { $subtract: [{ $ifNull: [field, '$credits'] }, cost] }] });
@@ -164,6 +192,7 @@ const estimateBuffer = () => { const v = Number.parseFloat(process.env.ESTIMATE_
 
 async function assertCanSpendCredits(userId, credits, { projectId = null, estimate = false } = {}) {
   if (!userId || !credits) return;
+  if (await hasUnlimitedCredits(userId, { projectId })) return;
   const base = credits;
   if (estimate) credits = Math.ceil(credits * (1 + estimateBuffer()));
   const total = credits;
@@ -187,4 +216,4 @@ async function chargeFixedCredits(userId, credits, { projectId = null } = {}) {
   return chargeCredits(userId, credits * TOKENS_PER_CREDIT, { projectId });
 }
 
-module.exports = { assertCanSpendCredits, chargeFixedCredits, chargeCredits, getProjectUsage, assertCanCreate, assertCanUseAI, PlanLimitError, formatBytes };
+module.exports = { hasUnlimitedCredits, assertCanSpendCredits, chargeFixedCredits, chargeCredits, getProjectUsage, assertCanCreate, assertCanUseAI, PlanLimitError, formatBytes };

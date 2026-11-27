@@ -113,7 +113,7 @@ async function runRenewals(now = new Date()) {
     if (result.modifiedCount) initialised += 1;
   }
 
-  const due = { status: { $ne: 'suspended' }, 'subscription.status': { $in: ['active', 'trialing'] }, 'subscription.renewsAt': { $lte: now } };
+  const due = { status: { $ne: 'suspended' }, plan: { $nin: Object.keys(plansModule.PLAN_LIMITS).filter(plansModule.isUnlimitedPlan) }, 'subscription.status': { $in: ['active', 'trialing'] }, 'subscription.renewsAt': { $lte: now } };
   for await (const user of User.find(due).select('plan credits subscription').lean().cursor()) {
     try {
       const planName = plansModule.resolvePlanName(user.plan);

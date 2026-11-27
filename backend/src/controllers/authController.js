@@ -142,6 +142,7 @@ exports.getProfile = async (req, res, next) => {
     // The balance is always what the billing page and the admin portal show (subscription.creditsRemaining first).
     const data = user.toObject();
     data.credits = require('../services/admin/creditLedgerService').balanceOf(data);
+    data.unlimitedCredits = await require('../services/billing/usageService').hasUnlimitedCredits(user._id);
     res.set('Cache-Control', 'no-store');
     res.status(200).json({ success: true, data });
   } catch (error) {

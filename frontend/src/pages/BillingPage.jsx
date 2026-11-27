@@ -121,7 +121,7 @@ export default function BillingPage() {
 
     try {
       if (plan.isEnterprise) {
-        window.location.href = 'mailto:sales@veave.ai?subject=Enterprise%20Plan%20Inquiry';
+        window.location.href = 'mailto:sales@veave.ai?subject=Post%20Paid%20Plan%20Inquiry';
         return;
       }
 
@@ -211,14 +211,15 @@ export default function BillingPage() {
       amount: '₹5,999',
     },
     {
-      name: 'Enterprise',
+      name: 'Post Paid Plan',
       badge: 'ENTERPRISE',
       price: 'Custom',
       period: 'Billed after usage • Invoiced',
-      description: 'Enterprise plan with post-paid billing.',
+      description: 'Post-paid billing with no credit limit, set up by Veave support.',
       features: [
-        { text: 'Post-paid billing & custom limits', type: 'check' },
+        { text: 'Unlimited credits & monthly tokens', type: 'check' },
         { text: 'Pay after usage with monthly invoice', type: 'check' },
+        { text: 'People you invite to your groups also have no credit limit', type: 'check' },
         { text: 'Consolidated team management', type: 'check' },
         { text: 'Unlimited Custom Domains', type: 'check' },
         { text: 'Dedicated account manager & SLA', type: 'check' },
@@ -231,6 +232,10 @@ export default function BillingPage() {
   const getButtonProps = (plan) => {
     const isActive = plan.name === currentPlan;
     const isWorking = activeActionPlan === plan.name;
+
+    if (plan.isEnterprise && isActive) {
+      return { label: 'Active Plan', style: 'gray', disabled: true, onClick: () => {} };
+    }
 
     if (plan.isEnterprise) {
       return {
@@ -368,16 +373,16 @@ export default function BillingPage() {
             <UsageCard
               icon={Sparkles}
               label="Credits"
-              value={`${overview.credits?.remaining ?? 0} / ${overview.credits?.allocated ?? 0}`}
-              subtext={`${overview.credits?.used ?? 0} used`}
-              percentage={overview.credits?.percentage ?? 0}
+              value={overview.credits?.unlimited ? 'Unlimited' : `${overview.credits?.remaining ?? 0} / ${overview.credits?.allocated ?? 0}`}
+              subtext={overview.credits?.unlimited ? 'No credit limit • billed after use' : `${overview.credits?.used ?? 0} used`}
+              percentage={overview.credits?.unlimited ? 0 : (overview.credits?.percentage ?? 0)}
             />
             <UsageCard
               icon={Zap}
               label="Tokens This Month"
-              value={`${formatTokens(overview.tokens?.used ?? 0)} / ${formatTokens(overview.tokens?.limit ?? 0)}`}
+              value={overview.credits?.unlimited ? `${formatTokens(overview.tokens?.used ?? 0)} / Unlimited` : `${formatTokens(overview.tokens?.used ?? 0)} / ${formatTokens(overview.tokens?.limit ?? 0)}`}
               subtext={`${overview.tokens?.requests ?? 0} requests`}
-              percentage={overview.tokens?.percentage ?? 0}
+              percentage={overview.credits?.unlimited ? 0 : (overview.tokens?.percentage ?? 0)}
             />
             <UsageCard
               icon={HardDrive}
@@ -483,7 +488,7 @@ export default function BillingPage() {
             <p className="text-xs text-zinc-500 mt-1">
               ₹{pricePerCredit} per credit. Added instantly to your balance and your monthly token limit grows with them.
             </p>
-            {!creditInfo.canBuy && (
+            {!creditInfo.canBuy && !creditInfo.unlimited && (
               <p className="text-xs text-amber-600 font-medium mt-2">Extra credits are available on Plus and Pro plans. Upgrade to buy more.</p>
             )}
           </div>

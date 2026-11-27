@@ -29,6 +29,7 @@ router.get('/users/:id/credits', c.userCredits);
 router.get('/users/:id/notes', c.userNotes);
 router.post('/users/:id/notes', adminSensitiveLimiter, c.addUserNote);
 router.patch('/users/:id/status', adminSensitiveLimiter, c.setUserStatus);
+router.patch('/users/:id/plan', adminSensitiveLimiter, requireFullAdmin, c.setUserPlan);
 // Roles and administrators: root only, and the root must re-enter their password.
 router.patch('/users/:id/role', adminSensitiveLimiter, requireRootAdmin, requireStepUp, c.setUserRole);
 

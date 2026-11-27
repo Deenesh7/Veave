@@ -129,6 +129,36 @@ async function setRole(admin, id, role, req, adminRole = 'admin') {
   return present(updated);
 }
 
+/**
+ * Moves an account to a plan. The Post Paid Plan (no credit or token limit, billed after use) can only be given here: to any account,
+ * including support administrators. Moving back to a normal plan gives that plan's allowance.
+ */
+async function setPlan(admin, id, plan, req) {
+  const plans = require('../billing/plans');
+  if (!plans.PLAN_LIMITS[plan]) throw new ValidationError(`Choose one of: ${Object.keys(plans.PLAN_LIMITS).join(', ')}.`);
+  const user = await User.findById(id).select(`${LIST_FIELDS}`).lean();
+  if (!user) throw new NotFoundError('User');
+  if (user.status === 'suspended') throw new ValidationError('Restore the account before changing its plan.');
+  if (plans.resolvePlanName(user.plan) === plan) throw new ValidationError(`The account is already on ${plan}.`);
+  const limits = plans.PLAN_LIMITS[plan];
+  const before = ledger.balanceOf(user);
+  let set;
+  if (plans.isUnlimitedPlan(plan)) {
+    // Credits are no longer counted; the balance is left as it was so moving back later is not a surprise.
+    set = { plan, 'subscription.tier': plan, 'subscription.status': 'active', 'subscription.billingCycle': 'monthly', 'subscription.bonusCredits': 0, 'subscription.renewsAt': null };
+  } else {
+    const renewsAt = new Date();
+    renewsAt.setMonth(renewsAt.getMonth() + 1);
+    set = { plan, credits: limits.credits, 'subscription.tier': plan, 'subscription.status': 'active', 'subscription.creditsAllocated': limits.credits, 'subscription.creditsRemaining': limits.credits, 'subscription.bonusCredits': 0, 'subscription.renewsAt': renewsAt };
+  }
+  const updated = await User.findByIdAndUpdate(id, { $set: set }, { new: true }).select(LIST_FIELDS).lean();
+  const after = ledger.balanceOf(updated);
+  if (after !== before) await ledger.recordApplied({ userId: id, previousBalance: before, newBalance: after, type: 'CREDIT_ADJUSTMENT', reason: `Plan changed to ${plan} by an administrator` });
+  await audit.record(admin, 'USER_PLAN_CHANGED', { resourceType: 'user', resourceId: id, before: { plan: user.plan || 'Free Tier' }, after: { plan }, meta: { email: user.email }, req });
+  await notifications.create({ type: 'SECURITY', severity: 'info', title: 'Plan changed', message: `${user.email} is now on ${plan} (changed by ${admin.email}).`, data: { userId: id } });
+  return present(updated);
+}
+
 async function addNote(admin, id, text, req) {
   await mustFind(id);
   const note = String(text || '').trim();
@@ -191,4 +221,4 @@ async function setAdminType(admin, id, type, req) {
   return present(updated);
 }
 
-module.exports = { setAdminType, createAdmin, list, get, websites, activity, setStatus, setRole, addNote, notes, admins, promoteByEmail, present, mustFind, isId };
+module.exports = { setAdminType, createAdmin, list, get, websites, activity, setStatus, setRole, setPlan, addNote, notes, admins, promoteByEmail, present, mustFind, isId };

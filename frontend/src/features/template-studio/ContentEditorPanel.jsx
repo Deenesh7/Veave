@@ -7,7 +7,7 @@ import ImageLibrary from './ImageLibrary';
 import VoiceInputButton from './VoiceInputButton';
 import { sectionOutline } from './sectionOutline';
 import { calmMessage } from '../../services/templateSiteService';
-import { pagePhotos, numberPrefix, expandSectionNumbers, tickedNumbers, tickedIds, withContextWithin } from './panelLogic';
+import { parseYouTubeUrl, pagePhotos, numberPrefix, expandSectionNumbers, tickedNumbers, tickedIds, withContextWithin } from './panelLogic';
 
 const STEP = { queued: 'Waiting to start', processing: 'Writing the page', validating: 'Building the site and testing every page', repairing: 'Fixing a problem the checks found', committing: 'Saving the new version', completed: 'Saved', failed: 'Failed', cancelled: 'Cancelled' };
 const TERMINAL = ['completed', 'failed', 'cancelled'];
@@ -155,9 +155,26 @@ export default function ContentEditorPanel({ className = '' }) {
   const submit = async (event) => {
     event.preventDefault();
     if (!canSend) return;
+    // A YouTube link in the instruction is a background video for the ticked section(s): it is put straight into the page, without the AI.
+    let text = instruction.trim();
+    const link = /(?:https?:\/\/)?(?:[\w-]+\.)?(?:youtube(?:-nocookie)?\.com|youtu\.be)\/\S+/i.exec(text);
+    const video = link ? parseYouTubeUrl(link[0]) : null;
+    if (video?.ok) {
+      if (!checkedNumbers.length) { store.flash('error', 'Tick the section that should get the video background first, then send the link again.'); return; }
+      for (const n of checkedNumbers) {
+        const done = await store.setSectionBackground(sections[n - 1].id, { kind: 'youtube', youtubeId: video.id, overlay: 'dark' });
+        if (!done.ok) { store.flash('error', done.error); return; }
+      }
+      store.flash('success', checkedNumbers.length === 1 ? 'The YouTube video now plays behind the section.' : 'The YouTube video now plays behind the sections.');
+      const rest = text.replace(link[0], '').replace(/\s{2,}/g, ' ').trim();
+      setDraft(activePageId, rest);
+      setChecked([]);
+      store.loadSections(activePageId);
+      if (!rest) return;
+      text = rest;
+    }
     // The text stays in place until the page is saved, so a failed run can be sent again with one click.
-    const sent = expandSectionNumbers(`${numberPrefix(checkedNumbers)}${instruction.trim()}`, sections);
-    const text = instruction.trim();
+    const sent = expandSectionNumbers(`${numberPrefix(video?.ok ? [] : checkedNumbers)}${text}`, sections);
     // "Add a page ..." makes a new page first, then the AI fills it with what was asked for.
     if (/^\s*(?:please\s+)?(?:add|create|make|build)\s+(?:me\s+)?(?:a|an|one|another|the)?\s*(?:new\s+)?(?:\w+\s+)?page\b/i.test(text)) {
       const named = text.match(/\b(?:called|named|titled)\s+["“']?([^"”',.\n]{2,40}?)["”']?(?:\s+(?:with|and|that|which|for|page)\b|[,.\n]|$)/i)

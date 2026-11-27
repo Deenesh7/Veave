@@ -36,6 +36,7 @@ exports.userCredits = wrap(async (req, res) => { await users.mustFind(req.params
 exports.userNotes = wrap(async (req, res) => ok(res, { notes: await users.notes(req.params.id) }));
 exports.addUserNote = wrap(async (req, res) => ok(res, { note: await users.addNote(req.user, req.params.id, req.body?.note, req) }, 201));
 exports.setUserStatus = wrap(async (req, res) => ok(res, { user: await users.setStatus(req.user, req.params.id, req.body?.status, req.body?.reason, req) }));
+exports.setUserPlan = wrap(async (req, res) => ok(res, { user: await users.setPlan(req.user, req.params.id, req.body?.plan, req) }));
 exports.setUserRole = wrap(async (req, res) => ok(res, { user: await users.setRole(req.user, req.params.id, req.body?.role, req) }));
 
 /* credits */

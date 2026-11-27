@@ -123,7 +123,7 @@ export function ProfileMenu() {
           {/* 2. Plan and Dynamic Credits Card */}
           <div className="bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl px-3.5 py-2.5 flex items-center justify-between my-2.5 shadow-2xs">
             <PlanBadge plan={currentUser.plan} />
-            <CreditsBadge credits={credits} />
+            <CreditsBadge credits={credits} unlimited={Boolean(authUser?.unlimitedCredits)} />
           </div>
 
           {/* 3. Menu Navigation Groups */}

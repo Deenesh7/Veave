@@ -5,8 +5,8 @@ const AIUsage = require('../models/AIUsage');
 const Payment = require('../models/Payment');
 const logger = require('../utils/logger');
 
-const { PLAN_LIMITS, imageEnhanceCredits, limitsFor, resolvePlanName, CREDIT_PRICE_INR, MIN_CREDIT_PURCHASE, MAX_CREDIT_PURCHASE, canBuyExtraCredits, TOKENS_PER_CREDIT } = require('../services/billing/plans');
-const { getProjectUsage } = require('../services/billing/usageService');
+const { PLAN_LIMITS, isUnlimitedPlan, isAdminOnlyPlan, imageEnhanceCredits, limitsFor, resolvePlanName, CREDIT_PRICE_INR, MIN_CREDIT_PURCHASE, MAX_CREDIT_PURCHASE, canBuyExtraCredits, TOKENS_PER_CREDIT } = require('../services/billing/plans');
+const { getProjectUsage, hasUnlimitedCredits } = require('../services/billing/usageService');
 
 const razorpay = require('../services/billing/razorpayClient');
 const payments = require('../services/billing/paymentService');
@@ -73,6 +73,7 @@ exports.getOverview = async (req, res, next) => {
 
     // --- Storage + projects: measured from the user's real stored projects ---
     const { projectCount, storageBytes } = await getProjectUsage(userId);
+    const unlimited = await hasUnlimitedCredits(userId);
 
     res.status(200).json({
       success: true,
@@ -92,7 +93,9 @@ exports.getOverview = async (req, res, next) => {
           imageEnhanceCredits: imageEnhanceCredits(),
           minPurchase: MIN_CREDIT_PURCHASE,
           maxPurchase: MAX_CREDIT_PURCHASE,
-          canBuy: canBuyExtraCredits(planName),
+          canBuy: canBuyExtraCredits(planName) && !unlimited,
+          unlimited,
+          postPaid: isUnlimitedPlan(planName),
           percentage: creditsAllocated > 0
             ? Math.round(((creditsAllocated - creditsRemaining) / creditsAllocated) * 100)
             : 0,
@@ -151,6 +154,7 @@ exports.changePlan = async (req, res, next) => {
     }
 
     const limits = PLAN_LIMITS[plan];
+    if (isAdminOnlyPlan(plan)) return res.status(403).json({ success: false, error: { message: `${plan} is set up by an administrator. Contact support to be moved to it.` } });
     // Paid plans can only be activated by a verified payment (create-order -> verify-payment).
     if (limits.price > 0) {
       return res.status(402).json({
@@ -160,6 +164,7 @@ exports.changePlan = async (req, res, next) => {
     }
     const balanceBefore = await User.findById(userId).select('credits plan subscription').lean();
     if (!balanceBefore) return res.status(404).json({ success: false, error: { message: 'User not found' } });
+    if (isAdminOnlyPlan(resolvePlanName(balanceBefore.plan))) return res.status(403).json({ success: false, error: { message: 'Your plan is managed by an administrator. Contact support to change it.' } });
     // Choosing the plan you are already on changes nothing. (It used to refill the credits every time, so anyone could top up for free.)
     if (resolvePlanName(balanceBefore.plan) === plan) {
       return res.status(200).json({ success: true, data: { user: await User.findById(userId), plan: { name: plan, price: limits.price, credits: limits.credits, monthlyTokens: limits.monthlyTokens, storageBytes: limits.storageBytes, maxProjects: limits.maxProjects }, message: `You are already on ${plan}.` } });
@@ -230,6 +235,7 @@ exports.createOrder = async (req, res, next) => {
     }
 
     const limits = PLAN_LIMITS[plan];
+    if (isAdminOnlyPlan(plan)) return res.status(403).json({ success: false, error: { message: `${plan} is set up by an administrator and cannot be bought.` } });
     if (limits.price <= 0) {
       return res.status(400).json({
         success: false,
