@@ -6,6 +6,7 @@ import { ProfileMenu } from '../profile/ProfileMenu';
 import NotificationBell from '../../features/collaboration/NotificationBell';
 import { useCollabStore } from '../../store/collabStore';
 import { useAuthStore } from '../../store/authStore';
+import { useAdminView } from '../../store/adminViewStore';
 import { collaborationService, apiErrorMessage } from '../../services/collaborationService';
 import Dropdown from '../ui/Dropdown';
 
@@ -17,7 +18,8 @@ export default function TopHeader({ onToggleMobileMenu, mobileMenuOpen }) {
   const [inviteError, setInviteError] = useState(null);
   const [inviteBusy, setInviteBusy] = useState(false);
   const navigate = useNavigate();
-  const isAdmin = useAuthStore((s) => s.user?.role) === 'ADMIN';
+  const adminView = useAdminView((s) => s.mode);
+  const isAdmin = useAuthStore((s) => s.user?.role) === 'ADMIN' && adminView === 'admin';
   const { groups, fetchGroups } = useCollabStore();
   const adminGroups = groups.filter((g) => g.myStatus === 'active' && ['owner', 'admin'].includes(g.myRole));
 

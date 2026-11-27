@@ -22,6 +22,7 @@ import SearchBar from './SearchBar';
 import DocumentationLink from './DocumentationLink';
 import { BounceSidebar } from '../rare-ui';
 import { useAuthStore } from '../../store/authStore';
+import { useAdminView, isAdminAccount } from '../../store/adminViewStore';
 import { useProjectStore } from '../../store/projectStore';
 import { useCollabStore } from '../../store/collabStore';
 import { useTemplateStudioStore } from '../../store/templateStudioStore';
@@ -30,7 +31,10 @@ import MySitesPanel from '../../features/template-studio/MySitesPanel';
 export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }) {
   const { user } = useAuthStore();
   const projects = useProjectStore((s) => s.projects);
-  const isAdmin = user?.role === 'ADMIN' && user?.isRootAdmin === true;
+  const adminAccount = isAdminAccount(user);
+  const adminMode = useAdminView((s) => s.mode);
+  const setAdminMode = useAdminView((s) => s.setMode);
+  const isAdmin = adminAccount && adminMode === 'admin';
   const adminUnread = useAdminUnread((s) => s.unread);
   const pendingInvitations = useCollabStore((s) => s.invitations.length);
 
@@ -109,6 +113,15 @@ export default function Sidebar({ collapsed, mobileMenuOpen, onCloseMobileMenu }
 
   const content = (
     <div className="flex flex-col h-full">
+      {adminAccount ? (
+        <div className="shrink-0 p-3 pb-0">
+          <div role="tablist" aria-label="View" className="relative grid grid-cols-2 rounded-lg bg-[#EFEBE1] p-0.5 text-xs font-medium">
+            <span aria-hidden="true" className={`absolute inset-y-0.5 left-0.5 w-[calc(50%-2px)] rounded-md bg-[#FBF9F4] shadow-sm transition-transform duration-300 ease-in-out ${adminMode === 'user' ? 'translate-x-full' : ''}`} />
+            <button type="button" role="tab" aria-selected={adminMode === 'admin'} onClick={() => { setAdminMode('admin'); navigate('/admin'); if (onCloseMobileMenu) onCloseMobileMenu(); }} className="relative z-10 flex items-center justify-center gap-1.5 py-1.5 text-[#2B2823]"><ShieldCheck className="h-3.5 w-3.5" />Admin</button>
+            <button type="button" role="tab" aria-selected={adminMode === 'user'} onClick={() => { setAdminMode('user'); navigate('/dashboard'); if (onCloseMobileMenu) onCloseMobileMenu(); }} className="relative z-10 flex items-center justify-center gap-1.5 py-1.5 text-[#2B2823]"><Home className="h-3.5 w-3.5" />User</button>
+          </div>
+        </div>
+      ) : null}
       <div className="shrink-0 p-3 pb-0 flex items-center gap-2">
         {isAdmin ? <div className="flex-1 px-1 text-xs font-semibold text-[#2B2823]">Control center</div> : <div className="relative grid flex-1 grid-cols-2 rounded-lg bg-[#EFEBE1] p-0.5 text-xs font-medium">
           <span

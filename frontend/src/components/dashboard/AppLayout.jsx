@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
+import { useAdminView, isAdminAccount } from '../../store/adminViewStore';
 import { Spinner } from '../ui/Spinner';
 import TopHeader from './TopHeader';
 import Sidebar from './Sidebar';
@@ -33,7 +34,9 @@ export default function AppLayout() {
   const waitingForRole = isAuthenticated && !user && !profileTried;
 
   // Administrators only get the admin dashboard, not the site-building workspace.
-  const isAdmin = user?.role === 'ADMIN' && user?.isRootAdmin === true; // the admin portal is for the root administrator only
+  const adminMode = useAdminView((s) => s.mode);
+  // The admin portal is for the root administrator only. An administrator can switch to the normal user view with the toggle in the sidebar.
+  const isAdmin = isAdminAccount(user) && adminMode === 'admin';
   if (isAdmin && !pathname.startsWith('/admin')) return <Navigate to="/admin" replace />;
   // An administrator who lost the role while signed in goes back to the normal app.
   if (user && !isAdmin && pathname.startsWith('/admin')) return <Navigate to="/dashboard" replace />;
