@@ -53,6 +53,9 @@ sites.patch('/:siteId/pages/:pageId', controller.updatePage);
 sites.delete('/:siteId/pages/:pageId', controller.deletePage);
 sites.post('/:siteId/pages/:pageId/text', controller.editText);
 sites.delete('/:siteId/pages/:pageId/sections/:sectionId', controller.removeSection);
+sites.post('/:siteId/pages/:pageId/sections/locate', controller.locateSection);
+sites.get('/:siteId/pages/:pageId/sections/:sectionId/background', controller.getSectionBackground);
+sites.put('/:siteId/pages/:pageId/sections/:sectionId/background', controller.setSectionBackground);
 
 // Website versions, history, comparison, branches. (Fixed words come before the :versionId routes.)
 sites.get('/:siteId/versions', controller.listVersions);

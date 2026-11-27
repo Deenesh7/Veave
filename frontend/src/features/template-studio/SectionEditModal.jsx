@@ -7,9 +7,9 @@ import { PrimaryButton, GhostButton, Spinner, ink, muted, line } from './ui';
 import VoiceInputButton from './VoiceInputButton';
 import { sectionEditScript } from './sectionEditScripts';
 import { sectionOutline } from './sectionOutline';
-import { pagePhotos, matchSection, firstPictureOf, wholeSectionNote } from './panelLogic';
+import { pagePhotos, matchSection, parseYouTubeUrl } from './panelLogic';
 import { useImageSrc } from './imageUtils';
-import { IMAGE_BUTTON_SCRIPT } from './previewScripts';
+import { IMAGE_BUTTON_SCRIPT, YOUTUBE_STILL_SCRIPT } from './previewScripts';
 import ImageChangeModal from './ImageChangeModal';
 
 const MAX_TEXT = 4000;
@@ -19,10 +19,10 @@ const esc = (value) => String(value || '').replace(/&/g, '&amp;').replace(/"/g, 
 const pad = (n) => String(n).padStart(2, '0');
 
 // The page of the popup: the real styles of the website and only this section, with its text editable in place.
-function buildDocument(payload) {
+function buildDocument(payload, { youtube = false } = {}) {
   return `<!doctype html><html class="${esc(payload.htmlClass)}"><head><meta charset="utf-8">${payload.head}
-<style>html,body{margin:0;background:transparent}[data-studio-edit]{outline:1px dashed rgba(94,123,95,.65);outline-offset:2px;cursor:text;min-width:1ch}[data-studio-edit]:hover{background:rgba(94,123,95,.08)}[data-studio-edit]:focus{outline:2px solid #5E7B5F;background:rgba(94,123,95,.12)}[style*="opacity: 0"]{opacity:1!important}</style></head>
-<body class="${esc(payload.bodyClass)}"><div id="studio-edit-root">${payload.html}</div><script>(${sectionEditScript.toString()})();</script>${IMAGE_BUTTON_SCRIPT}</body></html>`;
+<style>html,body{margin:0;background:transparent}[data-studio-edit]{outline:1px dashed rgba(94,123,95,.65);outline-offset:2px;cursor:text;min-width:1ch}[data-studio-edit]:hover{background:rgba(94,123,95,.08)}[data-studio-edit]:focus{outline:2px solid #5E7B5F;background:rgba(94,123,95,.12)}[style*="opacity: 0"]:not([data-veave-bg] *){opacity:1!important}${youtube ? 'iframe[src*="youtube"]{display:none!important}' : ''}</style></head>
+<body class="${esc(payload.bodyClass)}"><div id="studio-edit-root">${payload.html}</div><script>(${sectionEditScript.toString()})();</script>${IMAGE_BUTTON_SCRIPT}${youtube ? '' : YOUTUBE_STILL_SCRIPT}</body></html>`;
 }
 
 /**
@@ -32,10 +32,10 @@ function buildDocument(payload) {
  */
 /** A small picture chip: the photo that will be used in this section, with a button to take it out again. */
 function PhotoChip({ siteId, image, disabled, onRemove }) {
-  const { src, failed } = useImageSrc(siteId, image, { version: 'original', skip: image.kind === 'video' });
+  const { src, failed } = useImageSrc(siteId, image, { version: 'original', skip: image.kind === 'video' || image.kind === 'youtube' });
   return (
     <span className={`relative inline-flex h-12 w-12 shrink-0 overflow-hidden rounded-md border ${line} bg-[#EFEBE1]`} title={image.name}>
-      {image.kind === 'video' ? <span className="flex h-full w-full items-center justify-center bg-[#2B2823] text-white"><Film className="h-4 w-4" aria-hidden="true" /></span> : src ? <img src={src} alt={image.alt || image.name} draggable={false} className="h-full w-full object-cover" /> : <span className={`flex h-full w-full items-center justify-center ${muted}`}>{failed ? <ImageOff className="h-4 w-4" /> : <Spinner className="h-3 w-3" />}</span>}
+      {image.kind === 'youtube' ? <img src={`https://i.ytimg.com/vi/${image.youtubeId}/default.jpg`} alt="YouTube video" draggable={false} className="h-full w-full object-cover" /> : image.kind === 'video' ? <span className="flex h-full w-full items-center justify-center bg-[#2B2823] text-white"><Film className="h-4 w-4" aria-hidden="true" /></span> : src ? <img src={src} alt={image.alt || image.name} draggable={false} className="h-full w-full object-cover" /> : <span className={`flex h-full w-full items-center justify-center ${muted}`}>{failed || !image.id ? <ImageOff className="h-4 w-4" /> : <Spinner className="h-3 w-3" />}</span>}
       <button type="button" disabled={disabled} onClick={onRemove} aria-label={`Remove photo ${image.name}`} className="absolute right-0.5 top-0.5 rounded-full bg-black/60 p-0.5 text-white hover:bg-black/80 disabled:opacity-50"><X className="h-2.5 w-2.5" /></button>
     </span>
   );
@@ -59,7 +59,8 @@ export default function SectionEditModal({ payload, onClose }) {
   const uploading = pageUploads.some((item) => item.status === 'queued' || item.status === 'uploading');
   const [imageEdit, setImageEdit] = useState(null);   // a picture of this section opened with its image button
   const [bgPicker, setBgPicker] = useState(false);     // choosing a picture or video to play behind this section
-  const [bgMedia, setBgMedia] = useState(null);        // the chosen background: a library entry
+  const [bgItems, setBgItems] = useState([]);           // the backgrounds this section has now (several play one after the other)
+  const [bgBusy, setBgBusy] = useState(false);
   const [reloading, setReloading] = useState(0);       // bumped after a picture was swapped: the section is read again from the rebuilt website
   const [applying, setApplying] = useState(false); // the AI is changing this section; the popup stays open on it until that is done
   const [fresh, setFresh] = useState(null);         // the section as it is after the AI changed it: { html, head, htmlClass, bodyClass }
@@ -74,12 +75,17 @@ export default function SectionEditModal({ payload, onClose }) {
     const key = `${payload.domId || ''}|${payload.name || ''}|${payload.index ?? ''}`;
     if (known.current?.key !== key) known.current = null; // another section was opened
     const found = matchSection(sections, { domId: payload.domId || '', name: payload.name || '', index: Number.isInteger(payload.index) ? payload.index : -1, html: payload.html || '' });
-    if (found >= 0) known.current = { key, number: found + 1, item: sections[found] };
+    // The preview and the server name a section differently: when both count the same number of blocks, the position tells which it is.
+    const byPosition = found < 0 && Number.isInteger(payload.index) && payload.index >= 0 && payload.total > 0 && payload.total === sections.length ? payload.index : -1;
+    const at = found >= 0 ? found : byPosition;
+    if (at >= 0) known.current = { key, number: at + 1, item: sections[at] };
     return known.current;
   }, [payload, sections]);
   const title = match?.item?.name || payload.name || 'This section';
 
-  const doc = useMemo(() => buildDocument(current), [current]);
+  // The sandboxed section frame cannot start YouTube, so the pop-up plays it itself, behind the (see-through) frame.
+  const youtubeId = bgItems.find((item) => item.kind === 'youtube')?.youtubeId || '';
+  const doc = useMemo(() => buildDocument(current, { youtube: Boolean(youtubeId) }), [current, youtubeId]);
 
   useEffect(() => {
     const onMessage = (event) => {
@@ -144,7 +150,7 @@ export default function SectionEditModal({ payload, onClose }) {
     (async () => {
       const squash = (value) => String(value || '').replace(/\s+/g, ' ').trim();
       const before = squash(current.html);
-      for (let attempt = 0; attempt < 16 && !stop; attempt += 1) {
+      for (let attempt = 0; attempt < 40 && !stop; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 900 : 700));
         const got = await read();
         if (got && squash(got.html) !== before) { setFresh({ html: got.html, head: got.head || payload.head, htmlClass: got.htmlClass ?? payload.htmlClass, bodyClass: got.bodyClass ?? payload.bodyClass }); setReady(false); setEdits([]); break; }
@@ -159,8 +165,88 @@ export default function SectionEditModal({ payload, onClose }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose, saving, applying, imageEdit, bgPicker]);
 
-  const changed = edits.filter((item) => item.next && item.next !== item.old);
-  const canSave = !saving && !applying && !running && !busy.regenerate && !uploading && (changed.length > 0 || prompt.trim().length > 0 || chosenPhotos.length > 0 || Boolean(bgMedia));
+  // A YouTube link typed or pasted into the instruction bar becomes the section's background (shown as a chip) instead of staying as text.
+  const youtubeIn = (text) => {
+    const match = /(?:https?:\/\/)?(?:[\w-]+\.)?(?:youtube(?:-nocookie)?\.com|youtu\.be)\/\S+/i.exec(text || '');
+    const parsed = match ? parseYouTubeUrl(match[0]) : null;
+    return parsed?.ok ? { id: parsed.id, raw: match[0] } : null;
+  };
+  // The section the backgrounds belong to. When the list of sections was not matched yet it is loaded and matched again here.
+  const findItem = async () => {
+    if (match?.item) return match.item;
+    if (located) return located;
+    const state = useTemplateStudioStore.getState();
+    let list = Array.isArray(state.pageSections[state.activePageId]) ? state.pageSections[state.activePageId] : [];
+    if (!list.length) { await state.loadSections?.(state.activePageId); const next = useTemplateStudioStore.getState(); list = Array.isArray(next.pageSections[next.activePageId]) ? next.pageSections[next.activePageId] : []; }
+    const found = matchSection(list, { domId: payload.domId || '', name: payload.name || '', index: Number.isInteger(payload.index) ? payload.index : -1, html: payload.html || '' });
+    const at = found >= 0 ? found : (Number.isInteger(payload.index) && payload.index >= 0 && payload.total > 0 && payload.total === list.length ? payload.index : -1);
+    if (at >= 0) return list[at];
+    // The names in the preview and in the code do not agree: the section is found by the texts it shows.
+    try {
+      const doc = new DOMParser().parseFromString(`<div>${payload.html || ''}</div>`, 'text/html');
+      const texts = [...doc.querySelectorAll('h1,h2,h3,h4,p,a,button,li,span')].filter((node) => !node.querySelector('h1,h2,h3,h4,p,a,button,li,span')).map((node) => node.textContent.replace(/\s+/g, ' ').trim()).filter((text) => text.length >= 4).sort((x, y) => y.length - x.length);
+      const res = await templateSiteService.locateSection(state.activeSiteId, state.activePageId, texts.slice(0, 12));
+      const found = res.data?.section;
+      return found ? (list.find((item) => item.id === found.id) || { id: found.id, name: found.name }) : null;
+    } catch { return null; }
+  };
+  const [located, setLocated] = useState(null);
+  useEffect(() => { if (match?.item) return undefined; let stop = false; findItem().then((item) => { if (!stop) setLocated(item); }); return () => { stop = true; }; }, [match?.item, payload.html]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sectionId = match?.item?.id || located?.id;
+  useEffect(() => {
+    if (!sectionId) return undefined;
+    let stop = false;
+    useTemplateStudioStore.getState().getSectionBackground(sectionId).then((items) => { if (!stop) setBgItems(items); });
+    return () => { stop = true; };
+  }, [sectionId, reloading]);
+
+  // A background of the section as a library entry (for its small picture); a file that is no longer in the library gets a plain placeholder.
+  const backgroundChip = (item) => {
+    if (item.kind === 'youtube') return { ...item, id: `youtube:${item.youtubeId}`, name: 'YouTube video' };
+    const entry = images.find((image) => image.path === item.path || `/${image.path}` === item.path || image.path === `/${item.path}`);
+    return entry ? { ...entry, kind: item.kind === 'video' ? 'video' : entry.kind } : { ...item, id: null, name: String(item.path || '').split('/').pop() };
+  };
+  const sameMedia = (x, y) => (x.kind === 'youtube' ? y.kind === 'youtube' && x.youtubeId === y.youtubeId : x.kind !== 'youtube' && x.path === y.path);
+  const toItem = (media) => (media.kind === 'youtube' ? { kind: 'youtube', youtubeId: media.youtubeId, overlay: media.overlay || 'dark' } : { kind: media.kind === 'video' ? 'video' : 'image', path: media.path, overlay: media.overlay || 'dark', name: media.name, id: media.id });
+  // Puts the whole list behind the section at once (no AI). An empty list takes the background away.
+  const applyBackgrounds = async (list, done) => {
+    const item = await findItem();
+    if (!item) { setProblems([{ text: 'Background', reason: 'This section could not be found in the page. Close this window and open the section again.' }]); return; }
+    setBgBusy(true);
+    setProblems([]);
+    const result = await useTemplateStudioStore.getState().setSectionBackground(item.id, list.length ? list : null);
+    setBgBusy(false);
+    if (result.ok) { setBgItems(list); if (list.length) setReloading((n) => n + 1); else stripBackground(); setUpdated(true); flash('success', done); }
+    else setProblems([{ text: 'Background', reason: result.error }]);
+  };
+  // Taking the background away: the pop-up drops the wrapper and its layer at once, without waiting for the page behind to rebuild.
+  const stripBackground = () => {
+    const doc = new DOMParser().parseFromString(`<body>${current.html || ''}</body>`, 'text/html');
+    doc.querySelectorAll('[data-veave-bg-host]').forEach((host) => {
+      host.querySelectorAll(':scope > [data-veave-bg]').forEach((layer) => layer.remove());
+      host.replaceWith(...Array.from(host.childNodes));
+    });
+    setFresh({ html: doc.body.innerHTML, head: current.head, htmlClass: current.htmlClass, bodyClass: current.bodyClass });
+    setReady(false); setEdits([]);
+  };
+  // A chosen background (picture, uploaded video or YouTube link, one or several) is added to the ones the section already has and put behind it at once; it never goes through the instruction bar.
+  const chooseBackground = async (media) => {
+    if (!media || saving || applying || running || bgBusy) return;
+    const picked = (Array.isArray(media) ? media : [media]).map(toItem);
+    const overlay = picked[0].overlay;
+    const kept = bgItems.filter((old) => !picked.some((item) => sameMedia(old, item))).map((old) => ({ ...old, overlay }));
+    await applyBackgrounds([...kept, ...picked].slice(0, 8), picked.length > 1 || kept.length ? 'The backgrounds were applied. They play one after the other.' : 'The background was applied to this section.');
+  };
+  const removeBackground = (index) => applyBackgrounds(bgItems.filter((_, i) => i !== index), bgItems.length > 1 ? 'The background was removed.' : 'The background was removed from this section.');
+  const changePrompt = (value) => {
+    const found = youtubeIn(value);
+    if (!found) { setPrompt(value); return; }
+    chooseBackground({ kind: 'youtube', id: `youtube:${found.id}`, youtubeId: found.id, url: found.raw, name: 'YouTube video', overlay: 'dark' });
+    setPrompt(value.replace(found.raw, '').replace(/\s{2,}/g, ' ').trimStart());
+  };
+
+  const changed = edits.filter((item) => item.next !== item.old);
+  const canSave = !saving && !applying && !running && !busy.regenerate && !uploading && (changed.length > 0 || prompt.trim().length > 0 || chosenPhotos.length > 0);
 
   const save = async () => {
     if (!canSave) return;
@@ -174,25 +260,22 @@ export default function SectionEditModal({ payload, onClose }) {
     }
     if (saved.length) { useTemplateStudioStore.setState((state) => ({ previewKey: state.previewKey + 1 })); useTemplateStudioStore.getState().loadRevisions?.(activePageId); }
     let started = true;
-    const bgText = bgMedia ? `Use the ${bgMedia.kind === 'video' ? 'video' : 'picture'} "${bgMedia.name}" as the BACKGROUND of this section only (behind its text, covering the whole section, with the text kept readable${bgMedia.kind === 'video' ? '; the video is muted, loops and plays automatically' : ''}).` : '';
-    const whole = bgMedia ? wholeSectionNote(firstPictureOf(current.html)) : '';
-    const text = prompt.trim() || (bgText ? `${bgText} ${whole}` : '') || (chosenPhotos.length ? `Use the uploaded photo${chosenPhotos.length === 1 ? '' : 's'} in this section where ${chosenPhotos.length === 1 ? 'it fits' : 'they fit'} best, replacing the current picture if there is one.` : '');
+    const text = prompt.trim() || (chosenPhotos.length ? `Use the uploaded photo${chosenPhotos.length === 1 ? '' : 's'} in this section where ${chosenPhotos.length === 1 ? 'it fits' : 'they fit'} best, replacing the current picture if there is one.` : '');
     if (text) {
       const lead = match ? `In section ${pad(match.number)} ("${String(title).replace(/"/g, "'")}"): ` : `In the section "${String(title).replace(/"/g, "'")}": `;
-      const notes = saved.length ? `\n\n(The owner already typed these changes into this section by hand. Keep them exactly as written: ${saved.map((item) => `"${item.old}" became "${item.next}"`).join('; ')}.)` : '';
+      const notes = saved.length ? `\n\n(The owner already typed these changes into this section by hand. Keep them exactly as written (a deleted text stays deleted): ${saved.map((item) => (item.next ? `"${item.old}" became "${item.next}"` : `"${item.old}" was deleted`)).join('; ')}.)` : '';
       const head = `${lead}${text}${notes}`.slice(0, MAX_TEXT - 300);
       // What the section shows NOW: after an earlier AI change in this pop-up that is the new markup, not the one it opened with.
       const outline = sectionOutline(current.html, saved, Math.max(0, Math.min(1800, MAX_TEXT - head.length - 200)));
-      const context = outline ? `\n\nSECTION CONTENT (${bgMedia ? 'this whole list is the section; the background video covers all of it' : 'what the visitor sees in this section right now, with the typed changes applied; for reference, change only what the instruction asks'}):\n${outline}` : '';
+      const context = outline ? `\n\nSECTION CONTENT (what the visitor sees in this section right now, with the typed changes applied; for reference, change only what the instruction asks):\n${outline}` : '';
       const instruction = `${head}${context}`.slice(0, MAX_TEXT);
       startKey.current = useTemplateStudioStore.getState().previewKey;
       // A video plays behind the section it is given to; a picture is placed in it.
-      const photoEntries = chosenPhotos.filter((image) => !bgMedia || image.id !== bgMedia.id).map((image) => (image.kind === 'video'
+      const photoEntries = chosenPhotos.map((image) => (image.kind === 'video'
         ? { path: image.path, placement: 'background', note: `Play this video as the background of the section "${String(title).replace(/"/g, "'")}" (only that section)` }
         : { path: image.path, placement: 'section', note: `For the section "${String(title).replace(/"/g, "'")}"` }));
-      const attachments = [...(bgMedia ? [{ path: bgMedia.path, placement: 'background', note: `Background of the section "${String(title).replace(/"/g, "'")}" (only that section), behind its text. ${whole}` }] : []), ...photoEntries];
-      started = await regenerate(instruction, attachments, title);
-      if (started) { clearSelection?.(); setBgMedia(null); setApplying(true); setUpdated(false); }
+      started = await regenerate(instruction, photoEntries, title);
+      if (started) { clearSelection?.(); setApplying(true); setUpdated(false); }
     }
     setSaving(false);
     if (failed.length) { setProblems(failed); if (saved.length || !started) { setEdits((list) => list.filter((item) => failed.some((f) => f.text === item.old))); } return; }
@@ -214,7 +297,14 @@ export default function SectionEditModal({ payload, onClose }) {
         <div className="min-h-0 flex-1 overflow-y-auto bg-[#EFEBE1] p-3">
           <div className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-black/5">
             <div className="relative">
-              <iframe ref={frame} title={`Section ${title}`} srcDoc={doc} sandbox="allow-scripts" style={{ height }} className={`block w-full border-0 bg-white transition-opacity ${applying ? 'opacity-40' : ''}`} />
+              {youtubeId ? (
+                <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden bg-[#2B2823]" style={{ containerType: 'size' }}>
+                  <iframe key={youtubeId} title="" tabIndex={-1} allow="autoplay; encrypted-media" referrerPolicy="strict-origin-when-cross-origin"
+                    src={`https://www.youtube-nocookie.com/embed/${youtubeId}?autoplay=1&mute=1&loop=1&playlist=${youtubeId}&start=0&controls=0&playsinline=1&modestbranding=1&rel=0&iv_load_policy=3&disablekb=1&fs=0`}
+                    style={{ position: 'absolute', top: '50%', left: '50%', width: 'max(100cqw, 177.78cqh)', height: 'max(100cqh, 56.25cqw)', maxWidth: 'none', transform: 'translate(-50%, -50%)', border: 0, pointerEvents: 'none' }} />
+                </div>
+              ) : null}
+              <iframe ref={frame} title={`Section ${title}`} srcDoc={doc} allow="autoplay; encrypted-media" sandbox="allow-scripts" style={{ height }} className={`relative block w-full border-0 ${youtubeId ? 'bg-transparent' : 'bg-white'} transition-opacity ${applying ? 'opacity-40' : ''}`} />
               {applying ? (
                 <div className="absolute inset-0 flex items-center justify-center" role="status" aria-live="polite">
                   <span className={`flex items-center gap-2 rounded-full border ${line} bg-[#FBF9F4]/95 px-3 py-1.5 text-xs shadow ${ink}`}><Spinner className="h-3 w-3 text-[#5E7B5F]" />{job?.stepName || 'Updating this section…'}</span>
@@ -230,7 +320,7 @@ export default function SectionEditModal({ payload, onClose }) {
           {changed.length ? (
             <ul className="flex flex-wrap gap-1.5" aria-label="Your text changes">
               {changed.map((item) => (
-                <li key={item.old} className="max-w-full truncate rounded-full bg-[#E8F0E8] px-2.5 py-0.5 text-[11px] font-medium text-[#3F5E41]" title={`${item.old} → ${item.next}`}>Changed: “{item.old.slice(0, 28)}{item.old.length > 28 ? '…' : ''}” → “{item.next.slice(0, 28)}{item.next.length > 28 ? '…' : ''}”</li>
+                <li key={item.old} className="max-w-full truncate rounded-full bg-[#E8F0E8] px-2.5 py-0.5 text-[11px] font-medium text-[#3F5E41]" title={item.next ? `${item.old} → ${item.next}` : `Deleted: ${item.old}`}>{item.next ? <>Changed: “{item.old.slice(0, 28)}{item.old.length > 28 ? '…' : ''}” → “{item.next.slice(0, 28)}{item.next.length > 28 ? '…' : ''}”</> : <>Deleted: “{item.old.slice(0, 28)}{item.old.length > 28 ? '…' : ''}”</>}</li>
               ))}
             </ul>
           ) : null}
@@ -248,11 +338,14 @@ export default function SectionEditModal({ payload, onClose }) {
                 <span className="max-w-[16rem] truncate">{title}</span>
               </span>
             </div>
-            {bgMedia ? (
-              <div className={`flex flex-wrap items-center gap-2 border-b ${line} px-2.5 py-2`} aria-label="Background for this section">
-                <span className={`text-[10px] font-semibold uppercase tracking-wider ${muted}`}>Background</span>
-                <PhotoChip siteId={activeSiteId} image={bgMedia} disabled={saving || applying || running} onRemove={() => setBgMedia(null)} />
-                <span className={`max-w-[14rem] truncate text-[11px] ${muted}`}>{bgMedia.kind === 'video' ? 'Video plays behind this section' : 'Picture behind this section'}</span>
+            {bgItems.length ? (
+              <div className={`flex flex-wrap items-center gap-2 border-b ${line} px-2.5 py-2`} aria-label="Backgrounds of this section">
+                <span className={`text-[10px] font-semibold uppercase tracking-wider ${muted}`}>{bgItems.length > 1 ? 'Backgrounds' : 'Background'}</span>
+                {bgItems.map((item, index) => (
+                  <PhotoChip key={`${item.path || item.youtubeId}-${index}`} siteId={activeSiteId} image={backgroundChip(item)} disabled={saving || applying || running || bgBusy} onRemove={() => removeBackground(index)} />
+                ))}
+                <span className={`max-w-[18rem] truncate text-[11px] ${muted}`}>{bgBusy ? 'Updating…' : bgItems.length > 1 ? 'They play one after the other behind this section' : bgItems[0].kind === 'youtube' ? 'YouTube video plays behind this section' : bgItems[0].kind === 'video' ? 'Video plays behind this section' : 'Picture behind this section'}</span>
+                {bgItems.length > 1 ? <button type="button" disabled={saving || applying || running || bgBusy} onClick={() => applyBackgrounds([], 'The backgrounds were removed from this section.')} className="ml-auto text-[11px] font-medium text-[#A4493A] underline underline-offset-2 disabled:opacity-50">Remove all</button> : null}
               </div>
             ) : null}
             {chosenPhotos.length || pageUploads.length ? (
@@ -267,7 +360,7 @@ export default function SectionEditModal({ payload, onClose }) {
                 ))}
               </div>
             ) : null}
-            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={TYPED_MAX} rows={3} disabled={saving || applying || running} aria-label="AI instruction for this section"
+            <textarea value={prompt} onChange={(event) => changePrompt(event.target.value)} onPaste={(event) => { const pasted = event.clipboardData?.getData('text') || ''; if (youtubeIn(pasted)) { event.preventDefault(); changePrompt(`${prompt}${prompt && !/\s$/.test(prompt) ? ' ' : ''}${pasted}`); } }} maxLength={TYPED_MAX} rows={3} disabled={saving || applying || running} aria-label="AI instruction for this section"
               className={`block w-full resize-none rounded-md border-0 bg-transparent px-3 py-2 text-sm leading-relaxed ${ink} placeholder:text-xs placeholder:text-[#A59E90] focus:outline-none focus:ring-0`} />
             <div className="flex items-center justify-between px-2.5 pb-2">
               <span className="flex items-center gap-2">
@@ -275,7 +368,7 @@ export default function SectionEditModal({ payload, onClose }) {
                 <span className={`text-[11px] ${muted}`}>{prompt.length}/{TYPED_MAX}</span>
               </span>
               <span className="flex items-center gap-1">
-              <button type="button" disabled={saving || applying || running} onClick={() => setBgPicker(true)} title="Set a picture or video as the background of this section" className={`inline-flex h-7 items-center gap-1 rounded-full border ${line} bg-white px-2.5 text-[11px] font-medium ${muted} hover:bg-[#EFEBE1] disabled:opacity-50`}><Layers className="h-3.5 w-3.5" />Background</button>
+              <button type="button" disabled={saving || applying || running || bgBusy} onClick={() => setBgPicker(true)} title="Set pictures or videos as the background of this section" className={`inline-flex h-7 items-center gap-1 rounded-full border ${line} bg-white px-2.5 text-[11px] font-medium ${muted} hover:bg-[#EFEBE1] disabled:opacity-50`}>{bgBusy ? <Spinner className="h-3 w-3" /> : <Layers className="h-3.5 w-3.5" />}{bgItems.length ? `Background (${bgItems.length})` : 'Background'}</button>
               <input ref={fileInput} type="file" multiple accept={MEDIA_TYPES.join(',')} className="hidden" aria-label="Choose photos or videos for this section" onChange={(event) => { uploadFiles(event.target.files); event.target.value = ''; }} />
               <button type="button" disabled={saving || applying || running} onClick={() => fileInput.current?.click()} aria-label="Add a photo" title="Add a photo to this section" className={`inline-flex h-7 w-7 items-center justify-center rounded-full border ${line} bg-white ${muted} hover:bg-[#EFEBE1] disabled:opacity-50`}><ImagePlus className="h-3.5 w-3.5" /></button>
               <VoiceInputButton disabled={saving || applying || running} onText={(text) => setPrompt((value) => `${value}${value && !/\s$/.test(value) ? ' ' : ''}${text}`.slice(0, TYPED_MAX))} />
@@ -286,13 +379,13 @@ export default function SectionEditModal({ payload, onClose }) {
             <p className={`text-[11px] leading-relaxed ${muted}`}>{applying ? 'Updating this section. This window stays open until it is done.' : running ? 'A page is being generated. Wait for it to finish.' : 'Typed text is saved first. The AI then gets the content of this section together with your instruction and changes only this section; every other section stays exactly as it is.'}</p>
             <div className="flex justify-end gap-2">
               {applying ? <GhostButton onClick={cancelJob} disabled={job?.status === 'committing'}>Stop</GhostButton> : <GhostButton onClick={onClose} disabled={saving}>{updated ? 'Close' : 'Cancel'}</GhostButton>}
-              <PrimaryButton onClick={save} disabled={!canSave}>{saving ? <Spinner /> : <Sparkles className="h-4 w-4" />}{prompt.trim() || chosenPhotos.length || bgMedia ? (changed.length ? 'Save and apply AI' : (bgMedia && !prompt.trim() ? 'Apply background' : 'Apply with AI')) : 'Save text'}</PrimaryButton>
+              <PrimaryButton onClick={save} disabled={!canSave}>{saving ? <Spinner /> : <Sparkles className="h-4 w-4" />}{prompt.trim() || chosenPhotos.length ? (changed.length ? 'Save and apply AI' : 'Apply with AI') : 'Save text'}</PrimaryButton>
             </div>
           </div>
         </div>
       </div>
-      {imageEdit ? <ImageChangeModal key={imageEdit.src} target={imageEdit} zClass="z-[90]" onClose={() => setImageEdit(null)} onDone={() => setReloading((n) => n + 1)} onVideo={(media) => setBgMedia(media || null)} /> : null}
-      {bgPicker ? <ImageChangeModal key="bg" target={{ src: '' }} mode="background" zClass="z-[90]" onClose={() => setBgPicker(false)} onPick={(media) => setBgMedia(media || null)} /> : null}
+      {imageEdit ? <ImageChangeModal key={imageEdit.src} target={imageEdit} zClass="z-[90]" onClose={() => setImageEdit(null)} onDone={() => setReloading((n) => n + 1)} onVideo={(media) => chooseBackground(media || null)} /> : null}
+      {bgPicker ? <ImageChangeModal key="bg" target={{ src: '' }} mode="background" zClass="z-[90]" onClose={() => setBgPicker(false)} onPick={(media) => chooseBackground(media || null)} /> : null}
     </div>,
     document.body
   );

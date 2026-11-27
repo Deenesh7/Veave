@@ -112,13 +112,23 @@ export function penScript() {
   window.addEventListener('scroll', place, true);
   window.addEventListener('resize', place);
   function norm(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
+  // A background put behind a section lives in a wrapper around it: the pop-up shows the wrapper, so the background is seen there too.
+  // The studio plays a YouTube background itself and empties the frame in the page: the pop-up gets the frame back, so it can show the video's cover picture.
+  function restoreYoutube(root) {
+    Array.prototype.forEach.call(root.querySelectorAll('iframe[data-studio-yt]'), function (f) {
+      f.setAttribute('src', 'https://www.youtube-nocookie.com/embed/' + f.getAttribute('data-studio-yt'));
+      f.style.display = '';
+    });
+    return root;
+  }
+  function withBackground(n) { var p = n.parentElement; return p && p.hasAttribute('data-veave-bg-host') ? p : n; }
   btn.addEventListener('click', function (e) {
     e.preventDefault();
     e.stopPropagation();
     if (!cur) return;
     var heading = cur.querySelector('h1,h2,h3,h4');
     var name = norm(cur.getAttribute('aria-label') || (heading && heading.textContent) || cur.id);
-    var clone = cur.cloneNode(true);
+    var clone = restoreYoutube(withBackground(cur).cloneNode(true));
     Array.prototype.forEach.call(clone.querySelectorAll('script,[data-studio-pen]'), function (n) { n.remove(); });
     [clone].concat(Array.prototype.slice.call(clone.querySelectorAll('*'))).forEach(function (n) {
       Array.prototype.slice.call(n.attributes).forEach(function (a) { if (/^data-studio-/.test(a.name)) n.removeAttribute(a.name); });
@@ -126,7 +136,7 @@ export function penScript() {
     var head = Array.prototype.map.call(document.querySelectorAll('style,link[rel="stylesheet"]'), function (n) { return n.outerHTML; }).join('');
     var all = blocks().all();
     window.parent.postMessage({
-      type: 'studio-section-edit', name: name.slice(0, 120), domId: cur.id || '', index: Array.prototype.indexOf.call(all, cur),
+      type: 'studio-section-edit', name: name.slice(0, 120), domId: cur.id || '', index: Array.prototype.indexOf.call(all, cur), total: all.length,
       html: clone.outerHTML, head: head, htmlClass: document.documentElement.className, bodyClass: document.body.className
     }, '*');
   });
@@ -149,7 +159,7 @@ export function penScript() {
       } else { found = blocks().of(found); }
       var out = '';
       if (found) {
-        var clone = found.cloneNode(true);
+        var clone = restoreYoutube(withBackground(found).cloneNode(true));
         Array.prototype.forEach.call(clone.querySelectorAll('script,[data-studio-pen]'), function (n) { n.remove(); });
         [clone].concat(Array.prototype.slice.call(clone.querySelectorAll('*'))).forEach(function (n) {
           Array.prototype.slice.call(n.attributes).forEach(function (a) { if (/^data-studio-/.test(a.name)) n.removeAttribute(a.name); });

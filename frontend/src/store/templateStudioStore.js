@@ -581,6 +581,27 @@ export const useTemplateStudioStore = create((set, get) => ({
     finally { get().setBusy(`section:${sectionId}`, false); }
   },
 
+  /** The pictures, videos and YouTube videos that are behind one section now: [{ kind, path | youtubeId, overlay }]. */
+  getSectionBackground: async (sectionId) => {
+    const { activeSiteId: siteId, activePageId: pageId } = get();
+    if (!siteId || !pageId || !sectionId) return [];
+    try { const res = await templateSiteService.getSectionBackground(siteId, pageId, sectionId); return res.data?.items || []; } catch { return []; }
+  },
+
+  /** Puts a picture, video or YouTube video (or a list of them, shown one after the other) behind one section straight away (no AI, no credits); null or [] takes them away. Returns { ok, error }. */
+  setSectionBackground: async (sectionId, media) => {
+    const { activeSiteId: siteId, activePageId: pageId } = get();
+    if (!siteId || !pageId || !sectionId) return { ok: false, error: 'Choose the section first.' };
+    try {
+      const one = (item) => (item.kind === 'youtube' ? { kind: 'youtube', youtubeId: item.youtubeId, overlay: item.overlay } : { kind: item.kind === 'video' ? 'video' : 'image', path: item.path, overlay: item.overlay || 'none' });
+      const payload = !media ? null : Array.isArray(media) ? media.map(one) : one(media);
+      await templateSiteService.setSectionBackground(siteId, pageId, sectionId, payload);
+      set((state) => ({ previewKey: state.previewKey + 1 }));
+      get().loadRevisions(pageId);
+      return { ok: true };
+    } catch (error) { return { ok: false, error: apiMessage(error, 'The background could not be applied.') }; }
+  },
+
   /** Shows an older revision in the preview (read-only; nothing is saved). */
   previewRevision: async (number) => {
     const { activeSiteId: siteId, activePageId: pageId } = get();

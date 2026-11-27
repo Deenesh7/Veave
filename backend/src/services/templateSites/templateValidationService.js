@@ -94,11 +94,9 @@ function pageScope({ files, page, pages, template, siteWide = false, includeShar
   // The page's own files (its component and what only it uses), before shared content is added for a rewrite or a ticked section.
   const ownOnly = [...owned];
   const sectionFiles = [];
-  // A rewrite of the page covers what the page DISPLAYS: the cards and the sample records it renders are often components and data that
-  // other pages use as well. They are changeable for a rewrite (the build and the route test of every page then prove nothing broke).
-  if (includeSharedContent) {
-    for (const path of reachable) if (!owned.includes(path) && !locked.has(path) && /^src\/(?:components|data)\//.test(path)) owned.push(path);
-  }
+  // A rewrite covers what only THIS page shows. A component or data file that other pages use as well is never changed in place (that would
+  // change those pages too): the page stops using it and builds its own copy in a NEW file (src/components/ or src/data/), or writes the
+  // markup in the page. `includeSharedContent` is therefore kept only for callers that pass it; it no longer opens shared files.
   // A section the owner named whose code is a component shared with other pages (the "Listing Card" section is ListingCard.jsx, which also
   // renders on other pages, and shows the records of src/data/listings.js): that component and the data it displays are the section.
   // Without them the owner's request about the section could not change anything and every answer was thrown away.

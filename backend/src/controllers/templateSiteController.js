@@ -123,6 +123,21 @@ exports.removeSection = wrap(async (req, res) => {
   send(res, result);
 });
 
+exports.setSectionBackground = wrap(async (req, res) => {
+  const result = await require('../services/templateSites/templateSectionBackground').setSectionBackground({ user: req.user, siteId: req.params.siteId, pageId: req.params.pageId, sectionId: req.params.sectionId, media: req.body?.media || null });
+  send(res, result);
+});
+
+exports.locateSection = wrap(async (req, res) => {
+  const result = await require('../services/templateSites/templateSectionBackground').locateSection({ user: req.user, siteId: req.params.siteId, pageId: req.params.pageId, texts: req.body?.texts });
+  send(res, result);
+});
+
+exports.getSectionBackground = wrap(async (req, res) => {
+  const result = await require('../services/templateSites/templateSectionBackground').getSectionBackground({ user: req.user, siteId: req.params.siteId, pageId: req.params.pageId, sectionId: req.params.sectionId });
+  send(res, result);
+});
+
 exports.deletePage = wrap(async (req, res) => {
   const result = await pageService.deletePage({ user: req.user, siteId: req.params.siteId, pageId: req.params.pageId });
   send(res, { deleted: true, retargeted: result.retargeted });

@@ -339,7 +339,7 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
   // What the reviewer reads as "the page" for a rewrite: the page's own files and what this change touched. Shared records it displays
   // (another page's data, the departments of the site) are judged file by file against the template, not by the reviewer.
   const reviewedPaths = (changed = []) => [...new Set([...(scope.ownOnly || [page.componentPath]), ...changed.filter((path) => scope.owned.has(path))])];
-  const review = (args) => (deps.reviewIntent || require('./templateIntentReview').reviewIntent)({ instruction: text, focus: focusNames.join(', '), lockedSections: lockedNames, workList, deps, signal, intent: policy ? intentResult.intent : null, research: research ? { found: research.found, organisation: research.organisation || '', sources: research.sources.map((entry) => entry.url), items: research.items.length } : null, wording: policy?.rewrite ? validation.wordingOf(args.candidate, reviewedPaths(args.changedPaths)) : '', site: policy?.rewrite ? websiteLine(siteContext) : '', refinement: Boolean(policy?.refinement), keptShare: policy && !policy.refinement ? keptShare(args) : null, ...args });
+  const review = (args) => (deps.reviewIntent || require('./templateIntentReview').reviewIntent)({ instruction: text, focus: focusNames.join(', '), lockedSections: lockedNames, workList, deps, signal, intent: policy ? intentResult.intent : null, research: research ? { found: research.found, organisation: research.organisation || '', sources: research.sources.map((entry) => entry.url), items: research.items.length } : null, primary: [page.componentPath, ...(scope.ownOnly || [])], wording: policy?.rewrite ? validation.wordingOf(args.candidate, reviewedPaths(args.changedPaths), 9000) : '', site: policy?.rewrite ? websiteLine(siteContext) : '', refinement: Boolean(policy?.refinement), keptShare: policy && !policy.refinement ? keptShare(args) : null, ...args });
   let verdict = { met: null };
   let lastSignature = '';
   let repeats = 0;
@@ -389,6 +389,13 @@ async function regeneratePage({ template, page, pages, files, instruction, attac
     }
     // What really changed (a file the model returned unchanged is not a change).
     changedPaths = store.diffFiles(baseline, working).changed.map((item) => item.path);
+    // A picture of another page, or one that does not exist, becomes the neutral photo placeholder: it never fails the page.
+    const neutral = require('./templateImagePlaceholders').neutralizePictures({ files: working, plan: siteContext?.plan, route: page.route, changedPaths });
+    if (neutral.count) {
+      working = neutral.files;
+      changedPaths = store.diffFiles(baseline, working).changed.map((item) => item.path);
+      logger.info(`The ${page.name} page: ${neutral.count} picture reference(s) that do not belong to this page were replaced by the photo placeholder.`);
+    }
     candidate = working;
     problems = validation.checkCandidate({ baseline, candidate, scope, page, pages, template, changedPaths, attachments, instruction: text, siteWide, rewrite: siteContext?.mode === 'website', policy, originalFiles: originals })
       .concat(validation.imageProblems(failed, (entity?.assets || []).filter((asset) => !working.some((file) => textOfFile(file).includes(asset.url)))));

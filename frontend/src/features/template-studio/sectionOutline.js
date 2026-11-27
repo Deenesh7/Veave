@@ -19,6 +19,7 @@ export function sectionOutline(html, edits, limit = 1800) {
     own = norm(own);
     if (own.length < 2) continue;
     const text = typed.get(own) ?? own;
+    if (!text) continue; // deleted by the owner
     const key = `${tag}:${text}`;
     if (seen.has(key)) continue;
     seen.add(key);

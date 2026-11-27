@@ -61,6 +61,24 @@ function renderFor(source, at, newText) {
   return newText;
 }
 
+/**
+ * A text the owner deleted completely: when it is all that its element holds (<h2>Text</h2>), the element goes with it, so no empty
+ * block is left behind. A text inside a quoted string, or in an element with other content, is just emptied.
+ */
+function removalRange(source, at) {
+  const quoted = ['\'', '"', '`'].includes(source[at.index - 1]) && source[at.index - 1] === source[at.index + at.length];
+  if (quoted) return { index: at.index, length: at.length, text: '' };
+  const before = source.slice(0, at.index);
+  const open = /<([A-Za-z][\w.]*)(?:\s[^<>]*)?>\s*$/.exec(before);
+  const close = open ? new RegExp(`^\\s*</${open[1].replace(/\./g, '\\.')}\\s*>`).exec(source.slice(at.index + at.length)) : null;
+  if (open && close && !/\/\s*>$/.test(open[0])) {
+    const start = open.index;
+    const lead = /[ \t]*\n?[ \t]*$/.exec(source.slice(0, start))[0];
+    return { index: start - lead.length, length: at.index + at.length + close[0].length - (start - lead.length), text: lead.includes('\n') ? '' : lead };
+  }
+  return { index: at.index, length: at.length, text: '' };
+}
+
 function applyEdit(files, page, oldText, newText) {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const pageFiles = pageDistinctness.reachableFiles(page.componentPath, byPath, 3).filter((path) => SOURCE.test(path));
@@ -76,7 +94,8 @@ function applyEdit(files, page, oldText, newText) {
     if (hits.length > 1) throw new ConflictError(`This exact text appears ${hits.length} times on the site, so changing it here could change the wrong one. Tick its section and ask the AI to change it instead.`);
     const { path, at } = hits[0];
     const file = byPath.get(path);
-    const content = `${file.content.slice(0, at.index)}${renderFor(file.content, at, newText)}${file.content.slice(at.index + at.length)}`;
+    const range = newText ? { index: at.index, length: at.length, text: renderFor(file.content, at, newText) } : removalRange(file.content, at);
+    const content = `${file.content.slice(0, range.index)}${range.text}${file.content.slice(range.index + range.length)}`;
     return { files: files.map((item) => (item.path === path ? { ...item, content } : item)), path };
   }
   throw new ValidationError('This text comes from the site\'s content, so it can\'t be edited by hand here. Ask the AI to change it instead.');
@@ -86,7 +105,6 @@ async function editText({ user, siteId, pageId, oldText, newText }) {
   const from = String(oldText ?? '').replace(/\s+/g, ' ').trim();
   const to = String(newText ?? '').replace(/\s+/g, ' ').trim();
   if (!from) throw new ValidationError('Click a text in the preview first.');
-  if (!to) throw new ValidationError('The text cannot be empty.');
   if (from.length > MAX_TEXT || to.length > MAX_TEXT) throw new ValidationError(`Text is limited to ${MAX_TEXT} characters.`);
   if (from === to) return { changed: false, path: null };
   const { site, page } = await getPage(user, siteId, pageId);
@@ -97,7 +115,7 @@ async function editText({ user, siteId, pageId, oldText, newText }) {
     const updated = await bumpSite(site._id);
     await TemplateRevision.create({
       siteId: site._id, pageId: null, userId: idOf(user), number: updated.revision, kind: 'text-edit',
-      instruction: `Edited text on ${page.name}: "${from.slice(0, 60)}" -> "${to.slice(0, 60)}"`, files: change.changed, before: change.previous, siteRevision: updated.revision
+      instruction: to ? `Edited text on ${page.name}: "${from.slice(0, 60)}" -> "${to.slice(0, 60)}"` : `Deleted the text "${from.slice(0, 60)}" on ${page.name}`, files: change.changed, before: change.previous, siteRevision: updated.revision
     });
   } catch (error) {
     await undoFiles(site, change);

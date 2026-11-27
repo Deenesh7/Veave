@@ -15,7 +15,7 @@ const templateRevisionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   // Per page (or per site for site-level revisions): 1, 2, 3 ...
   number: { type: Number, required: true },
-  kind: { type: String, enum: ['create', 'regenerate', 'restore', 'page-add', 'page-delete', 'page-rename', 'page-reorder', 'replace-image', 'text-edit', 'section-remove'], required: true },
+  kind: { type: String, enum: ['create', 'regenerate', 'restore', 'page-add', 'page-delete', 'page-rename', 'page-reorder', 'replace-image', 'text-edit', 'section-remove', 'section-background'], required: true },
   instruction: { type: String, default: '' },
   status: { type: String, enum: ['committed', 'failed'], default: 'committed' },
   files: { type: [fileSchema], default: [] },

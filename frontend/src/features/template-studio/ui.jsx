@@ -90,9 +90,9 @@ export function Modal({ open, onClose, title, children, wide = false, size = nul
   );
 }
 
-export function ConfirmModal({ open, title, message, confirmLabel = 'Confirm', danger = false, busy = false, onConfirm, onClose }) {
+export function ConfirmModal({ open, title, message, confirmLabel = 'Confirm', danger = false, busy = false, zClass = 'z-50', onConfirm, onClose }) {
   return (
-    <Modal open={open} onClose={onClose} title={title}>
+    <Modal open={open} onClose={onClose} title={title} zClass={zClass}>
       <p className={`text-sm leading-relaxed ${ink}`}>{message}</p>
       <div className="mt-5 flex justify-end gap-2">
         <GhostButton onClick={onClose} disabled={busy}>Cancel</GhostButton>
