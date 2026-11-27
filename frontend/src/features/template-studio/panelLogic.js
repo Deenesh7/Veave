@@ -53,6 +53,48 @@ export function wholeSectionNote(picture, { listed = true } = {}) {
   return `The section is EVERYTHING ${listed ? 'listed under SECTION CONTENT' : 'in the block that holds the picture (its text, headings, lists and figures)'}, from its first item to its last${picture ? ` (it begins with the picture "${picture.alt || picture.path}", src ${picture.path})` : ''}. Put ONE wrapper around all of those elements (give it relative, isolate and overflow-hidden, with the video absolutely positioned behind them), so the video sits behind the whole section and not behind only a heading or a list. Do not put the video in any other part of the page.`;
 }
 
+const YOUTUBE_HOSTS = /^(?:www\.|m\.|music\.)?youtube(?:-nocookie)?\.com$/i;
+const YOUTUBE_ID = /^[A-Za-z0-9_-]{11}$/;
+
+/**
+ * Reads a YouTube address (watch?v=, youtu.be/, /shorts/, /embed/, /live/) and returns { ok: true, id } or { ok: false, error }.
+ * A link without "https://" is accepted; anything that is not one video (a channel, a playlist, another site) is refused with a reason.
+ */
+export function parseYouTubeUrl(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return { ok: false, error: 'Paste a YouTube link, for example https://www.youtube.com/watch?v=…', empty: true };
+  if (/\s/.test(raw)) return { ok: false, error: 'A link cannot contain spaces. Paste just the YouTube address.' };
+  let url;
+  try { url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`); } catch { return { ok: false, error: 'This does not look like a web address. Paste a link such as https://www.youtube.com/watch?v=…' }; }
+  if (!/^https?:$/.test(url.protocol)) return { ok: false, error: 'Only http and https links can be used.' };
+  const host = url.hostname.toLowerCase();
+  let id = '';
+  if (host === 'youtu.be' || host === 'www.youtu.be') id = url.pathname.split('/')[1] || '';
+  else if (YOUTUBE_HOSTS.test(host)) {
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts[0] === 'watch') id = url.searchParams.get('v') || '';
+    else if (['shorts', 'embed', 'live', 'v'].includes(parts[0])) id = parts[1] || '';
+    else return { ok: false, error: 'This YouTube link is not a single video. Use a link like youtube.com/watch?v=…, youtu.be/… or youtube.com/shorts/….' };
+  } else return { ok: false, error: 'This is not a YouTube link. Use a link from youtube.com or youtu.be.' };
+  if (!YOUTUBE_ID.test(id)) return { ok: false, error: 'The video ID in this link is not valid. Copy the link again from YouTube.' };
+  return { ok: true, id };
+}
+
+/** The darkening (or lightening) layer put over a YouTube background so the text stays readable. */
+export const YOUTUBE_OVERLAYS = [
+  { value: 'none', label: 'None', color: null, hint: 'The video as it is' },
+  { value: 'dark', label: 'Dark', color: 'rgba(0,0,0,0.45)', hint: 'Best for white text' },
+  { value: 'darker', label: 'Darker', color: 'rgba(0,0,0,0.65)', hint: 'For bright videos or small text' },
+  { value: 'light', label: 'Light', color: 'rgba(255,255,255,0.55)', hint: 'Best for dark text' }
+];
+
+/** The exact build the AI is asked for: the video is the section's own background layer, not a player placed in its content. */
+export function youtubeBackgroundNote(id, overlay = 'dark') {
+  const color = YOUTUBE_OVERLAYS.find((item) => item.value === overlay)?.color || null;
+  const src = `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&mute=1&loop=1&playlist=${id}&controls=0&playsinline=1&modestbranding=1&rel=0&iv_load_policy=3&disablekb=1&fs=0`;
+  return `Use the YouTube video ${id} as the BACKGROUND of this section only, exactly like a CSS background: it is NOT a visible player or an embedded video block. Remove any other background picture or video this section has. Build it like this: give the section element "relative isolate overflow-hidden". As the FIRST child of the section add <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 overflow-hidden" style={{ containerType: 'size' }}> containing ONE <iframe src="${src}" title="" tabIndex={-1} loading="lazy" allow="autoplay; encrypted-media" referrerPolicy="strict-origin-when-cross-origin" style={{ position: 'absolute', top: '50%', left: '50%', width: 'max(100cqw, 177.78cqh)', height: 'max(100cqh, 56.25cqw)', maxWidth: 'none', transform: 'translate(-50%, -50%)', border: 0, pointerEvents: 'none' }} /> (the max() sizes make the video fill the whole section without stretching, like object-fit: cover, on desktop, tablet and mobile).${color ? ` Directly after that wrapper add <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10" style={{ background: '${color}' }} /> as the overlay that keeps the text readable.` : ' Add no overlay.'} Keep every existing element, text, layout and style of the section unchanged and above the video (the video has no controls, autoplays muted, loops and plays inline). Do not change any other section.`;
+}
+
 /** Image files from a drop or paste, by type or (when the browser gives none) by extension. */
 export function imageFilesOf(list, { video = false } = {}) {
   return Array.from(list || []).filter((file) => (file.type ? file.type.startsWith('image/') : Boolean(PHOTO_EXTENSIONS[extensionOf(file)])) || (video && isVideoFile(file)));
