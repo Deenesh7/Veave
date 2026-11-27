@@ -7,7 +7,7 @@ import { useTemplateStudioStore, readUi, writeUi } from '../../store/templateStu
 import { templateSiteService, apiMessage } from '../../services/templateSiteService';
 import { ASSET_BASE_PLACEHOLDER } from '../../services/previewService';
 import ThemePanel from './ThemePanel';
-import { THEME_LISTENER, TEXT_EDIT_SCRIPT, FOCUS_SCRIPT, IMAGE_BUTTON_SCRIPT } from './previewScripts';
+import { THEME_LISTENER, TEXT_EDIT_SCRIPT, FOCUS_SCRIPT, IMAGE_BUTTON_SCRIPT, YOUTUBE_LIVE_SCRIPT } from './previewScripts';
 import ImageChangeModal from './ImageChangeModal';
 import { PanelHeader, EmptyState, ErrorNote, IconButton, Spinner, Skeleton, GhostButton, PrimaryButton, ink, muted, line } from './ui';
 
@@ -41,6 +41,7 @@ export default function SitePreviewPanel({ className = '' }) {
   const [sectionEdit, setSectionEdit] = useState(null); // the section opened with its pen: { name, domId, html, head, ... }
   const scrollRef = useRef(0); // where the visitor was in the page, kept across reloads (a saved change reloads the preview)
   const focusRef = useRef([]);
+  const busyRef = useRef([]); // the section the AI is writing right now (blurred in the page)
   const startRouteRef = useRef({ key: null, route: '/' });
   const frameRouteRef = useRef(null); // the route the website itself last reported
   // Sections are only dimmed while the website really shows the selected page; otherwise the ticks would blur another page.
@@ -194,6 +195,10 @@ export default function SitePreviewPanel({ className = '' }) {
   useEffect(() => {
     const onMessage = (event) => {
       if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return;
+      if (event.data?.type === 'studio-yt-layers') {
+        const items = (Array.isArray(event.data.items) ? event.data.items : []).filter((item) => /^[A-Za-z0-9_-]{11}$/.test(String(item?.id))).map((item) => ({ id: String(item.id), x: Number(item.x) || 0, y: Number(item.y) || 0, w: Math.max(0, Number(item.w) || 0), h: Math.max(0, Number(item.h) || 0) }));
+        setYtLayers({ items, bg: String(event.data.bg || '#fff').slice(0, 60) });
+      }
       if (event.data?.type === 'preview-rendered') { showRoute(routeRef.current); sendTextMode(); }
       if (event.data?.type === 'studio-scroll') {
         scrollRef.current = Number(event.data.y) || 0;
@@ -204,7 +209,7 @@ export default function SitePreviewPanel({ className = '' }) {
       if (event.data?.type === 'studio-nav-section') window.dispatchEvent(new CustomEvent('studio-nav-section', { detail: { domId: String(event.data.domId || ''), name: String(event.data.name || '') } }));
       if (event.data?.type === 'studio-image-edit' && revisionPreview?.status !== 'ready') setImageEdit({ src: String(event.data.src || ''), alt: String(event.data.alt || ''), width: Number(event.data.width) || 0, height: Number(event.data.height) || 0, section: event.data.section && event.data.section.name ? event.data.section : null });
       if (event.data?.type === 'studio-text-deselected') useTemplateStudioStore.getState().setSelectedText(null);
-      if (event.data?.type === 'studio-section-edit' && revisionPreview?.status !== 'ready') setSectionEdit({ name: String(event.data.name || ''), domId: String(event.data.domId || ''), index: event.data.index, html: String(event.data.html || ''), head: String(event.data.head || ''), htmlClass: String(event.data.htmlClass || ''), bodyClass: String(event.data.bodyClass || '') });
+      if (event.data?.type === 'studio-section-edit' && revisionPreview?.status !== 'ready') setSectionEdit({ name: String(event.data.name || ''), domId: String(event.data.domId || ''), index: event.data.index, total: Number(event.data.total) || 0, html: String(event.data.html || ''), head: String(event.data.head || ''), htmlClass: String(event.data.htmlClass || ''), bodyClass: String(event.data.bodyClass || '') });
       if (event.data?.type === 'studio-text-selected' && revisionPreview?.status !== 'ready') useTemplateStudioStore.getState().setSelectedText({ id: event.data.id, text: String(event.data.text || ''), tag: String(event.data.tag || '') });
       if (event.data?.type === 'preview-route-changed') {
         const route = String(event.data.route || '/').split(/[?#]/)[0].replace(/\/+$/, '') || '/';
@@ -220,16 +225,26 @@ export default function SitePreviewPanel({ className = '' }) {
     return () => window.removeEventListener('message', onMessage);
   }, [selectPage, showRoute, sendTextMode, revisionPreview, pageForRoute]);
 
+  // YouTube backgrounds are played here, behind the (see-through) preview frame; the frame tells where each one is.
+  const [ytLayers, setYtLayers] = useState({ items: [], bg: '#fff' });
   const width = DEVICES.find((item) => item.id === device)?.width || '100%';
   const regenerating = job && !['completed', 'failed', 'cancelled'].includes(job.status);
   const sectionName = job && job.pageId && lastRequest && lastRequest.pageId === job.pageId ? String(lastRequest.focusSection || '').trim() : '';
+  // While the AI writes ONE section, only that section is blurred in the page; while it writes a whole page (or the website), the whole preview is.
+  const blurSection = Boolean(regenerating && sectionName && job?.pageId === activePageId);
+  const blurPage = Boolean(regenerating && !sectionName && (!job?.pageId || job.pageId === activePageId));
+  busyRef.current = blurSection ? [{ name: sectionName }] : [];
+  useEffect(() => {
+    try { iframeRef.current?.contentWindow?.postMessage({ type: 'studio-busy-sections', sections: blurSection ? [{ name: sectionName }] : [] }, '*'); } catch { /* the frame may be reloading */ }
+  }, [blurSection, sectionName]);
 
   // An older revision, when one is being looked at, replaces the live site until it is closed.
   const old = revisionPreview?.status === 'ready' ? revisionPreview : null;
   const oldHtml = old ? old.html.split(ASSET_BASE_PLACEHOLDER).join(`${window.location.origin}/api/preview-assets/${old.token}`) : '';
   const raw = old ? oldHtml : state.html;
-  const injected = THEME_LISTENER + `<script>(${blocksScript.toString()})();</script>` + TEXT_EDIT_SCRIPT + FOCUS_SCRIPT + `<script>(${penScript.toString()})();</script>` + IMAGE_BUTTON_SCRIPT;
+  const injected = THEME_LISTENER + `<script>(${blocksScript.toString()})();</script>` + TEXT_EDIT_SCRIPT + FOCUS_SCRIPT + `<script>(${penScript.toString()})();</script>` + IMAGE_BUTTON_SCRIPT + YOUTUBE_LIVE_SCRIPT;
   const frameKey = old ? `rev-${old.number}` : `${state.hash}:${manualKey}`;
+  useEffect(() => { setYtLayers({ items: [], bg: '#fff' }); }, [frameKey]);
   // A rebuilt website (after a finished job, a refresh) starts ON the page being edited instead of Home. The route is fixed per frame, so
   // moving between pages never reloads the frame.
   if (startRouteRef.current.key !== frameKey) startRouteRef.current = { key: frameKey, route: routeRef.current || '/' };
@@ -286,11 +301,18 @@ export default function SitePreviewPanel({ className = '' }) {
           <ErrorNote onRetry={revisionPreview ? () => (revisionPreview.kind === 'version' ? useTemplateStudioStore.getState().previewVersion(revisionPreview.versionId, revisionPreview.label) : previewRevision(revisionPreview.number)) : () => setManualKey((value) => value + 1)}>{frameError}</ErrorNote>
         ) : null}
         {site && html && !frameError ? (
-          <div className={`mx-auto h-full overflow-hidden bg-white transition-[width] duration-200 ${width === '100%' ? '' : `border-x ${line} shadow-sm`}`} style={{ width, maxWidth: '100%' }} data-viewport={device}>
+          <div className={`relative mx-auto h-full overflow-hidden bg-white transition-[width] duration-200 ${width === '100%' ? '' : `border-x ${line} shadow-sm`}`} style={{ width, maxWidth: '100%', ...(ytLayers.items.length ? { backgroundColor: ytLayers.bg } : {}) }} data-viewport={device}>
+            {ytLayers.items.map((item, index) => (
+              <div key={`${item.id}:${index}`} aria-hidden="true" className="pointer-events-none absolute overflow-hidden" style={{ left: item.x, top: item.y, width: item.w, height: item.h, containerType: 'size' }}>
+                <iframe title="" tabIndex={-1} allow="autoplay; encrypted-media" referrerPolicy="strict-origin-when-cross-origin"
+                  src={`https://www.youtube-nocookie.com/embed/${item.id}?autoplay=1&mute=1&loop=1&playlist=${item.id}&controls=0&playsinline=1&modestbranding=1&rel=0&iv_load_policy=3&disablekb=1&fs=0`}
+                  style={{ position: 'absolute', top: '50%', left: '50%', width: 'max(100cqw, 177.78cqh)', height: 'max(100cqh, 56.25cqw)', maxWidth: 'none', transform: 'translate(-50%, -50%)', border: 0 }} />
+              </div>
+            ))}
             <iframe
               key={frameKey} ref={iframeRef} title={`${site.name} website preview`} srcDoc={html}
-              sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
-              onLoad={() => { settleRef.current = Date.now() + 2500; frameRouteRef.current = null; showRoute(routeRef.current); sendTextMode(); setTimeout(sendFocus, 400); try { const savedY = scrollRef.current || Number(readUi().scroll?.[`${useTemplateStudioStore.getState().activeSiteId}:${routeRef.current}`]) || 0; if (savedY > 0) iframeRef.current?.contentWindow?.postMessage({ type: 'studio-restore-scroll', y: savedY }, '*'); } catch { /* the frame may be reloading */ } useTemplateStudioStore.getState().setSelectedText(null); if (cssRef.current) pushCss(cssRef.current); }} className="h-full w-full border-0 bg-white"
+              allow="autoplay; encrypted-media" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+              onLoad={() => { settleRef.current = Date.now() + 2500; frameRouteRef.current = null; showRoute(routeRef.current); sendTextMode(); setTimeout(sendFocus, 400); setTimeout(() => { try { iframeRef.current?.contentWindow?.postMessage({ type: 'studio-busy-sections', sections: busyRef.current }, '*'); } catch { /* the frame may be reloading */ } }, 450); try { const savedY = scrollRef.current || Number(readUi().scroll?.[`${useTemplateStudioStore.getState().activeSiteId}:${routeRef.current}`]) || 0; if (savedY > 0) iframeRef.current?.contentWindow?.postMessage({ type: 'studio-restore-scroll', y: savedY }, '*'); } catch { /* the frame may be reloading */ } useTemplateStudioStore.getState().setSelectedText(null); if (cssRef.current) pushCss(cssRef.current); }} className={`relative z-[1] h-full w-full border-0 bg-transparent transition-[filter,opacity] duration-300 ${blurPage ? 'pointer-events-none select-none opacity-60 blur-[6px]' : ''}`}
             />
           </div>
         ) : null}

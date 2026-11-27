@@ -38,7 +38,7 @@ nodes.forEach(function(x){if(x!==first)x.nodeValue='';});first.nodeValue=lead+d.
 
 // When sections are ticked in the Content column, every other section of the page is dimmed so the chosen ones stand out.
 export const FOCUS_SCRIPT = String.raw`<script>(function(){
-var st=document.createElement('style');st.textContent='[data-studio-dim]{opacity:.55!important;filter:blur(4px) grayscale(.35)!important;pointer-events:none!important;user-select:none!important;transition:opacity .25s ease,filter .25s ease}[data-studio-focus]{transition:opacity .25s ease}';document.head.appendChild(st);
+var st=document.createElement('style');st.textContent='[data-studio-dim]{opacity:.55!important;filter:blur(4px) grayscale(.35)!important;pointer-events:none!important;user-select:none!important;transition:opacity .25s ease,filter .25s ease}[data-studio-focus]{transition:opacity .25s ease}[data-studio-busy]{filter:blur(7px)!important;opacity:.55!important;pointer-events:none!important;user-select:none!important;transition:opacity .25s ease,filter .25s ease}';document.head.appendChild(st);
 var current=[];
 var lastY=0,sT=null;window.addEventListener('scroll',function(){lastY=window.scrollY;clearTimeout(sT);sT=setTimeout(function(){window.parent.postMessage({type:'studio-scroll',y:lastY},'*');},120);},{passive:true});
 function norm(s){return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();}
@@ -69,7 +69,8 @@ for(var k=0;k<targets.length;k++){if(sec===targets[k]||sec.contains(targets[k])|
 if(!keep)sec.setAttribute('data-studio-dim','');}}
 window.addEventListener('message',function(e){var d=e.data;if(d&&d.type==='studio-restore-scroll'){var y=Number(d.y)||0;[300,900,1800,3200].forEach(function(ms){setTimeout(function(){if(Math.abs(window.scrollY-y)>4)window.scrollTo(0,y);},ms);});}
 if(d&&d.type==='studio-scroll-to'&&d.section){var tg=find(d.section);if(tg){tg.scrollIntoView({behavior:'smooth',block:'start'});var oo=tg.style.outline,of=tg.style.outlineOffset;tg.style.outline='2px solid #5E7B5F';tg.style.outlineOffset='-2px';setTimeout(function(){tg.style.outline=oo;tg.style.outlineOffset=of;},1400);}}
-if(d&&d.type==='studio-focus-sections'){current=Array.isArray(d.sections)?d.sections:[];apply();}});
+if(d&&d.type==='studio-focus-sections'){current=Array.isArray(d.sections)?d.sections:[];apply();}
+if(d&&d.type==='studio-busy-sections'){var bz=document.querySelectorAll('[data-studio-busy]');for(var z=0;z<bz.length;z++)bz[z].removeAttribute('data-studio-busy');var list=Array.isArray(d.sections)?d.sections:[];for(var y=0;y<list.length;y++){var tb=find(list[y]);if(tb)tb.setAttribute('data-studio-busy','');}}});
 new MutationObserver(function(){if(current.length){clearTimeout(window.__studioFocusT);window.__studioFocusT=setTimeout(apply,120);}}).observe(document.documentElement,{childList:true,subtree:true});
 })();</script>`;
 
@@ -93,4 +94,44 @@ window.addEventListener('scroll',place,{passive:true});window.addEventListener('
 btn.addEventListener('mouseenter',function(){over=true;clearTimeout(hideT);});btn.addEventListener('mouseleave',function(){over=false;later();});
 btn.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();if(!cur)return;var r=cur.getBoundingClientRect();var sec=null;try{var bl=window.__studioBlocks;var s=bl&&bl.of(cur);if(s){var h=s.querySelector('h1,h2,h3,h4');sec={name:String(s.getAttribute('aria-label')||(h&&h.textContent)||s.id||'').replace(/\s+/g,' ').trim().slice(0,120),domId:s.id||'',index:Array.prototype.indexOf.call(bl.all(),s)};}}catch(x){}
 window.parent.postMessage({type:'studio-image-edit',src:urlOf(cur),alt:cur.getAttribute('alt')||'',width:Math.round(r.width),height:Math.round(r.height),section:sec},'*');},true);
+})();</script>`;
+
+
+// A YouTube video cannot play inside the sandboxed studio preview (YouTube needs storage the sandbox withholds, so it stays a black box).
+// Here the video layer shows the video's own cover picture instead; on the published website it plays as the section background.
+export const YOUTUBE_STILL_SCRIPT = String.raw`<script>(function(){
+function still(el,id){var box=el.parentNode;if(!box||!box.insertBefore)return;
+var pic=document.createElement('img');pic.alt='';pic.setAttribute('aria-hidden','true');
+pic.onerror=function(){pic.onerror=null;pic.src='https://i.ytimg.com/vi/'+id+'/hqdefault.jpg';};
+pic.onload=function(){if(pic.naturalWidth&&pic.naturalWidth<200){pic.onload=null;pic.src='https://i.ytimg.com/vi/'+id+'/hqdefault.jpg';}};
+pic.src='https://i.ytimg.com/vi/'+id+'/maxresdefault.jpg';
+pic.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:cover';box.insertBefore(pic,box.firstChild);
+el.removeAttribute('src');el.style.display='none';
+var tag=document.createElement('div');tag.textContent='\u25B6 Cover picture. The video plays on the published website';tag.style.cssText='position:absolute;right:8px;bottom:8px;padding:3px 8px;border-radius:999px;background:rgba(0,0,0,.6);color:#fff;font:600 11px/1.4 system-ui,sans-serif';box.appendChild(tag);}
+function fix(){var f=document.querySelectorAll('iframe[src*="youtube-nocookie.com/embed/"],iframe[src*="youtube.com/embed/"]');
+for(var i=0;i<f.length;i++){var el=f[i];if(el.getAttribute('data-studio-still'))continue;var m=/\/embed\/([A-Za-z0-9_-]{11})/.exec(el.getAttribute('src')||'');if(!m)continue;el.setAttribute('data-studio-still','1');still(el,m[1]);}}
+fix();new MutationObserver(fix).observe(document.documentElement,{childList:true,subtree:true});
+})();</script>`;
+
+
+// The studio preview runs the website in a sandbox where YouTube cannot start. So the video is played by the studio itself, BEHIND the
+// preview frame, and the website is made see-through where the video belongs: this script hides the sandboxed player, clears the
+// backgrounds that would cover the video (the section's own, the page's) and tells the studio where each video section is, every frame it moves.
+export const YOUTUBE_LIVE_SCRIPT = String.raw`<script>(function(){
+var st=document.createElement('style');st.textContent='[data-studio-clear]{background:transparent!important;background-image:none!important}';document.head.appendChild(st);
+var last='',bodyBg='';
+function paintOf(el){var c=getComputedStyle(el).backgroundColor;return c&&c!=='rgba(0, 0, 0, 0)'&&c!=='transparent'?c:'';}
+function scan(){var els=document.querySelectorAll('iframe[src*="youtube-nocookie.com/embed/"],iframe[src*="youtube.com/embed/"],iframe[data-studio-yt]');var list=[];
+for(var i=0;i<els.length;i++){var el=els[i];var id=el.getAttribute('data-studio-yt');
+if(!id){var m=/\/embed\/([A-Za-z0-9_-]{11})/.exec(el.getAttribute('src')||'');if(!m)continue;id=m[1];
+if(!bodyBg)bodyBg=paintOf(document.body)||paintOf(document.documentElement)||'#fff';
+el.setAttribute('data-studio-yt',id);el.removeAttribute('src');el.style.display='none';
+for(var n=el.parentNode;n&&n.nodeType===1;n=n.parentNode)n.setAttribute('data-studio-clear','');}
+list.push({el:el,id:id});}
+return list;}
+function tick(){var list=scan(),out=[];
+for(var i=0;i<list.length;i++){var box=list[i].el.parentNode;if(!box)continue;var r=box.getBoundingClientRect();out.push({id:list[i].id,x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)});}
+var key=JSON.stringify(out)+bodyBg;if(key!==last){last=key;try{window.parent.postMessage({type:'studio-yt-layers',items:out,bg:bodyBg},'*');}catch(e){}}
+requestAnimationFrame(tick);}
+tick();
 })();</script>`;

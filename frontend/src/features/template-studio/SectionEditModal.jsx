@@ -304,7 +304,7 @@ export default function SectionEditModal({ payload, onClose }) {
                     style={{ position: 'absolute', top: '50%', left: '50%', width: 'max(100cqw, 177.78cqh)', height: 'max(100cqh, 56.25cqw)', maxWidth: 'none', transform: 'translate(-50%, -50%)', border: 0, pointerEvents: 'none' }} />
                 </div>
               ) : null}
-              <iframe ref={frame} title={`Section ${title}`} srcDoc={doc} allow="autoplay; encrypted-media" sandbox="allow-scripts" style={{ height }} className={`relative block w-full border-0 ${youtubeId ? 'bg-transparent' : 'bg-white'} transition-opacity ${applying ? 'opacity-40' : ''}`} />
+              <iframe ref={frame} title={`Section ${title}`} srcDoc={doc} allow="autoplay; encrypted-media" sandbox="allow-scripts" style={{ height }} className={`relative block w-full border-0 ${youtubeId ? 'bg-transparent' : 'bg-white'} transition-opacity ${applying ? 'opacity-40 blur-[5px]' : ''}`} />
               {applying ? (
                 <div className="absolute inset-0 flex items-center justify-center" role="status" aria-live="polite">
                   <span className={`flex items-center gap-2 rounded-full border ${line} bg-[#FBF9F4]/95 px-3 py-1.5 text-xs shadow ${ink}`}><Spinner className="h-3 w-3 text-[#5E7B5F]" />{job?.stepName || 'Updating this section…'}</span>
